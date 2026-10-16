@@ -1,0 +1,52 @@
+[project]
+name = "nyasub"
+version = "0.1.0"
+description = "通用、可视化、可配置的多源字幕生成与翻译工具（内核）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pysubs2>=1.7",
+    "rapidfuzz>=3.0",
+    "numpy>=1.26",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+# 语音识别
+asr = ["faster-whisper>=1.1"]
+# 画面字识别
+ocr = ["rapidocr>=3.0", "opencv-python-headless>=4.8"]
+# GPU 推理（onnxruntime-gpu 也能跑 CPU，开发环境统一用它）
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]>=1.20",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12>=9,<10",
+]
+
+[project.scripts]
+nyasub = "nyasub.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.uv]
+# faster-whisper 依赖 CPU 版 onnxruntime，它和 onnxruntime-gpu 是同一个模块名，不能同时装
+override-dependencies = ["onnxruntime; sys_platform == 'never'"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 需要 ffmpeg / 识别模型的端到端测试",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

@@ -1,0 +1,93 @@
+# NyaSubFusion 配置示例。没写的项用内置默认值。
+# 配置按层合并：内置默认 < 用户全局（%APPDATA%\NyaSubFusion\config.toml）< 作品 series.toml
+#             < 项目（<视频名>.nyasub\project.toml）< --config 指定的文件 < 命令行参数
+
+[project]
+source = "auto"               # 源语言：ja / zh-Hans / en / ko …；auto = 按语音或字幕自动判断
+targets = ["zh-Hans"]         # 目标语言，可多个，例如 ["zh-Hans", "en"]
+series = ""                   # 所属作品：多集共享节目说明、术语表（存在 %APPDATA%\NyaSubFusion\series\<作品名>\）
+context = ""                  # 节目说明，会告诉大模型，例如“北海道渔村纪录片，大量老渔民方言采访”
+
+[subs]
+enabled = true
+path = ""                     # 指定字幕文件；空 = 自动找同名字幕 / 内封字幕
+ruby_size_ratio = 0.7         # 字号小于正文 70% 的行视为振假名小字，丢弃
+
+[asr]
+enabled = true
+model = "large-v3"            # 也可以 "kotoba-tech/kotoba-whisper-v2.0-faster"（日语）
+device = "cuda"
+vad_threshold = 0.25          # 人声检测门槛，调低能识别小声说话
+hf_endpoint = ""              # 模型下载慢可用镜像：https://hf-mirror.com
+
+[ocr]
+enabled = true
+fps = 3.0                     # 每秒检查几帧；画面字一般停留 1.5 秒以上，3 足够
+refine = "none"               # vlm：视觉大模型逐条复核（更准，需要 [llm] vision_model）
+# 识别区（相对比例 x0, y0, x1, y1）；可以多个，exclude = true 表示排除区（台标、角标）
+regions = [
+    { rect = [0.0, 0.0, 1.0, 1.0] },
+    { rect = [0.82, 0.0, 1.0, 0.12], exclude = true, name = "台标" },
+]
+
+[llm]
+mode = "auto"                 # auto：配了 api_key 和 model 就调接口，否则导出任务文件；api / export / off
+# 任何 OpenAI 兼容接口都行：
+#   DeepSeek    base_url = "https://api.deepseek.com/v1"   model = "deepseek-chat"
+#   阿里百炼    base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  model = "qwen-max"  vision_model = "qwen-vl-max"
+#   本地 Ollama base_url = "http://127.0.0.1:11434/v1"     model = "qwen2.5:14b"
+base_url = "https://api.openai.com/v1"
+api_key = ""                  # 也可以不写在这里，改用环境变量（api_key_env 指定的名字，默认 OPENAI_API_KEY）
+model = ""
+chunk_seconds = 150           # 每段送给大模型的时长
+
+# ---------------- 输出 ----------------
+# 按语言的排版选项
+[render.lang_options.zh-Hans]
+line_chars = 16               # 每行字数
+comma_to_space = true         # 句中逗号、句号换成空格
+
+# 样式：按名字引用
+[render.styles.main]
+font = "Microsoft YaHei"
+size = 60
+color = "#FFFFFF"
+outline_color = "#101010"
+outline = 3
+
+[render.styles.sub]
+font = "Yu Gothic"
+size = 38
+color = "#E8E8E8"
+outline = 2.4
+
+[render.styles.info]          # 说明 / 人名条 / 地名
+size = 42
+color = "#FFE680"
+outline = 2.4
+
+# 输出方案：写了 [[render.profiles]] 就会替换掉内置方案。图层按画面中从上到下的顺序排列。
+[[render.profiles]]
+name = "bilingual"
+format = "ass"
+filename = "{stem}.{tr}.{ext}"   # 可用 {stem} {tr} {src} {ext} {name}
+info_mode = "near"               # 说明类：near 贴原文旁 / top 顶部 / off 不显示
+layers = [
+    { role = "translation", style = "main" },
+    { role = "original", show = "auto", style = "sub" },   # auto：画面上已有原文硬字幕时不重复显示
+]
+
+[[render.profiles]]
+name = "zh-en"
+format = "ass"
+filename = "{stem}.zh-en.{ext}"
+layers = [
+    { role = "translation", lang = "zh-Hans", style = "main" },
+    { role = "translation", lang = "en", style = "sub" },
+]
+
+[[render.profiles]]
+name = "translation"
+format = "srt"
+info_mode = "top"
+layers = [{ role = "translation", style = "main" }]

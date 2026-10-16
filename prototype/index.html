@@ -1,0 +1,1414 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NyaSubFusion 原型</title>
+<style>
+:root{
+  --bg:#141419; --bg2:#1b1b22; --panel:#20202a; --panel2:#272733; --line:#33333f; --line2:#41414f;
+  --tx:#e9e9f0; --tx2:#a9a9b8; --tx3:#7a7a8a;
+  --acc:#ff7aa8; --acc2:#b49cff; --ok:#5fd39a; --warn:#ffc35a; --bad:#ff6b6b;
+  --c-sub:#7cc4ff; --c-ocr:#ffb35c; --c-asr:#9be38a; --c-fuse:#b49cff; --c-tr:#ff7aa8;
+  --r:8px;
+  --ui:"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC",sans-serif;
+  --ja:"Yu Gothic UI","Yu Gothic","Hiragino Sans","Noto Sans JP",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:13px/1.5 var(--ui)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+.app{display:grid;grid-template-columns:76px minmax(0,1fr);grid-template-rows:48px minmax(0,1fr);height:100vh;min-width:1180px}
+/* top bar */
+.top{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--bg2);border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;letter-spacing:.3px}
+.logo b{color:var(--acc)}
+.top .proj{margin-left:18px;display:flex;align-items:center;gap:8px;color:var(--tx2)}
+.top .proj strong{color:var(--tx);font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;background:var(--panel2);border:1px solid var(--line2);font-size:12px;color:var(--tx2);white-space:nowrap}
+.chip.acc{color:var(--acc);border-color:#ff7aa855;background:#ff7aa814}
+.chip.ok{color:var(--ok);border-color:#5fd39a55;background:#5fd39a12}
+.chip.warn{color:var(--warn);border-color:#ffc35a55;background:#ffc35a12}
+.chip.bad{color:var(--bad);border-color:#ff6b6b55;background:#ff6b6b12}
+.top .sp{flex:1}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;border:1px solid var(--line2);background:var(--panel2);color:var(--tx);white-space:nowrap}
+.btn:hover{border-color:#5a5a6c;background:#2e2e3b}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#2a0d18;font-weight:600}
+.btn.pri:hover{filter:brightness(1.08)}
+.btn.sm{padding:3px 8px;font-size:12px}
+.btn.ghost{background:transparent}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+/* nav */
+.nav{background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px}
+.nav button{width:62px;padding:8px 0 6px;border:0;border-radius:8px;background:none;color:var(--tx3);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px}
+.nav button svg{width:20px;height:20px}
+.nav button:hover{color:var(--tx);background:var(--panel)}
+.nav button.on{color:var(--acc);background:#ff7aa814}
+.main{overflow:auto;min-height:0;position:relative}
+.view{display:none;padding:16px;min-height:100%}
+.view.on{display:block}
+h2{margin:0 0 12px;font-size:17px;font-weight:600}
+h3{margin:0 0 8px;font-size:13.5px;font-weight:600}
+.muted{color:var(--tx2)} .dim{color:var(--tx3)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.row{display:flex;align-items:center;gap:8px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.field>label,.lbl{font-size:12px;color:var(--tx2)}
+.inp,select.inp,textarea.inp{background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:5px 8px;outline:none;width:100%}
+.inp:focus{border-color:var(--acc2)}
+textarea.inp{resize:vertical;min-height:60px}
+input[type=range]{accent-color:var(--acc);width:100%}
+.row>input[type=range]{flex:1;min-width:70px;width:auto}
+input[type=checkbox],input[type=radio]{accent-color:var(--acc)}
+input[type=color]{width:34px;height:26px;padding:0;border:1px solid var(--line2);border-radius:4px;background:none}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:var(--bg);padding:4px 10px;color:var(--tx2);font-size:12px}
+.seg button+button{border-left:1px solid var(--line2)}
+.seg button.on{background:var(--acc2);color:#1a1230;font-weight:600}
+.switch{position:relative;width:34px;height:19px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:#444452;border-radius:99px;transition:.15s}
+.switch span:before{content:"";position:absolute;width:15px;height:15px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.switch input:checked+span{background:var(--acc)}
+.switch input:checked+span:before{transform:translateX(15px)}
+.badge{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;line-height:17px;font-weight:600;white-space:nowrap}
+.b-c{background:#7cc4ff22;color:var(--c-sub)} .b-o{background:#ffb35c22;color:var(--c-ocr)} .b-a{background:#9be38a22;color:var(--c-asr)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#2f2f3c;border:1px solid var(--line2);padding:9px 16px;border-radius:8px;opacity:0;transition:.2s;pointer-events:none;z-index:99;box-shadow:0 8px 30px #0008}
+.toast.on{opacity:1;transform:translateX(-50%)}
+table.tb{width:100%;border-collapse:collapse}
+.tb th{font-weight:500;color:var(--tx3);font-size:12px;text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+.tb td{padding:6px 8px;border-bottom:1px solid #2a2a35;vertical-align:top}
+.tb tr:hover td{background:#ffffff06}
+.ja{font-family:var(--ja)}
+
+/* ---------- video frame ---------- */
+.frame{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden;border-radius:6px;user-select:none}
+.frame>div{position:absolute;inset:0}
+.scene .sky,.scene .sea,.scene .bgfill{position:absolute;left:0;right:0}
+.scene .sky{top:0;height:58%}
+.scene .sea{bottom:0;height:42%}
+.scene .bgfill{inset:0}
+.scene .sun{position:absolute;border-radius:50%}
+.scene .shape{position:absolute}
+.burn .t{position:absolute;font-family:var(--ja);font-weight:700;white-space:pre;line-height:1.25;color:#fff}
+.burn .telop{left:50%;transform:translateX(-50%);text-align:center;color:#fff8d8}
+.burn .info{background:#0b1a2ecc;color:#fff;border-left:.4em solid #e8b04a;padding:.15em .5em}
+.burn .name{color:#fff;border-left:.35em solid #ff8a3d;padding-left:.4em;background:linear-gradient(90deg,#000a,#0000)}
+.burn .vinfo{writing-mode:vertical-rl;color:#fff;background:#1b2d1acc;padding:.4em .15em;letter-spacing:.1em}
+.burn .logo{color:#ffffffaa;font-family:var(--ui);font-weight:800;font-style:italic}
+.burn .sign{background:linear-gradient(#7b4a26,#5c3418);color:#ffe9c9;border:.15em solid #2b170a;display:flex;align-items:center;justify-content:center;font-family:"Yu Mincho","YuMincho",serif}
+.boxes .bx{position:absolute;border:1.5px dashed #5fd39a;border-radius:2px}
+.boxes .bx.drop{border-color:#ff6b6b}
+.boxes .bx i{position:absolute;left:-1px;top:-17px;font:600 10px/15px var(--ui);font-style:normal;background:#5fd39a;color:#06200f;padding:0 4px;border-radius:2px;white-space:nowrap}
+.boxes .bx.drop i{background:#ff6b6b;color:#2a0505}
+.subs .blk{position:absolute;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:.1em;pointer-events:none}
+.subs .ly{text-align:center;line-height:1.22;white-space:nowrap}
+.subs .ly ruby{ruby-position:over}
+.subs .ly rt{line-height:1;padding-bottom:.08em}
+.subs .near{position:absolute;line-height:1.25;white-space:nowrap}
+.subs .near.v{writing-mode:vertical-rl}
+.subs .song{font-style:italic}
+.frame .tag{position:absolute;right:8px;top:8px;left:auto;bottom:auto;inset:auto 8px auto auto;background:#000a;padding:1px 7px;border-radius:4px;font-size:11px;color:#ddd}
+
+/* ---------- editor ---------- */
+#v-editor.on{display:grid;grid-template-columns:minmax(0,1fr) 370px;grid-template-rows:auto 236px minmax(150px,1fr);gap:10px;height:100%;min-height:0;padding:12px;overflow:hidden}
+.player{grid-column:1;grid-row:1;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}
+.player .frame{width:min(100%,calc(40vh * 16 / 9))}
+.pctl{display:flex;align-items:center;gap:8px;width:min(100%,calc(40vh * 16 / 9))}
+.pctl .time{font-variant-numeric:tabular-nums;color:var(--tx2);min-width:116px}
+.pctl .prof{margin-left:auto}
+.iconbtn{width:30px;height:30px;border-radius:50%;border:1px solid var(--line2);background:var(--panel2);display:grid;place-items:center;padding:0}
+.iconbtn.big{width:36px;height:36px;background:var(--acc);border-color:var(--acc);color:#2a0d18}
+.inspector{grid-column:2;grid-row:1/4;overflow:auto;min-height:0;display:flex;flex-direction:column;gap:10px}
+.timeline{grid-column:1;grid-row:2;display:flex;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);overflow:hidden;min-width:0}
+.tl-labels{width:84px;flex:none;border-right:1px solid var(--line);background:var(--bg2)}
+.tl-labels div,.lane{height:26px;border-bottom:1px solid #2a2a35}
+.tl-labels div{display:flex;align-items:center;gap:6px;padding:0 8px;font-size:11.5px;color:var(--tx2)}
+.tl-labels div i{width:8px;height:8px;border-radius:2px;flex:none}
+.tl-labels .rl,.lane.rl{height:22px}
+.tl-labels .wv,.lane.wv{height:40px}
+.tl-scroll{flex:1;overflow-x:auto;overflow-y:hidden;position:relative;min-width:0}
+.tl-inner{position:relative}
+.lane{position:relative}
+.lane.rl{cursor:pointer;background:var(--bg2)}
+.lane.rl span{position:absolute;top:3px;font-size:10px;color:var(--tx3);border-left:1px solid #444;padding-left:3px;height:16px}
+.tb-blk{position:absolute;top:3px;height:19px;border-radius:3px;padding:0 5px;font-size:11px;line-height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:#111;font-family:var(--ja);border:1px solid #0000}
+.tb-blk.sc{background:#7cc4ffcc}.tb-blk.so{background:#ffb35ccc}.tb-blk.sa{background:#9be38acc}
+.tb-blk.sf{background:#b49cffcc}.tb-blk.st{background:#ff7aa8cc;font-family:var(--ui)}
+.tb-blk.drop{background:repeating-linear-gradient(135deg,#ff6b6b44 0 5px,#ff6b6b22 5px 10px);color:#ff9a9a;text-decoration:line-through}
+.tb-blk.long{top:17px;height:7px;font-size:0;z-index:0;padding:0}
+.tb-blk.sel{border-color:#fff;box-shadow:0 0 0 1px #fff}
+.tb-blk.flag:after{content:"";position:absolute;right:3px;top:6px;width:6px;height:6px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 1px #0006}
+.tb-blk.info,.tb-blk.name{opacity:.75}
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);pointer-events:none;z-index:3}
+.playhead:before{content:"";position:absolute;top:0;left:-5px;border:6px solid transparent;border-top-color:var(--acc)}
+.cuelist{grid-column:1;grid-row:3;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);min-height:0}
+.cuelist .hd{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)}
+.cuelist .bd{overflow:auto;flex:1;min-height:0}
+.cuelist tr{cursor:pointer}
+.cuelist tr.sel td{background:#b49cff1c}
+.cuelist tr.cur td:first-child{box-shadow:inset 3px 0 var(--acc)}
+.cuelist td.t{font-variant-numeric:tabular-nums;color:var(--tx2);white-space:nowrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%}
+.dot.ok{background:var(--ok)}.dot.todo{background:var(--warn)}
+.typ{font-size:11px;color:var(--tx2);white-space:nowrap}
+.fl{font-size:11px;color:var(--warn);white-space:nowrap}
+.insp-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.insp-sec h3{display:flex;align-items:center;gap:6px}
+.srcitem{display:grid;grid-template-columns:auto 1fr;gap:4px 8px;padding:8px;border-radius:6px;background:var(--bg2);margin-bottom:6px;border:1px solid #2b2b36}
+.srcitem .tx{font-family:var(--ja);font-size:13.5px;white-space:pre-wrap}
+.srcitem .meta{grid-column:2;font-size:11px;color:var(--tx3)}
+.srcitem .crop{grid-column:1/3;background:#101018;border-radius:4px;padding:6px 10px;font-family:var(--ja);font-weight:700;color:#fff8d8;text-shadow:0 0 3px #000,0 0 3px #000;font-size:15px;white-space:pre;border:1px solid #333}
+.origedit{font-family:var(--ja);font-size:20px;line-height:2.1;padding:6px 8px;background:var(--bg);border:1px solid var(--line2);border-radius:6px}
+.origedit ruby{cursor:pointer;border-radius:3px;padding:0 1px}
+.origedit ruby:hover{background:#b49cff33}
+.origedit rt{font-size:.5em;color:var(--acc2)}
+.origedit ruby.guess rt{color:var(--warn)}
+.pop{position:fixed;z-index:50;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:10px;box-shadow:0 10px 30px #000a;width:240px}
+.alts button{display:block;width:100%;text-align:left;margin-top:6px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:6px 8px}
+.alts button:hover{border-color:var(--acc2)}
+
+/* ---------- pipeline ---------- */
+.dag{position:relative;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(3,auto);gap:14px 26px;padding:6px 2px}
+.dag svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.node{position:relative;z-index:1;background:var(--bg2);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;min-height:56px}
+.node b{display:block;font-size:12.5px;font-weight:600}
+.node small{display:block;color:var(--tx3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .st{position:absolute;right:8px;top:9px;width:9px;height:9px;border-radius:50%;background:#555}
+.node.done .st{background:var(--ok)}
+.node.stale{border-color:#ffc35a99;background:#2a2516}
+.node.stale .st{background:var(--warn)}
+.node.run{border-color:var(--acc2)}
+.node.run .st{background:var(--acc2);animation:pulse 1s infinite}
+.node.skip{opacity:.45;border-style:dashed}
+.node .pg{position:absolute;left:0;bottom:0;height:3px;background:var(--acc2);border-radius:0 0 0 8px;width:0}
+@keyframes pulse{50%{opacity:.3}}
+.banner{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;background:#2a2516;border:1px solid #ffc35a66;color:#ffd98f;margin-bottom:12px}
+.log{background:#0e0e13;border:1px solid var(--line);border-radius:6px;padding:8px 10px;height:190px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace;color:#b9b9c9;white-space:pre-wrap}
+.log .ok{color:var(--ok)} .log .w{color:var(--warn)}
+.srccard .hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.srccard .hdr .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:700}
+.srccard.off .body{opacity:.4;pointer-events:none}
+.region{position:relative;cursor:crosshair}
+.region .rg{position:absolute;border:2px solid var(--ok);background:#5fd39a14}
+.region .rg.ex{border-color:var(--bad);background:repeating-linear-gradient(135deg,#ff6b6b33 0 6px,#ff6b6b11 6px 12px)}
+.region .rg span{position:absolute;left:2px;top:1px;font-size:10px;font-weight:600;background:#0009;padding:0 4px;border-radius:2px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.stat{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.stat .n{font-size:22px;font-weight:700}
+.stat .d{font-size:11.5px;color:var(--tx3)}
+.bar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:6px 0 4px;background:#333}
+
+/* ---------- layers ---------- */
+#v-layers.on{display:grid;grid-template-columns:440px minmax(0,1fr);gap:14px;height:100%}
+.lyside{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding-right:2px}
+.lycard{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--bg2);cursor:pointer;margin-bottom:6px}
+.lycard.sel{border-color:var(--acc2);background:#b49cff14}
+.lycard .nm{flex:1}
+.lycard .nm small{display:block;color:var(--tx3);font-size:11px}
+.lycard .ord{display:flex;flex-direction:column}
+.lycard .ord button{border:0;background:none;color:var(--tx3);padding:0 4px;line-height:12px;font-size:11px}
+.lycard .ord button:hover{color:var(--tx)}
+.lycard .del{border:0;background:none;color:var(--tx3);font-size:16px;line-height:1;padding:0 2px}
+.lycard .del:hover{color:var(--bad)}
+.lyprev{display:flex;flex-direction:column;gap:10px;min-width:0}
+.lyprev .frame{width:100%}
+.samples{display:flex;flex-wrap:wrap;gap:6px}
+.kv{display:grid;grid-template-columns:84px minmax(0,1fr);align-items:center;gap:8px 10px}
+.kv>.lbl{text-align:right}
+.kv>.row{flex-wrap:wrap;min-width:0}
+
+/* ---------- project ---------- */
+.drop{border:2px dashed var(--line2);border-radius:12px;padding:26px;text-align:center;color:var(--tx2);background:var(--bg2)}
+.drop strong{color:var(--tx);font-size:15px}
+.preset{border:1px solid var(--line2);border-radius:8px;padding:10px;cursor:pointer;background:var(--bg2)}
+.preset.sel{border-color:var(--acc);background:#ff7aa812}
+.preset b{display:block;margin-bottom:2px}
+.preset small{color:var(--tx3);font-size:11.5px}
+.detect li{list-style:none;display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #2a2a35}
+.detect{padding:0;margin:0}
+.prof-card{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg2);margin-bottom:8px}
+.prof-card .fmt{font-weight:700;font-size:11px;padding:2px 6px;border-radius:4px;background:#b49cff22;color:var(--acc2)}
+.lychips{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.wide{max-width:1180px;margin:0 auto}
+.sect-gap{height:12px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="logo">
+      <svg width="26" height="26" viewBox="0 0 32 32"><path d="M5 8 L9 3 L13 9 Q16 8 19 9 L23 3 L27 8 Q29 13 28 19 Q26 28 16 28 Q6 28 4 19 Q3 13 5 8Z" fill="#ff7aa8"/><circle cx="11.5" cy="16" r="2" fill="#2a0d18"/><circle cx="20.5" cy="16" r="2" fill="#2a0d18"/><path d="M14 21 Q16 23 18 21" stroke="#2a0d18" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="7" y="23.5" width="18" height="2.2" rx="1.1" fill="#fff" opacity=".85"/></svg>
+      <span>Nya<b>Sub</b>Fusion</span>
+    </div>
+    <div class="proj"><strong>海辺の暮らし_第3集.ts</strong><span class="chip">日语 → 简体中文、英语</span><span class="chip">纪录片 / 采访</span><span class="chip">作品：海辺の暮らし</span></div>
+    <div class="sp"></div>
+    <span class="chip ok" id="topStatus">● 全部完成</span>
+    <span class="chip warn" id="topTodo">4 条待审校</span>
+    <button class="btn" onclick="go('export')">导出</button>
+  </header>
+
+  <nav class="nav" id="nav">
+    <button data-v="project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>项目</button>
+    <button data-v="pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.5 12h4M11.5 12l5-6M11.5 12l5 6"/></svg>流程</button>
+    <button data-v="editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12h6M15 12h2M3 20h18"/></svg>审校</button>
+    <button data-v="layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg>图层样式</button>
+    <button data-v="glossary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h11a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3z"/><path d="M8 9h6M8 13h5"/></svg>术语</button>
+    <button data-v="export"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 10l5 5 5-5M4 19h16"/></svg>导出</button>
+    <button data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>设置</button>
+  </nav>
+
+  <main class="main">
+    <!-- ============ 项目 ============ -->
+    <section class="view" id="v-project"><div class="wide">
+      <h2>新建项目</h2>
+      <div class="grid2" style="grid-template-columns:1.1fr .9fr">
+        <div>
+          <div class="drop"><strong>拖入视频 / 音频 / 字幕文件，或整个文件夹</strong><br><span class="dim">mp4 · mkv · ts · m2ts · mov · webm · mp3 · wav · flac · srt · ass · vtt</span><div style="margin-top:12px"><button class="btn">选择文件…</button></div></div>
+          <div class="sect-gap"></div>
+          <div class="card">
+            <h3>检测到的来源 <span class="dim" style="font-weight:400">— 海辺の暮らし_第3集.ts · 1:00:12 · 3840×2160 HEVC</span></h3>
+            <ul class="detect">
+              <li><input type="checkbox" checked><span class="badge b-c">字幕</span>ARIB 字幕轨 #0（日语，含振假名小字，将自动剔除）<span class="sp" style="flex:1"></span><span class="chip ok">推荐</span></li>
+              <li><input type="checkbox"><span class="badge b-c">字幕</span>同名外挂字幕 —— <span class="dim">未找到</span></li>
+              <li><input type="checkbox" checked><span class="badge b-a">语音</span>音轨 #1 日语 AAC 2ch</li>
+              <li><input type="checkbox" checked><span class="badge b-o">画面字</span>抽样 40 帧：底部有硬字幕（命中 31%），右侧有竖排文字<span style="flex:1"></span><span class="chip ok">推荐</span></li>
+              <li><input type="checkbox" disabled><span class="badge b-c">字幕</span><span class="dim">图片字幕轨（PGS）—— 无</span></li>
+            </ul>
+            <div class="dim" style="margin-top:8px">浏览器无法直接播放 HEVC：将生成 960×540 预览代理（NVENC，约 40 秒）。</div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>语言</h3>
+            <div class="row" style="margin-bottom:10px">
+              <select class="inp" style="width:auto"><option>日语（自动检测：98%）</option><option>英语</option><option>中文</option><option>韩语</option></select>
+              <span>→</span>
+              <div class="row" style="flex-wrap:wrap"><span class="chip acc">简体中文 ×</span><span class="chip acc">英语 ×</span><button class="btn sm ghost">＋ 目标语言</button></div>
+            </div>
+            <h3 style="margin-top:6px">内容预设</h3>
+            <div class="grid2" id="presets" style="gap:8px">
+              <div class="preset sel"><b>纪录片 / 采访</b><small>方言多，画面字全扫，人名条/地名贴原文</small></div>
+              <div class="preset"><b>动画</b><small>顶部歌词/标题，OP/ED 识别为歌曲</small></div>
+              <div class="preset"><b>综艺</b><small>花字多，人声分离，说明字幕顶部显示</small></div>
+              <div class="preset"><b>讲座 / 播客</b><small>只用语音，长句断句，书面化翻译</small></div>
+              <div class="preset"><b>音乐 MV</b><small>歌词模式，注音 + 罗马字</small></div>
+              <div class="preset"><b>自定义</b><small>从当前设置开始</small></div>
+            </div>
+            <h3 style="margin-top:14px">作品（多集共享术语、风格、样式）</h3>
+            <select class="inp"><option>海辺の暮らし（已有 2 集 · 术语 38 条 · 读音词典 12 条）</option><option>＋ 新作品…</option><option>不归入作品</option></select>
+            <h3 style="margin-top:14px">输出方案</h3>
+            <div class="row" style="flex-wrap:wrap"><label class="chip"><input type="checkbox" checked> 中日双语 ASS</label><label class="chip"><input type="checkbox" checked> 日语学习（振假名）</label><label class="chip"><input type="checkbox"> 中英双语 ASS</label><label class="chip"><input type="checkbox"> 纯中文 SRT</label><label class="chip"><input type="checkbox"> 中文学习（拼音）</label></div>
+            <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn">仅识别，稍后翻译</button><button class="btn pri" onclick="go('pipeline')">创建并开始</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="sect-gap"></div>
+      <div class="card">
+        <h3>最近项目</h3>
+        <table class="tb"><thead><tr><th>文件</th><th>作品</th><th>语言</th><th>进度</th><th>更新</th></tr></thead><tbody>
+          <tr><td>海辺の暮らし_第3集.ts</td><td>海辺の暮らし</td><td>日→简中</td><td><span class="chip warn">待审校 4</span></td><td class="dim">刚刚</td></tr>
+          <tr><td>海辺の暮らし_第2集.ts</td><td>海辺の暮らし</td><td>日→简中</td><td><span class="chip ok">已导出</span></td><td class="dim">昨天</td></tr>
+          <tr><td>tech_talk_2026.mp4</td><td>—</td><td>英→简中、日</td><td><span class="chip">翻译中 62%</span></td><td class="dim">3 天前</td></tr>
+        </tbody></table>
+      </div>
+    </div></section>
+
+    <!-- ============ 流程 ============ -->
+    <section class="view" id="v-pipeline"><div class="wide">
+      <div class="row" style="margin-bottom:12px"><h2 style="margin:0">流程</h2><span class="dim">改动任何参数，只重做受影响的步骤</span><span style="flex:1"></span><button class="btn pri" id="runBtn" onclick="runPipeline()">▶ 运行</button></div>
+      <div id="staleBanner"></div>
+      <div class="grid3" id="srcCards"></div>
+      <div class="sect-gap"></div>
+      <div class="card"><h3>步骤</h3><div class="dag" id="dag"></div></div>
+      <div class="sect-gap"></div>
+      <div class="grid2" style="grid-template-columns:1.2fr .8fr">
+        <div class="card"><h3>融合结果</h3><div id="stats"></div></div>
+        <div class="card"><h3>日志</h3><div class="log" id="log"></div></div>
+      </div>
+    </div></section>
+
+    <!-- ============ 审校 ============ -->
+    <section class="view" id="v-editor">
+      <div class="player">
+        <div class="frame" id="edFrame"></div>
+        <div class="pctl">
+          <button class="iconbtn" title="上一条 (J)" onclick="stepCue(-1)">⏮</button>
+          <button class="iconbtn big" id="playBtn" title="播放/暂停 (空格)" onclick="togglePlay()">▶</button>
+          <button class="iconbtn" title="下一条 (K)" onclick="stepCue(1)">⏭</button>
+          <span class="time" id="timeLbl">00:00.0 / 01:00.0</span>
+          <label class="row dim" style="gap:5px"><input type="checkbox" id="showBoxes"> 识别框</label>
+          <label class="row dim" style="gap:5px"><input type="checkbox" id="showSubs" checked> 字幕</label>
+          <div class="prof row">预览方案 <select class="inp" id="edProfile" style="width:auto"></select></div>
+        </div>
+      </div>
+      <div class="timeline">
+        <div class="tl-labels">
+          <div class="rl"></div>
+          <div class="wv"><i style="background:#666"></i>波形</div>
+          <div><i style="background:var(--c-sub)"></i>字幕</div>
+          <div><i style="background:var(--c-ocr)"></i>画面字</div>
+          <div><i style="background:var(--c-asr)"></i>语音</div>
+          <div><i style="background:var(--c-fuse)"></i>融合原文</div>
+          <div><i style="background:var(--c-tr)"></i>译文</div>
+        </div>
+        <div class="tl-scroll" id="tlScroll"><div class="tl-inner" id="tlInner"></div></div>
+      </div>
+      <div class="cuelist">
+        <div class="hd"><b>字幕</b><div class="seg" id="cueFilter"></div><span style="flex:1"></span><span class="dim">J/K 上下条 · 空格播放 · 点击行跳转</span></div>
+        <div class="bd"><table class="tb"><thead><tr><th></th><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead><tbody id="cueRows"></tbody></table></div>
+      </div>
+      <aside class="inspector" id="inspector"></aside>
+    </section>
+
+    <!-- ============ 图层样式 ============ -->
+    <section class="view" id="v-layers">
+      <div class="lyside">
+        <div class="card">
+          <div class="row" style="margin-bottom:10px"><h3 style="margin:0">输出方案</h3><span style="flex:1"></span><button class="btn sm" onclick="toast('原型：复制当前方案')">复制</button><button class="btn sm" onclick="toast('原型：新建方案')">＋ 新建</button></div>
+          <select class="inp" id="lyProfile"></select>
+          <div class="row dim" style="margin-top:6px;font-size:12px" id="lyProfMeta"></div>
+        </div>
+        <div class="card">
+          <div class="row" style="margin-bottom:8px"><h3 style="margin:0">图层</h3><span class="dim" style="font-size:12px">上 → 下 即画面中从上到下</span></div>
+          <div id="lyList"></div>
+          <div class="row" id="lyAdd" style="flex-wrap:wrap;margin-top:4px"></div>
+        </div>
+        <div class="card" id="lyEditor"></div>
+        <div class="card" id="lyRules"></div>
+      </div>
+      <div class="lyprev">
+        <div class="frame" id="lyFrame"></div>
+        <div class="row"><button class="iconbtn" id="lyPlay" onclick="togglePlay()">▶</button><input type="range" id="lyScrub" min="0" max="60" step="0.1"><span class="time dim" id="lyTime" style="min-width:60px"></span></div>
+        <div class="samples" id="lySamples"></div>
+        <div class="card dim" style="font-size:12px">左侧任何改动都会实时反映在这里，只影响「注音 / 排版输出」两步，不会重新识别或翻译。ASS 的注音靠逐字定位实现，播放器必须用同一字体，导出时可选封装字体。</div>
+      </div>
+    </section>
+
+    <!-- ============ 术语 ============ -->
+    <section class="view" id="v-glossary"><div class="wide">
+      <div class="row" style="margin-bottom:12px"><h2 style="margin:0">术语与风格</h2><span class="chip">作品：海辺の暮らし</span><span class="dim">这里的设置会被该作品的所有集数共享</span></div>
+      <div class="grid2" style="grid-template-columns:.9fr 1.1fr">
+        <div>
+          <div class="card">
+            <h3>节目说明（会告诉大模型）</h3>
+            <textarea class="inp" rows="4" oninput="markStale('llm','术语/风格')">北海道沿海渔村的系列纪录片。采访对象多为老年渔民，说北海道浜言葉（方言）。旁白语气平实，「語り」为解说员。</textarea>
+            <div class="sect-gap"></div>
+            <h3>本集概要 <span class="dim" style="font-weight:400">（大模型生成，可修改）</span></h3>
+            <textarea class="inp" rows="3">积丹町的冬季鲷鱼渔业。72 岁渔夫佐藤健一讲述五十年出海经历、对孙子接班的期待；春季海胆捕捞即将开始。</textarea>
+          </div>
+          <div class="sect-gap"></div>
+          <div class="card">
+            <h3>翻译风格</h3>
+            <div class="kv">
+              <span class="lbl">台词</span><div class="seg"><button class="on">自然口语</button><button>贴近原文</button></div>
+              <span class="lbl">旁白</span><div class="seg"><button>口语</button><button class="on">书面流畅</button></div>
+              <span class="lbl">方言</span><select class="inp"><option>译成自然口语，不加注</option><option>保留方言味（用北方口语）</option><option>加译注</option></select>
+              <span class="lbl">人名</span><select class="inp"><option>汉字名保留，假名名音译</option><option>全部音译</option></select>
+              <span class="lbl">附加要求</span><input class="inp" value="数字用阿拉伯数字；“さん”不译">
+            </div>
+          </div>
+          <div class="sect-gap"></div>
+          <div class="card">
+            <h3>读音词典 <span class="dim" style="font-weight:400">— 注音时优先使用；审校里改的读音会记到这里</span></h3>
+            <table class="tb"><thead><tr><th>写法</th><th>读音</th><th>范围</th></tr></thead><tbody id="dictRows"></tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="margin-bottom:8px"><h3 style="margin:0">术语表</h3><span class="dim">本集新增 6 · 继承 38</span><span style="flex:1"></span><input class="inp" placeholder="搜索…" style="width:160px"><button class="btn sm" onclick="toast('原型：新增术语')">＋ 新增</button></div>
+          <table class="tb"><thead><tr><th>原文</th><th>读音</th><th>译文</th><th>类型</th><th>来源</th></tr></thead><tbody id="termRows"></tbody></table>
+        </div>
+      </div>
+    </div></section>
+
+    <!-- ============ 导出 ============ -->
+    <section class="view" id="v-export"><div class="wide">
+      <h2>导出</h2>
+      <div class="grid2" style="grid-template-columns:1.25fr .75fr">
+        <div class="card"><h3>输出方案</h3><div id="expList"></div>
+          <div class="prof-card" style="opacity:.55"><input type="checkbox" disabled><div><b>TTML / IMSC（原生注音）</b><div class="dim" style="font-size:12px">P2 · 适合流媒体平台交付</div></div><span class="fmt">TTML</span></div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>输出位置</h3>
+            <div class="field"><label>目录</label><input class="inp" value="与视频相同目录"></div>
+            <div class="field"><label>文件名模板</label><input class="inp" value="{stem}.{profile}.{ext}"></div>
+            <label class="row"><input type="checkbox" checked> 同时导出日文合并字幕（按来源上色，方便检查）</label>
+          </div>
+          <div class="sect-gap"></div>
+          <div class="card">
+            <h3>封装 / 压制</h3>
+            <div class="seg" style="margin-bottom:10px"><button class="on">只要字幕文件</button><button>封装 MKV（附字体）</button><button>硬字幕压制</button></div>
+            <div class="kv">
+              <span class="lbl">压制方案</span><select class="inp"><option>中日双语</option><option>日语学习</option></select>
+              <span class="lbl">编码</span><select class="inp"><option>H.264 · NVENC · CQ 20</option><option>H.265 · NVENC</option><option>x264 · CRF 18（CPU）</option></select>
+              <span class="lbl">分辨率</span><select class="inp"><option>保持原始（3840×2160）</option><option>1920×1080</option></select>
+            </div>
+            <div class="banner" style="margin:12px 0 0;font-size:12px">ASS 注音依赖字体度量：在别的电脑上用不同字体播放会错位。建议封装字体或压制。</div>
+          </div>
+          <div class="sect-gap"></div>
+          <button class="btn pri" style="width:100%;justify-content:center;padding:10px" onclick="doExport()">导出所选方案</button>
+          <div id="expResult" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </div></section>
+
+    <!-- ============ 设置 ============ -->
+    <section class="view" id="v-settings"><div class="wide">
+      <h2>设置</h2>
+      <div class="grid2">
+        <div class="card">
+          <h3>语音识别模型</h3>
+          <table class="tb"><thead><tr><th>模型</th><th>大小</th><th>状态</th></tr></thead><tbody>
+            <tr><td>faster-whisper large-v3</td><td>2.9 GB</td><td><span class="chip ok">已下载</span></td></tr>
+            <tr><td>kotoba-whisper v2.0（日语）</td><td>1.5 GB</td><td><span class="chip ok">已下载</span></td></tr>
+            <tr><td>faster-whisper large-v3-turbo</td><td>1.6 GB</td><td><button class="btn sm">下载</button></td></tr>
+            <tr><td>云端 ASR（OpenAI 兼容）</td><td>—</td><td><button class="btn sm">配置</button></td></tr>
+          </tbody></table>
+          <div class="field" style="margin-top:10px"><label>模型下载镜像</label><input class="inp" value="https://hf-mirror.com"></div>
+        </div>
+        <div class="card">
+          <h3>大模型接口</h3>
+          <table class="tb"><thead><tr><th>名称</th><th>模型</th><th>用途</th><th></th></tr></thead><tbody>
+            <tr><td>DeepSeek</td><td>deepseek-chat</td><td><span class="chip acc">翻译</span> <span class="chip">术语表</span></td><td><button class="btn sm">编辑</button></td></tr>
+            <tr><td>阿里百炼</td><td>qwen-vl-max</td><td><span class="chip">画面字复核</span></td><td><button class="btn sm">编辑</button></td></tr>
+            <tr><td>本地 Ollama</td><td>qwen2.5:14b</td><td><span class="chip">备用</span></td><td><button class="btn sm">编辑</button></td></tr>
+            <tr><td>外部助手</td><td>导出任务文件</td><td><span class="chip">离线翻译</span></td><td><button class="btn sm">编辑</button></td></tr>
+          </tbody></table>
+          <div class="dim" style="margin-top:8px;font-size:12px">API Key 保存在系统凭据库，不写入项目文件。并发 4 · 每段 150 秒 · 超时 180 秒</div>
+        </div>
+        <div class="card">
+          <h3>画面字识别</h3>
+          <div class="kv"><span class="lbl">引擎</span><select class="inp"><option>RapidOCR（ONNX，已安装）</option><option>PaddleOCR（未安装）</option></select>
+          <span class="lbl">模型大小</span><div class="seg"><button>小</button><button class="on">中</button><button>大</button></div>
+          <span class="lbl">硬件解码</span><label class="switch"><input type="checkbox" checked><span></span></label></div>
+        </div>
+        <div class="card">
+          <h3>环境</h3>
+          <div class="kv">
+            <span class="lbl">GPU</span><span><span class="chip ok">NVIDIA RTX 3060 12GB · CUDA 12.4</span></span>
+            <span class="lbl">ffmpeg</span><span><span class="chip ok">7.1 · NVENC 可用</span></span>
+            <span class="lbl">缓存目录</span><input class="inp" value="视频同目录 / *.nyasub/">
+            <span class="lbl">界面</span><select class="inp"><option>简体中文</option><option>日本語</option><option>English</option></select>
+          </div>
+        </div>
+      </div>
+    </div></section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ===================== 示例数据 ===================== */
+const DUR = 60;
+// 候选条目：c=字幕 o=画面字 a=语音。burn=画面上实际烧录的文字（OCR 可能认错）
+const CANDS = [
+  {id:'c1',src:'c',s:0.9,e:4.5,text:'冬の朝、漁師たちは日の出前に港へ向かう'},
+  {id:'a1',src:'a',s:1.0,e:4.4,text:'冬の朝漁師たちは日の出前に港へ向かう',conf:.94},
+  {id:'o8',src:'o',s:0,e:60,text:'NYA TV 4K',rect:[.835,.045,.965,.1],st:'logo',drop:'台标/水印',conf:.88},
+  {id:'o1',src:'o',s:5.0,e:7.6,text:'北海道・積丹町',rect:[.04,.07,.27,.15],st:'info',conf:.97},
+  {id:'o2',src:'o',s:8.0,e:11.2,text:'漁師　佐藤健一さん(72)',rect:[.05,.70,.34,.765],st:'name',conf:.95},
+  {id:'o3',src:'o',s:8.4,e:12.6,text:'わしゃあ　もう五十年\n海に出とる',rect:[.30,.79,.70,.94],st:'telop',conf:.93},
+  {id:'a2',src:'a',s:8.6,e:12.3,text:'わしゃもう50年海に出とる',conf:.71},
+  {id:'c2',src:'c',s:13.0,e:14.0,text:'この港では'},
+  {id:'o4',src:'o',s:14.0,e:15.4,text:'昔から鯛漁が盛んです',rect:[.31,.84,.69,.92],st:'telop',conf:.90},
+  {id:'a3',src:'a',s:16.0,e:18.0,text:'よいしょっと',conf:.62},
+  {id:'o5',src:'o',s:18.6,e:22.4,text:'綱を引く手が冷たくてね',burn:'網を引く手が冷たくてね',rect:[.29,.84,.71,.92],st:'telop',conf:.72},
+  {id:'a4',src:'a',s:18.8,e:22.1,text:'網を引く手が冷たくてね',conf:.83},
+  {id:'c3',src:'c',s:23.0,e:26.0,text:'（波の音）'},
+  {id:'o9',src:'o',s:23.0,e:32.0,text:'鮮魚 大漁丸',rect:[.12,.36,.31,.49],st:'sign',drop:'实物上的字（招牌）',conf:.81},
+  {id:'c4',src:'c',s:27.0,e:31.5,text:'水揚げされた鯛は　その日のうちに競りにかけられる'},
+  {id:'a5',src:'a',s:27.2,e:31.2,text:'水揚げされた鯛はその日のうちに競りにかけられる',conf:.92},
+  {id:'c5',src:'c',s:32.0,e:35.0,text:'今年の鯛は脂がのっとる'},
+  {id:'a6',src:'a',s:32.1,e:34.8,text:'今年の台は油が乗っとる',conf:.58},
+  {id:'c6',src:'c',s:36.0,e:40.0,text:'♪海よ　我が故郷よ'},
+  {id:'o6',src:'o',s:41.0,e:42.8,text:'孫が継いでくれたら',rect:[.32,.84,.68,.92],st:'telop',conf:.92},
+  {id:'c7',src:'c',s:42.8,e:44.5,text:'嬉しいけどな'},
+  {id:'o7',src:'o',s:45.2,e:48.0,text:'積丹岬',rect:[.885,.18,.945,.58],st:'vinfo',conf:.96},
+  {id:'c8',src:'c',s:48.5,e:52.0,text:'春になれば　ウニ漁の季節が始まる'},
+  {id:'a7',src:'a',s:48.6,e:51.8,text:'春になればウニ漁の季節が始まる',conf:.9},
+  {id:'a8',src:'a',s:53.0,e:57.5,text:'それまでは網の手入れだな',conf:.77},
+];
+// 原文标记：词用 / 分隔；漢字[よみ]；#n=JLPT 级别；!=专有名词；^=助词
+const CUES = [
+  {id:'q1',s:.8,e:4.6,type:'narration',spk:'旁白',src:['c1','a1'],onscreen:false,
+   o:'冬[ふゆ]#4/の^/朝[あさ]#5/、/漁師[りょうし]#1/たち/は^/日[ひ]の出[で]#4/前[まえ]#5/に^/港[みなと]#3/へ^/向[む]かう#4',
+   zh:'冬日清晨　渔夫们在日出前赶往港口',py:'dōng rì qīng chén yú fū men zài rì chū qián gǎn wǎng gǎng kǒu',
+   alts:['冬天的早晨　渔夫们赶在日出前前往港口','冬日清晨　渔夫们天不亮就往港口去']},
+  {id:'q2',s:5.0,e:7.6,type:'info',spk:'',src:['o1'],onscreen:true,rect:'o1',
+   o:'北海道[ほっかいどう]!/・/積丹[しゃこたん]町[ちょう]!',zh:'北海道积丹町',py:'běi hǎi dào jī dān tǐng',alts:['北海道　积丹町']},
+  {id:'q3',s:8.0,e:11.2,type:'name',spk:'',src:['o2'],onscreen:true,rect:'o2',
+   o:'漁師[りょうし]#1/　/佐藤[さとう]!/健一[けんいち]!/さん/（/72/）',zh:'渔夫　佐藤健一（72岁）',py:'yú fū zuǒ téng jiàn yī suì',alts:['渔民　佐藤健一（72岁）']},
+  {id:'q4',s:8.4,e:12.6,type:'dialogue',spk:'佐藤',src:['o3','a2'],onscreen:true,
+   o:'わしゃあ/　/もう/五十年[ごじゅうねん]#5/　/海[うみ]#5/に^/出[で]とる#5',zh:'我出海已经五十年了',py:'wǒ chū hǎi yǐ jīng wǔ shí nián le',
+   alts:['我都出海五十年喽','俺打鱼已经五十年了']},
+  {id:'q5',s:13.0,e:15.4,type:'narration',spk:'旁白',src:['c2','o4'],onscreen:false,
+   o:'この/港[みなと]#3/では^/昔[むかし]#3/から^/鯛漁[たいりょう]#1/が^/盛[さか]ん#2/です',zh:'这个港口自古以来就盛行捕鲷鱼',py:'zhè gè gǎng kǒu zì gǔ yǐ lái jiù shèng xíng bǔ diāo yú',
+   alts:['这座港口自古就以捕鲷鱼闻名','这个港口从前起鲷鱼捕捞就很兴旺']},
+  {id:'q6',s:16.0,e:18.0,type:'dialogue',spk:'佐藤',src:['a3'],onscreen:false,flags:['asr_only'],review:'todo',
+   o:'よいしょっと',zh:'嘿咻',py:'hēi xiū',alts:['嘿哟','嘿呦一声']},
+  {id:'q7',s:18.6,e:22.4,type:'dialogue',spk:'佐藤',src:['o5','a4'],onscreen:true,flags:['ocr_low_conf'],review:'todo',
+   o:'網[あみ]#2/を^/引[ひ]く#4/手[て]#5/が^/冷[つめ]たくて#4/ね',zh:'拉网的手冻得冰凉啊',py:'lā wǎng de shǒu dòng de bīng liáng a',
+   alts:['拉网的手冻得冰冷呢','拽网的手可真凉啊']},
+  {id:'q8',s:23.0,e:26.0,type:'sfx',spk:'',src:['c3'],onscreen:false,
+   o:'（/波[なみ]#3/の^/音[おと]#5/）',zh:'（海浪声）',py:'hǎi làng shēng',alts:['（浪声）']},
+  {id:'q9',s:27.0,e:31.5,type:'narration',spk:'旁白',src:['c4','a5'],onscreen:false,
+   o:'水揚[みずあ]げ#1/された/鯛[たい]#1/は^/、/その/日[ひ]#5/の^/うち/に^/競[せ]り#1/に^/かけられる',zh:'捕捞上岸的鲷鱼　当天就会被拿去拍卖',py:'bǔ lāo shàng àn de diāo yú dàng tiān jiù huì bèi ná qù pāi mài',
+   alts:['上岸的鲷鱼　当天就会进行拍卖','捕上来的鲷鱼当天就会被竞拍']},
+  {id:'q10',s:32.0,e:35.0,type:'dialogue',spk:'佐藤',src:['c5','a6'],onscreen:false,flags:['conflict'],review:'todo',
+   o:'今年[ことし]#5/の^/鯛[たい]#1/は^/脂[あぶら]#2/が^/のっとる',zh:'今年的鲷鱼很肥美',py:'jīn nián de diāo yú hěn féi měi',
+   alts:['今年的鲷鱼油脂丰厚','今年的鲷鱼可肥了']},
+  {id:'q11',s:36.0,e:40.0,type:'song',spk:'',src:['c6'],onscreen:false,
+   o:'♪/　/海[うみ]#5/よ^/　/我[わ]#1/が^/故郷[ふるさと]#2/よ^',zh:'♪ 大海啊　我的故乡',py:'dà hǎi a wǒ de gù xiāng',alts:['♪ 大海哟　我的故乡']},
+  {id:'q12',s:41.0,e:44.5,type:'dialogue',spk:'佐藤',src:['o6','c7'],onscreen:false,
+   o:'孫[まご]#2/が^/継[つ]いで#1/くれたら/　/嬉[うれ]しい#3/けど/な',zh:'要是孙子能接班　我就高兴了',py:'yào shì sūn zi néng jiē bān wǒ jiù gāo xìng le',
+   alts:['孙子要是能接手　我就高兴了','要是孙子肯接班　那该多好']},
+  {id:'q13',s:45.2,e:48.0,type:'info',spk:'',src:['o7'],onscreen:true,rect:'o7',
+   o:'積丹[しゃこたん]岬[みさき]!',zh:'积丹岬',py:'jī dān jiǎ',alts:['积丹岬角']},
+  {id:'q14',s:48.5,e:52.0,type:'narration',spk:'旁白',src:['c8','a7'],onscreen:false,
+   o:'春[はる]#4/に^/なれば/、/ウニ/漁[りょう]#1/の^/季節[きせつ]#3/が^/始[はじ]まる#4',zh:'到了春天　海胆捕捞季就开始了',py:'dào le chūn tiān hǎi dǎn bǔ lāo jì jiù kāi shǐ le',
+   alts:['一到春天　海胆捕捞季就来了','春天一到　就是捕海胆的季节']},
+  {id:'q15',s:53.0,e:57.5,type:'dialogue',spk:'佐藤',src:['a8'],onscreen:false,flags:['asr_only','reading_guess'],review:'todo',
+   o:'それ/まで/は^/網[あみ]#2/の^/手入[てい]れ#1/だ/な',zh:'在那之前得先修补渔网',py:'zài nà zhī qián děi xiān xiū bǔ yú wǎng',
+   alts:['那之前得先把网修好','在那之前要整理渔网']},
+];
+const EN = {
+  q1:'On winter mornings, the fishermen head to the harbor before dawn.', q2:'Shakotan, Hokkaido', q3:'Fisherman Kenichi Sato (72)',
+  q4:"I've been going out to sea for fifty years.", q5:'This port has long been known for sea bream fishing.', q6:'Heave-ho!',
+  q7:'My hands get so cold hauling the nets.', q8:'(Waves crashing)', q9:'The landed sea bream go to auction that same day.',
+  q10:"This year's sea bream are nice and fatty.", q11:'♪ O sea, my homeland', q12:"I'd be happy if my grandson took over.",
+  q13:'Cape Shakotan', q14:'When spring comes, sea urchin season begins.', q15:"Until then, it's mending the nets.",
+};
+CUES.forEach(c => c.en = EN[c.id]);
+const TYPE_LBL = {dialogue:'台词',narration:'旁白',info:'说明',name:'人名条',title:'标题',song:'歌词',sfx:'音效'};
+const FLAG_LBL = {asr_only:'仅语音',ocr_low_conf:'OCR 低置信',conflict:'来源冲突',reading_guess:'读音待确认',cps_high:'语速过快'};
+const SRC_LBL = {c:'字幕',o:'画面字',a:'语音'};
+const SHOTS = [0,8,16,23,32,41,48.5,53];
+
+const DICT = [['積丹','しゃこたん','作品'],['水揚げ','みずあげ','作品'],['佐藤健一','さとうけんいち','作品'],['浜言葉','はまことば','作品']];
+const TERMS = [
+  ['積丹町','しゃこたんちょう','积丹町','地名','大模型'],['積丹岬','しゃこたんみさき','积丹岬','地名','大模型'],
+  ['佐藤健一','さとうけんいち','佐藤健一','人名','画面字'],['鯛漁','たいりょう','捕鲷鱼','事物','大模型'],
+  ['競り','せり','拍卖','事物','继承'],['ウニ漁','うにりょう','海胆捕捞','事物','继承'],
+  ['のっとる','—','（脂）肥美 ＝乗っている','方言','继承'],['わしゃ','—','我（老年男性自称）','方言','继承'],
+  ['〜とる','—','〜ている（进行/状态）','方言','继承'],['水揚げ','みずあげ','捕捞上岸','事物','继承'],
+];
+
+/* ===================== 工具 ===================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = t => { const m = Math.floor(t / 60), s = t - m * 60; return String(m).padStart(2,'0') + ':' + s.toFixed(1).padStart(4,'0'); };
+const candById = Object.fromEntries(CANDS.map(c => [c.id, c]));
+let toastTimer;
+function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 2200); }
+
+function parseOrig(str){
+  return str.split('/').map(w => {
+    const m = {lv:0, p:false, part:false};
+    const lv = w.match(/#(\d)$/); if (lv){ m.lv = +lv[1]; w = w.slice(0, -2); }
+    if (w.endsWith('!')){ m.p = true; w = w.slice(0, -1); }
+    if (w.endsWith('^')){ m.part = true; w = w.slice(0, -1); }
+    const segs = [], re = /([㐀-鿿々〆ヶ]+)\[([^\]]+)\]/g; let last = 0, r;
+    while ((r = re.exec(w))){ if (r.index > last) segs.push([w.slice(last, r.index)]); segs.push([r[1], r[2]]); last = re.lastIndex; }
+    if (last < w.length) segs.push([w.slice(last)]);
+    return {...m, segs, surface: segs.map(s => s[0]).join('')};
+  });
+}
+CUES.forEach(c => {
+  c.words = parseOrig(c.o); c.text = c.words.map(w => w.surface).join('');
+  c.flags = c.flags || []; c.review = c.review || 'ok';
+  if (typeof c.rect === 'string') c.rect = candById[c.rect].rect;
+});
+const firstSeen = {};
+CUES.forEach(c => c.words.forEach(w => { if (w.segs.some(s => s[1]) && !(w.surface in firstSeen)) firstSeen[w.surface] = c.id; }));
+const cueOfCand = {}; CUES.forEach(c => c.src.forEach(id => cueOfCand[id] = c.id));
+
+/* 假名 / 罗马字 / 拼音 */
+const KANA = {};
+'あa いi うu えe おo かka きki くku けke こko さsa しshi すsu せse そso たta ちchi つtsu てte とto なna にni ぬnu ねne のno はha ひhi ふfu へhe ほho まma みmi むmu めme もmo やya ゆyu よyo らra りri るru れre ろro わwa をo んn がga ぎgi ぐgu げge ごgo ざza じji ずzu ぜze ぞzo だda ぢji づzu でde どdo ばba びbi ぶbu べbe ぼbo ぱpa ぴpi ぷpu ぺpe ぽpo ぁa ぃi ぅu ぇe ぉo'
+  .split(' ').forEach(p => KANA[p[0]] = p.slice(1));
+const PUN = {'、':', ','。':'. ','・':' ','　':' ','（':'(','）':')','？':'?','！':'!'};
+const toHira = s => s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+const toKata = s => s.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+function romaji(s){
+  s = toHira(s); let out = '';
+  for (let i = 0; i < s.length; i++){
+    const c = s[i], n = s[i + 1];
+    if (c === 'っ'){ const nx = KANA[n] || ''; out += nx.startsWith('ch') ? 't' : (nx[0] || ''); continue; }
+    if (c === 'ー'){ const v = out.slice(-1); if ('aeiou'.includes(v)) out += v; continue; }
+    let r = KANA[c];
+    if (r === undefined){ out += PUN[c] ?? c; continue; }
+    if (n && 'ゃゅょ'.includes(n)){ const v = {'ゃ':'a','ゅ':'u','ょ':'o'}[n]; r = /^(shi|chi|ji)$/.test(r) ? r.slice(0, -1) + v : r.slice(0, -1) + 'y' + v; i++; }
+    out += r;
+  }
+  return out;
+}
+function romajiLine(cue){
+  return cue.words.map(w => {
+    let r = romaji(w.segs.map(s => s[1] || s[0]).join(''));
+    if (w.part && /は$/.test(w.surface)) r = r.replace(/ha$/, 'wa');
+    if (w.part && w.surface === 'へ') r = 'e';
+    if (w.p && r) r = r[0].toUpperCase() + r.slice(1);
+    return r;
+  }).join(' ').replace(/\s+([,.)!?])/g, '$1').replace(/\(\s+/g, '(').replace(/\s+/g, ' ').trim();
+}
+const TONE = {'ā':['a',1],'á':['a',2],'ǎ':['a',3],'à':['a',4],'ē':['e',1],'é':['e',2],'ě':['e',3],'è':['e',4],'ī':['i',1],'í':['i',2],'ǐ':['i',3],'ì':['i',4],'ō':['o',1],'ó':['o',2],'ǒ':['o',3],'ò':['o',4],'ū':['u',1],'ú':['u',2],'ǔ':['u',3],'ù':['u',4],'ǖ':['ü',1],'ǘ':['ü',2],'ǚ':['ü',3],'ǜ':['ü',4]};
+function tone(s, style){
+  if (style === 'mark') return s;
+  let n = 0, out = '';
+  for (const ch of s){ if (TONE[ch]){ out += TONE[ch][0]; n = TONE[ch][1]; } else out += ch; }
+  return style === 'num' ? out + (n || '') : out;
+}
+const isHan = ch => /[㐀-鿿]/.test(ch);
+
+/* ===================== 输出方案 / 图层 ===================== */
+const SOURCE = 'ja', TARGETS = ['zh-Hans', 'en'];
+// 语言包目录：每门语言能用哪些注音 / 整行转写（正式产品里由 GET /api/langs 提供）
+const LANGS = {
+  ja:{name:'日语', annot:[['furigana', '振假名']], translit:'罗马字', font:'Yu Gothic', max:30},
+  'zh-Hans':{name:'简体中文', annot:[['pinyin', '拼音'], ['zhuyin', '注音符号']], translit:'整行拼音', font:'Microsoft YaHei', max:16},
+  en:{name:'英语', annot:[], translit:null, font:'Segoe UI', max:42},
+};
+const L = o => Object.assign({lang:'zh-Hans', font:'Microsoft YaHei', size:46, color:'#ffffff', outline:'#111111', ow:3, shadow:true, bold:false, maxChars:16}, o, {ruby:Object.assign({kind:'none'}, o.ruby)});
+const FURI = o => Object.assign({kind:'furigana', scope:'difficult', level:2, script:'hira', size:.5, color:'#ffffff'}, o);
+const PIN = o => Object.assign({kind:'pinyin', tone:'mark', size:.42, color:'#ffd6a0'}, o);
+const ZHU = o => Object.assign({kind:'zhuyin', size:.36, color:'#ffd6a0'}, o);
+const MAKE = {furigana:FURI, pinyin:PIN, zhuyin:ZHU};
+// 图层 = 角色（kind）× 语言（lang）；转写层用 of 指定转写哪种语言的那一层
+const ORIG = o => L(Object.assign({id:'orig', kind:'original', lang:SOURCE, show:'auto', font:'Yu Gothic', size:34, color:'#e6e6e6', ow:2.4, maxChars:30}, o));
+const TR = o => L(Object.assign({id:'tr', kind:'translation', show:'on'}, o));
+const TL = o => L(Object.assign({id:'tl', kind:'translit', of:SOURCE, show:'off', font:'Segoe UI', size:24, color:'#a8d8ff', ow:2}, o));
+const PROFILES = {
+  bi:{name:'中日双语', fmt:'ASS', file:'{stem}.zh-ja.ass', info:'near', avoid:true, export:true, layers:[
+    TR({size:54}), ORIG({ruby:FURI({})}), TL({}),
+  ], infoStyle:L({size:38, color:'#ffe680', ow:2.4})},
+  zhen:{name:'中英双语', fmt:'ASS', file:'{stem}.zh-en.ass', info:'near', avoid:true, export:false, layers:[
+    TR({size:50}), TR({id:'tr2', lang:'en', font:'Segoe UI', size:32, color:'#d8e6ff', ow:2.2, maxChars:42}), ORIG({show:'off'}),
+  ], infoStyle:L({size:36, color:'#ffe680', ow:2.4})},
+  learn:{name:'日语学习', fmt:'ASS', file:'{stem}.ja-ruby.ass', info:'near', avoid:true, export:true, layers:[
+    ORIG({show:'on', size:50, maxChars:24, bold:true, color:'#ffffff', ow:3, ruby:FURI({scope:'all', size:.48, color:'#ffe9a8'})}),
+    TL({show:'on'}),
+    TR({size:30, color:'#cfe3ff', ow:2.2, maxChars:24}),
+  ], infoStyle:L({size:34, color:'#ffe680', ow:2.4})},
+  zh:{name:'纯中文', fmt:'SRT', file:'{stem}.zh.srt', info:'top', avoid:false, export:false, layers:[
+    TR({size:52}), ORIG({show:'off'}),
+  ], infoStyle:L({size:44, color:'#ffffff'})},
+  py:{name:'中文学习（拼音）', fmt:'ASS', file:'{stem}.zh-pinyin.ass', info:'near', avoid:true, export:false, layers:[
+    TR({size:50, font:'楷体', ruby:PIN({})}), ORIG({size:30, color:'#dddddd', ow:2.2}), TL({of:'zh-Hans'}),
+  ], infoStyle:L({size:38, color:'#ffe680', ow:2.4})},
+};
+const layerName = ly => ly.kind === 'original' ? '原文 · ' + LANGS[ly.lang].name
+  : ly.kind === 'translation' ? '译文 · ' + LANGS[ly.lang].name
+  : LANGS[ly.of].translit + '（' + (ly.of === SOURCE ? '原文' : '译文') + '）';
+const annotLabel = ly => ly.kind === 'translit' ? '' : ((LANGS[ly.lang].annot.find(a => a[0] === ly.ruby.kind) || [])[1] || '');
+let LUID = 0;
+const FONTS = {
+  'Microsoft YaHei':'"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif',
+  '思源黑体':'"Source Han Sans SC","Noto Sans CJK SC","Noto Sans SC","Microsoft YaHei",sans-serif',
+  '楷体':'KaiTi,STKaiti,"Kaiti SC",serif',
+  'Yu Gothic':'"Yu Gothic","YuGothic","Hiragino Sans","Noto Sans JP",sans-serif',
+  'Meiryo':'Meiryo,"Hiragino Sans",sans-serif',
+  'Yu Mincho':'"Yu Mincho","YuMincho","Hiragino Mincho ProN",serif',
+  'Segoe UI':'"Segoe UI",Arial,sans-serif',
+};
+
+/* ===================== 状态 ===================== */
+const S = {view:'editor', t:9.6, playing:false, sel:'q4', profile:'bi', lyLayer:'orig', filter:'all', showBoxes:false, showSubs:true, pps:26, ver:0};
+const bump = () => { S.ver++; refreshFrames(true); };
+
+/* ===================== 画面 ===================== */
+function shotIdx(t){ let i = 0; SHOTS.forEach((s, k) => { if (t >= s) i = k; }); return i; }
+function sceneHTML(i){
+  const person = (x, hue) => `<div class="shape" style="left:${x}%;bottom:0;width:22%;height:62%"><div style="position:absolute;left:28%;top:0;width:44%;aspect-ratio:1;border-radius:50%;background:hsl(${hue},18%,22%)"></div><div style="position:absolute;left:0;right:0;bottom:0;height:62%;border-radius:45% 45% 0 0;background:hsl(${hue},22%,16%)"></div></div>`;
+  const boat = `<div class="shape" style="left:46%;top:49%;width:30%;height:13%;background:#1d2733;clip-path:polygon(0 30%,100% 30%,88% 100%,10% 100%)"></div><div class="shape" style="left:58%;top:30%;width:1%;height:22%;background:#1d2733"></div><div class="shape" style="left:52%;top:41%;width:9%;height:9%;background:#26333f"></div>`;
+  switch (i){
+    case 0: return `<div class="sky" style="background:linear-gradient(#2b2350,#8e4f6f 60%,#f08a5d)"></div><div class="sun" style="left:62%;top:44%;width:9%;aspect-ratio:1;background:radial-gradient(#ffe3a3,#f6a05a 60%,#f6a05a00 72%)"></div><div class="sea" style="background:linear-gradient(#3b3f6b,#141b33)"></div><div class="shape" style="left:8%;top:47%;width:26%;height:12%;background:#191b2c;clip-path:polygon(0 100%,10% 40%,30% 55%,55% 20%,80% 50%,100% 100%)"></div>`;
+    case 1: return `<div class="bgfill" style="background:radial-gradient(circle at 70% 30%,#8a6a4a,#3b2c22 60%,#211913)"></div>${person(38, 30)}`;
+    case 2: return `<div class="sky" style="background:linear-gradient(#7fb6d6,#cfe6f0)"></div><div class="sea" style="background:linear-gradient(#2a7f9e,#0f3d55)"></div>${boat}`;
+    case 3: return `<div class="bgfill" style="background:linear-gradient(#4a3424,#2a1d14)"></div><div class="shape" style="left:0;right:0;bottom:0;height:34%;background:linear-gradient(#6f8a96,#3e555f)"></div><div class="shape" style="left:40%;bottom:12%;width:38%;height:14%;background:repeating-linear-gradient(90deg,#d7a27f 0 8%,#c48c66 8% 16%);border-radius:40%"></div><div class="shape" style="left:66%;top:0;width:.4%;height:10%;background:#222"></div><div class="shape" style="left:63.5%;top:10%;width:5.4%;height:5%;background:radial-gradient(#fff6c8,#e8b65a);border-radius:50% 50% 10% 10%;box-shadow:0 0 40px 16px #ffd98a55"></div>`;
+    case 4: return `<div class="bgfill" style="background:radial-gradient(circle at 25% 35%,#5a6b74,#26323a 60%,#151b20)"></div>${person(44, 205)}`;
+    case 5: return `<div class="sky" style="background:linear-gradient(#1f2a44,#6b5a7a 55%,#d9a066)"></div><div class="sea" style="background:linear-gradient(#41405e,#151726)"></div>${boat.replace('left:46%','left:16%')}`;
+    case 6: return `<div class="sky" style="background:linear-gradient(#9cc2e6,#e3eef7)"></div><div class="sea" style="background:linear-gradient(#3b86b0,#163e5c)"></div><div class="shape" style="right:0;top:22%;width:42%;height:60%;background:#3b4a3a;clip-path:polygon(30% 0,100% 0,100% 100%,0 100%,12% 60%)"></div>`;
+    default: return `<div class="bgfill" style="background:radial-gradient(circle at 60% 40%,#596b4f,#2e3b2f 60%,#1a221b)"></div><div class="shape" style="left:8%;right:8%;bottom:6%;height:30%;background:repeating-linear-gradient(45deg,#7b8f6a33 0 3px,#0000 3px 12px),repeating-linear-gradient(-45deg,#7b8f6a33 0 3px,#0000 3px 12px)"></div>${person(18, 90)}`;
+  }
+}
+function makeFrame(el){
+  el.innerHTML = '<div class="scene"></div><div class="burn"></div><div class="boxes"></div><div class="subs"></div>';
+  const F = {el, scene:$('.scene', el), burn:$('.burn', el), boxes:$('.boxes', el), subs:$('.subs', el), keyScene:'', keyBurn:'', keySubs:''};
+  new ResizeObserver(() => { F.keyBurn = F.keySubs = ''; drawFrame(F, F.t ?? S.t, F.opts || {}); }).observe(el);
+  return F;
+}
+const active = (list, t) => list.filter(x => t >= x.s && t < x.e);
+function drawFrame(F, t, opts){
+  F.opts = opts; F.t = t;
+  const H = F.el.clientHeight || 1, k = H / 1080, W = F.el.clientWidth;
+  const sh = shotIdx(t);
+  if (F.keyScene !== 'S' + sh){ F.keyScene = 'S' + sh; F.scene.innerHTML = sceneHTML(sh); }
+  // 画面硬字幕
+  const ac = active(CANDS.filter(c => c.src === 'o'), t);
+  const kb = ac.map(c => c.id).join() + '|' + Math.round(H) + '|' + !!opts.boxes;
+  if (F.keyBurn !== kb){
+    F.keyBurn = kb;
+    F.burn.innerHTML = ac.map(c => {
+      const [x0, y0, x1, y1] = c.rect, txt = esc(c.burn || c.text);
+      const box = `left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%`;
+      if (c.st === 'telop'){ const lines = (c.burn || c.text).split('\n').length; const fs = (y1-y0)*H/lines/1.3;
+        return `<div class="t telop" style="top:${y0*100}%;font-size:${fs}px;-webkit-text-stroke:${fs*.1}px #1a2a55;paint-order:stroke fill;text-shadow:0 0 ${fs*.15}px #000a">${txt}</div>`; }
+      if (c.st === 'info') return `<div class="t info" style="left:${x0*100}%;top:${y0*100}%;font-size:${(y1-y0)*H*.62}px">${txt}</div>`;
+      if (c.st === 'name') return `<div class="t name" style="left:${x0*100}%;top:${y0*100}%;font-size:${(y1-y0)*H*.6}px;text-shadow:0 0 4px #000">${txt}</div>`;
+      if (c.st === 'vinfo') return `<div class="t vinfo" style="left:${x0*100}%;top:${y0*100}%;font-size:${(x1-x0)*W*.62}px">${txt}</div>`;
+      if (c.st === 'logo') return `<div class="t logo" style="left:${x0*100}%;top:${y0*100}%;font-size:${(y1-y0)*H*.7}px">${txt}</div>`;
+      if (c.st === 'sign') return `<div class="t sign" style="${box};font-size:${(y1-y0)*H*.32}px">${txt}</div>`;
+      return '';
+    }).join('');
+    F.boxes.innerHTML = opts.boxes ? ac.map(c => { const [x0, y0, x1, y1] = c.rect;
+      return `<div class="bx ${c.drop ? 'drop' : ''}" style="left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%"><i>${c.id} ${c.drop ? '丢弃：' + c.drop : (c.conf * 100).toFixed(0) + '%'}</i></div>`; }).join('') : '';
+  }
+  // 字幕
+  const P = PROFILES[opts.profile || S.profile];
+  const acs = opts.subs === false ? [] : active(CUES, t);
+  const ks = acs.map(c => c.id).join() + '|' + S.ver + '|' + Math.round(H) + '|' + (opts.profile || S.profile);
+  if (F.keySubs !== ks){ F.keySubs = ks; F.subs.innerHTML = renderSubs(acs, P, k, ac, t); }
+}
+function shadowCSS(color, w, sh){
+  if (w <= 0) return sh ? 'text-shadow:0 2px 4px #000c' : '';
+  const s = []; for (let i = 0; i < 16; i++){ const a = i / 16 * Math.PI * 2; s.push(`${(Math.cos(a)*w).toFixed(2)}px ${(Math.sin(a)*w).toFixed(2)}px 0 ${color}`); }
+  if (sh) s.push(`${w*.5}px ${w*.9}px ${w*1.4}px #000b`);
+  return 'text-shadow:' + s.join(',');
+}
+function styleCSS(ly, k){
+  return `font-family:${(FONTS[ly.font] || ly.font).replace(/"/g, "'")};font-size:${ly.size*k}px;color:${ly.color};font-weight:${ly.bold ? 700 : 500};${shadowCSS(ly.outline, ly.ow*k, ly.shadow)}`;
+}
+function wrapZh(text, max){
+  const parts = text.split('　'), lines = []; let cur = '';
+  parts.forEach(p => {
+    if (!cur) cur = p; else if ((cur + '　' + p).length <= max) cur += '　' + p; else { lines.push(cur); cur = p; }
+    while (cur.length > max){ lines.push(cur.slice(0, max)); cur = cur.slice(max); }
+  });
+  if (cur) lines.push(cur);
+  return lines;
+}
+function rubyShow(w, cue, R){
+  if (!R || R.kind !== 'furigana') return false;
+  if (R.scope === 'all') return true;
+  if (R.scope === 'proper') return w.p;
+  if (R.scope === 'first') return firstSeen[w.surface] === cue.id;
+  return w.p || w.lv === 0 || w.lv <= R.level;
+}
+const rubyText = (r, script) => script === 'kata' ? toKata(r) : script === 'roma' ? romaji(r) : r;
+function origHTML(cue, ly, k){
+  const R = ly.ruby, rtCSS = R && R.kind === 'furigana' ? `font-size:${R.size}em;color:${R.color};${shadowCSS(ly.outline, ly.ow*k*R.size, false)}` : '';
+  const lines = [[]]; let len = 0;
+  cue.words.forEach(w => {
+    if (w.surface === '　' && len + 4 > ly.maxChars){ lines.push([]); len = 0; return; }
+    len += w.surface.length;
+    const show = rubyShow(w, cue, R);
+    lines[lines.length - 1].push(w.segs.map(([b, r]) => r && show ? `<ruby>${esc(b)}<rt style="${rtCSS}">${esc(rubyText(r, R.script))}</rt></ruby>` : esc(b)).join(''));
+  });
+  return lines.map(l => l.join('')).join('<br>');
+}
+const trText = (c, lang) => (lang === 'en' ? c.en : c.zh) || '';
+function wrapEn(text, max){
+  const lines = []; let cur = '';
+  text.split(' ').forEach(w => { if (cur && (cur + ' ' + w).length > max){ lines.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; });
+  if (cur) lines.push(cur);
+  return lines;
+}
+// 拼音 → 注音符号
+const ZY_I = {b:'ㄅ',p:'ㄆ',m:'ㄇ',f:'ㄈ',d:'ㄉ',t:'ㄊ',n:'ㄋ',l:'ㄌ',g:'ㄍ',k:'ㄎ',h:'ㄏ',j:'ㄐ',q:'ㄑ',x:'ㄒ',zh:'ㄓ',ch:'ㄔ',sh:'ㄕ',r:'ㄖ',z:'ㄗ',c:'ㄘ',s:'ㄙ'};
+const ZY_F = {a:'ㄚ',o:'ㄛ',e:'ㄜ',ai:'ㄞ',ei:'ㄟ',ao:'ㄠ',ou:'ㄡ',an:'ㄢ',en:'ㄣ',ang:'ㄤ',eng:'ㄥ',ong:'ㄨㄥ',er:'ㄦ',i:'ㄧ',ia:'ㄧㄚ',ie:'ㄧㄝ',iao:'ㄧㄠ',iu:'ㄧㄡ',iou:'ㄧㄡ',ian:'ㄧㄢ',in:'ㄧㄣ',iang:'ㄧㄤ',ing:'ㄧㄥ',iong:'ㄩㄥ',u:'ㄨ',ua:'ㄨㄚ',uo:'ㄨㄛ',uai:'ㄨㄞ',ui:'ㄨㄟ',uei:'ㄨㄟ',uan:'ㄨㄢ',un:'ㄨㄣ',uen:'ㄨㄣ',uang:'ㄨㄤ',ueng:'ㄨㄥ','ü':'ㄩ','üe':'ㄩㄝ','üan':'ㄩㄢ','ün':'ㄩㄣ'};
+const ZY_T = ['˙', '', 'ˊ', 'ˇ', 'ˋ'];
+function zhuyin(syl){
+  let s = '', t = 0;
+  for (const ch of syl){ if (TONE[ch]){ s += TONE[ch][0]; t = TONE[ch][1]; } else s += ch; }
+  if (s[0] === 'y') s = s.startsWith('yu') ? 'ü' + s.slice(2) : s.startsWith('yi') ? 'i' + s.slice(2) : 'i' + s.slice(1);
+  else if (s[0] === 'w') s = s === 'wu' ? 'u' : 'u' + s.slice(1);
+  const ini = ZY_I[s.slice(0, 2)] ? s.slice(0, 2) : ZY_I[s[0]] ? s[0] : '';
+  let fin = s.slice(ini.length);
+  if (/^(zh|ch|sh|r|z|c|s)$/.test(ini) && fin === 'i') fin = '';
+  if (/^[jqx]$/.test(ini) && fin[0] === 'u') fin = 'ü' + fin.slice(1);
+  const body = (ZY_I[ini] || '') + (ZY_F[fin] ?? fin);
+  return t === 0 ? ZY_T[0] + body : body + ZY_T[t];
+}
+function trHTML(cue, ly, k){
+  const text = trText(cue, ly.lang);
+  if (ly.lang === 'en') return wrapEn(text, ly.maxChars).map(esc).join('<br>');
+  const lines = wrapZh(text, ly.maxChars), R = ly.ruby;
+  if (!R || !['pinyin', 'zhuyin'].includes(R.kind) || !cue.py) return lines.map(esc).join('<br>');
+  const syl = cue.py.split(' '); let i = 0;
+  const ff = R.kind === 'zhuyin' ? "'Microsoft JhengHei','PingFang TC',sans-serif" : "'Segoe UI',Arial,sans-serif";
+  const rt = `font-size:${R.size}em;color:${R.color};font-family:${ff};font-weight:500;${shadowCSS(ly.outline, ly.ow*k*.5, false)}`;
+  const conv = x => R.kind === 'zhuyin' ? zhuyin(x) : tone(x, R.tone);
+  return lines.map(l => [...l].map(ch => isHan(ch) && syl[i] ? `<ruby>${esc(ch)}<rt style="${rt}">${esc(conv(syl[i++]))}</rt></ruby>` : esc(ch)).join('')).join('<br>');
+}
+function layerHTML(cue, ly, k){
+  if (ly.show === 'off') return '';
+  const song = cue.type === 'song' ? 'song' : '';
+  if (ly.kind === 'original'){
+    if (ly.show === 'auto' && cue.onscreen) return '';
+    return `<div class="ly ${song}" style="${styleCSS(ly, k)}">${origHTML(cue, ly, k)}</div>`;
+  }
+  if (ly.kind === 'translation') return `<div class="ly ${song}" style="${styleCSS(ly, k)}">${trHTML(cue, ly, k)}</div>`;
+  if (ly.kind === 'translit'){
+    const t = ly.of === SOURCE ? romajiLine(cue) : (cue.py || '');
+    return t ? `<div class="ly" style="${styleCSS(ly, k)}">${esc(t)}</div>` : '';
+  }
+  return '';
+}
+// 说明类译文用第一个可见的译文层的语言
+function infoText(c, P){ const ly = P.layers.find(l => l.kind === 'translation' && l.show !== 'off'); return ly ? trText(c, ly.lang) : c.zh; }
+const NEAR_TYPES = ['info', 'name', 'title'];
+function renderSubs(cues, P, k, burnActive){
+  let out = '';
+  const main = [], info = [];
+  cues.forEach(c => (NEAR_TYPES.includes(c.type) ? info : main).push(c));
+  // 说明类：贴在原文旁 / 顶部 / 不显示
+  const is = P.infoStyle;
+  if (P.info === 'near'){
+    info.forEach(c => {
+      if (!c.rect) return;
+      const [x0, y0, x1, y1] = c.rect, vertical = (y1 - y0) > (x1 - x0) * 16 / 9 * 1.5;
+      let pos;
+      if (vertical) pos = (x0 + x1) / 2 > .5 ? `right:${(1 - x0) * 100 + 1}%;top:${y0 * 100}%` : `left:${x1 * 100 + 1}%;top:${y0 * 100}%`;
+      else {
+        const below = (y0 + y1) / 2 < .5, cx = (x0 + x1) / 2;
+        pos = below ? `top:${y1 * 100 + 1.2}%;` : `bottom:${(1 - y0) * 100 + 1.2}%;`;
+        pos += cx < .33 ? `left:${x0 * 100}%` : cx > .67 ? `right:${(1 - x1) * 100}%` : `left:${cx * 100}%;transform:translateX(-50%)`;
+      }
+      out += `<div class="near ${vertical ? 'v' : ''}" style="${pos};${styleCSS(is, k)}">${esc(infoText(c, P))}</div>`;
+    });
+  } else if (P.info === 'top' && info.length){
+    out += `<div class="blk" style="top:4%">${info.map(c => `<div class="ly" style="${styleCSS(is, k)}">${esc(infoText(c, P))}</div>`).join('')}</div>`;
+  }
+  if (main.length){
+    let bottom = 4.5;
+    if (P.avoid) burnActive.forEach(b => {
+      if (b.drop) return; const [x0, y0, x1, y1] = b.rect;
+      if (y1 > .65 && x1 > .25 && x0 < .75) bottom = Math.max(bottom, (1 - y0) * 100 + 1.5);
+    });
+    const body = main.map(c => P.layers.map(ly => layerHTML(c, ly, k)).join('')).join('');
+    out += `<div class="blk" style="bottom:${bottom}%">${body}</div>`;
+  }
+  return out;
+}
+
+/* ===================== 播放 ===================== */
+const FR = {};
+function refreshFrames(force){
+  if (force) Object.values(FR).forEach(F => F.keySubs = F.keyBurn = '');
+  if (S.view === 'editor' && FR.ed) drawFrame(FR.ed, S.t, {profile:S.profile, boxes:S.showBoxes, subs:S.showSubs});
+  if (S.view === 'layers' && FR.ly) drawFrame(FR.ly, S.t, {profile:S.profile});
+  if (S.view === 'pipeline' && FR.rg) drawFrame(FR.rg, 9.6, {subs:false});
+}
+function setTime(t){
+  S.t = Math.max(0, Math.min(DUR - 0.01, t));
+  refreshFrames();
+  $('#timeLbl').textContent = fmt(S.t) + ' / ' + fmt(DUR);
+  $('#lyTime').textContent = fmt(S.t); $('#lyScrub').value = S.t;
+  const ph = $('#playhead'); if (ph) ph.style.left = S.t * S.pps + 'px';
+  const cur = active(CUES, S.t).map(c => c.id);
+  $$('#cueRows tr').forEach(tr => tr.classList.toggle('cur', cur.includes(tr.dataset.id)));
+}
+let lastTs = 0;
+function loop(ts){
+  if (S.playing){
+    const dt = lastTs ? (ts - lastTs) / 1000 : 0;
+    let t = S.t + dt; if (t >= DUR) t = 0;
+    setTime(t);
+    const sc = $('#tlScroll'), x = S.t * S.pps;
+    if (S.view === 'editor' && (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 40)) sc.scrollLeft = x - 60;
+  }
+  lastTs = ts; requestAnimationFrame(loop);
+}
+function togglePlay(){ S.playing = !S.playing; $('#playBtn').textContent = $('#lyPlay').textContent = S.playing ? '❚❚' : '▶'; }
+function stepCue(d){
+  const i = CUES.findIndex(c => c.id === S.sel), n = CUES[Math.max(0, Math.min(CUES.length - 1, i + d))];
+  selectCue(n.id, true);
+}
+
+/* ===================== 审校：时间轴 ===================== */
+function buildTimeline(){
+  const W = DUR * S.pps + 30, inner = $('#tlInner');
+  let h = `<div class="lane rl" id="ruler" style="width:${W}px">`;
+  for (let s = 0; s <= DUR; s += 5) h += `<span style="left:${s * S.pps}px">${fmt(s).slice(0, 5)}</span>`;
+  h += `</div><div class="lane wv" style="width:${W}px"><canvas id="wave" width="${W}" height="40"></canvas></div>`;
+  const blk = (x, cls, txt, extra = '') => `<div class="tb-blk ${cls}" style="left:${x.s * S.pps}px;width:${Math.max(6, (x.e - x.s) * S.pps - 2)}px" ${extra}>${esc(txt)}</div>`;
+  ['c', 'o', 'a'].forEach(src => {
+    h += `<div class="lane" style="width:${W}px">`;
+    CANDS.filter(c => c.src === src).forEach(c => {
+      const cid = cueOfCand[c.id], sel = cid === S.sel ? 'sel' : '';
+      h += blk(c, `s${src} ${c.drop ? 'drop' : ''} ${c.e - c.s > 30 ? 'long' : ''} ${sel}`, (c.drop ? c.id + ' ' : '') + c.text.replace('\n', ' '), `data-cand="${c.id}" title="${c.id} · ${esc(c.text)}${c.drop ? ' · 丢弃：' + c.drop : ''}"`);
+    });
+    h += '</div>';
+  });
+  h += `<div class="lane" style="width:${W}px">` + CUES.map(c => blk(c, `sf ${c.type} ${c.id === S.sel ? 'sel' : ''} ${c.review === 'todo' ? 'flag' : ''}`, c.text, `data-cue="${c.id}"`)).join('') + '</div>';
+  h += `<div class="lane" style="width:${W}px">` + CUES.map(c => blk(c, `st ${c.type} ${c.id === S.sel ? 'sel' : ''}`, c.zh, `data-cue="${c.id}"`)).join('') + '</div>';
+  h += `<div class="playhead" id="playhead" style="left:${S.t * S.pps}px"></div>`;
+  inner.style.width = W + 'px'; inner.innerHTML = h;
+  // 波形：有语音的地方响一些
+  const cv = $('#wave'), g = cv.getContext('2d'); g.fillStyle = '#6d6d80';
+  let seed = 7; const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  for (let x = 0; x < W; x += 3){
+    const t = x / S.pps, sp = CANDS.some(c => c.src === 'a' && t >= c.s && t < c.e) || CUES.some(c => (c.type === 'dialogue' || c.type === 'narration') && t >= c.s && t < c.e);
+    const amp = (sp ? .35 + rnd() * .6 : .05 + rnd() * .12) * (t > 36 && t < 40 ? 1.2 : 1);
+    const hh = Math.min(38, amp * 36); g.fillRect(x, 20 - hh / 2, 2, hh);
+  }
+  $('#ruler').onclick = e => setTime((e.offsetX + (e.target.id === 'ruler' ? 0 : e.target.offsetLeft)) / S.pps);
+  $$('#tlInner .tb-blk').forEach(b => b.onclick = () => {
+    if (b.dataset.cue) return selectCue(b.dataset.cue, true);
+    const c = candById[b.dataset.cand];
+    if (c.drop){ toast(`${c.id}「${c.text}」已丢弃：${c.drop}`); setTime(c.s + .05); return; }
+    selectCue(cueOfCand[c.id], true);
+  });
+}
+
+/* ===================== 审校：列表 ===================== */
+function cueMatches(c){
+  if (S.filter === 'todo') return c.review === 'todo';
+  if (S.filter === 'asr') return c.flags.includes('asr_only');
+  if (S.filter === 'ocr') return c.src.some(s => s[0] === 'o');
+  return true;
+}
+function buildFilter(){
+  const n = f => CUES.filter(c => (S.filter = f, cueMatches(c))).length, keep = S.filter;
+  const opts = [['all', '全部'], ['todo', '待审校'], ['asr', '仅语音'], ['ocr', '含画面字']].map(([f, l]) => [f, l, n(f)]);
+  S.filter = keep;
+  $('#cueFilter').innerHTML = opts.map(([f, l, c]) => `<button class="${f === S.filter ? 'on' : ''}" data-f="${f}">${l} ${c}</button>`).join('');
+  $$('#cueFilter button').forEach(b => b.onclick = () => { S.filter = b.dataset.f; buildFilter(); buildRows(); });
+  const todo = CUES.filter(c => c.review === 'todo').length;
+  $('#topTodo').textContent = todo ? todo + ' 条待审校' : '审校完成';
+  $('#topTodo').className = 'chip ' + (todo ? 'warn' : 'ok');
+}
+function buildRows(){
+  $('#cueRows').innerHTML = CUES.filter(cueMatches).map((c, i) => `<tr data-id="${c.id}" class="${c.id === S.sel ? 'sel' : ''}">
+    <td><span class="dot ${c.review}"></span></td><td class="dim">${CUES.indexOf(c) + 1}</td>
+    <td class="t">${fmt(c.s)} → ${fmt(c.e)}</td><td class="typ">${TYPE_LBL[c.type]}${c.spk && c.spk !== '旁白' ? ' · ' + c.spk : ''}</td>
+    <td>${c.src.map(s => `<span class="badge b-${s[0]}">${SRC_LBL[s[0]]}</span>`).join(' ')}</td>
+    <td class="ja">${esc(c.text)}</td><td>${esc(c.zh)}</td>
+    <td class="fl">${c.flags.map(f => FLAG_LBL[f]).join(' · ')}</td></tr>`).join('');
+  $$('#cueRows tr').forEach(tr => tr.onclick = () => selectCue(tr.dataset.id, true));
+  setTime(S.t);
+}
+function selectCue(id, seek){
+  S.sel = id; const c = CUES.find(x => x.id === id);
+  if (seek) setTime(c.s + Math.min(.6, (c.e - c.s) / 3));
+  $$('#tlInner .tb-blk').forEach(b => b.classList.toggle('sel', (b.dataset.cue || cueOfCand[b.dataset.cand]) === id));
+  $$('#cueRows tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.id === id));
+  const row = $(`#cueRows tr[data-id="${id}"]`);
+  if (row){ const bd = row.closest('.bd'), top = row.offsetTop - 30; if (top < bd.scrollTop || row.offsetTop + row.offsetHeight > bd.scrollTop + bd.clientHeight) bd.scrollTop = top; }
+  const sc = $('#tlScroll'), x = c.s * S.pps; if (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 80) sc.scrollLeft = x - 80;
+  buildInspector();
+}
+
+/* ===================== 审校：检查面板 ===================== */
+function buildInspector(){
+  const c = CUES.find(x => x.id === S.sel), i = CUES.indexOf(c);
+  const srcs = c.src.map(id => candById[id]).map(s => `<div class="srcitem">
+      <span class="badge b-${s.src}">${SRC_LBL[s.src]}</span><div class="tx">${esc(s.text)}</div>
+      <div class="meta">${s.id} · ${fmt(s.s)}–${fmt(s.e)}${s.conf ? ' · 置信度 ' + Math.round(s.conf * 100) + '%' : ''}${s.burn && s.burn !== s.text ? ' · <span style="color:var(--warn)">OCR 与语音不一致，已按语音+上下文纠正</span>' : ''}</div>
+      ${s.src === 'o' ? `<div class="crop">${esc(s.burn || s.text)}</div>` : ''}</div>`).join('');
+  const hints = c.id === 'q10' ? `<div class="srcitem" style="border-color:#ffc35a55"><span class="badge" style="background:#ffc35a22;color:var(--warn)">冲突</span><div class="tx" style="font-size:12.5px">字幕「鯛は脂が」与语音「台は油が」不一致 → 以字幕为准；「のっとる」按术语表译为“肥美”</div></div>` : '';
+  const orig = c.words.map((w, wi) => w.segs.map(([b, r], si) => r ? `<ruby data-w="${wi}" data-s="${si}" class="${c.flags.includes('reading_guess') && w.lv === 1 ? 'guess' : ''}">${esc(b)}<rt>${esc(r)}</rt></ruby>` : esc(b)).join('')).join('');
+  $('#inspector').innerHTML = `
+    <div class="insp-sec">
+      <div class="row" style="margin-bottom:8px"><h3 style="margin:0">#${i + 1}</h3><span class="dot ${c.review}"></span><span class="dim">${c.review === 'ok' ? '已审' : '待审校'}</span><span style="flex:1"></span>
+        <button class="btn sm" onclick="stepCue(-1)">↑</button><button class="btn sm" onclick="stepCue(1)">↓</button></div>
+      <div class="kv" style="grid-template-columns:44px 1fr">
+        <span class="lbl">时间</span><div class="row"><input class="inp" type="number" step="0.1" value="${c.s}" style="width:80px" onchange="editCue('s',+this.value)"> → <input class="inp" type="number" step="0.1" value="${c.e}" style="width:80px" onchange="editCue('e',+this.value)"><span class="dim">${(c.e - c.s).toFixed(1)}s · ${(c.zh.replace(/[　\s]/g, '').length / (c.e - c.s)).toFixed(1)} 字/秒</span></div>
+        <span class="lbl">类型</span><div class="row"><select class="inp" style="width:auto" onchange="editCue('type',this.value)">${Object.entries(TYPE_LBL).map(([k, v]) => `<option value="${k}" ${k === c.type ? 'selected' : ''}>${v}</option>`).join('')}</select>
+          <span class="lbl">说话人</span><input class="inp" value="${esc(c.spk)}" style="width:80px" onchange="editCue('spk',this.value)"></div>
+      </div>
+      ${c.flags.length ? `<div class="row" style="margin-top:8px;flex-wrap:wrap">${c.flags.map(f => `<span class="chip warn">${FLAG_LBL[f]}</span>`).join('')}</div>` : ''}
+    </div>
+    <div class="insp-sec"><h3>来源对照 <span class="dim" style="font-weight:400">${c.src.length} 路</span></h3>${srcs}${hints}</div>
+    <div class="insp-sec">
+      <h3>原文 <span class="dim" style="font-weight:400">点汉字改读音</span></h3>
+      <div class="origedit" id="origEdit">${orig}</div>
+    </div>
+    <div class="insp-sec">
+      <div class="row" style="margin-bottom:6px"><h3 style="margin:0">译文</h3><span style="flex:1"></span><button class="btn sm" onclick="retranslate()">↻ 重新翻译</button></div>
+      <div class="lbl">简体中文</div>
+      <textarea class="inp" rows="2" id="zhEdit" style="font-size:15px">${esc(c.zh)}</textarea>
+      <div class="lbl" style="margin-top:6px">英语</div>
+      <textarea class="inp" rows="2" id="enEdit" style="font-size:13.5px">${esc(c.en)}</textarea>
+      <input class="inp" id="rtInstr" placeholder="附加要求，例如：更口语一点" style="margin-top:6px">
+      <div class="alts" id="alts"></div>
+    </div>
+    <div class="row" style="flex-wrap:wrap">
+      <button class="btn pri" onclick="markOk()">${c.review === 'ok' ? '✓ 已审' : '✓ 标记已审'}</button>
+      <button class="btn" onclick="toast('原型：在播放头 ${fmt(S.t)} 处拆分')">拆分</button>
+      <button class="btn" onclick="toast('原型：与下一条合并')">与下条合并</button>
+      <button class="btn ghost" onclick="toast('原型：删除（可撤销）')">删除</button>
+    </div>`;
+  $('#zhEdit').oninput = e => { c.zh = e.target.value; c.py = ''; bump(); };
+  $('#enEdit').oninput = e => { c.en = e.target.value; bump(); };
+  $$('#origEdit ruby').forEach(r => r.onclick = ev => editReading(c, +r.dataset.w, +r.dataset.s, ev));
+}
+function editCue(k, v){ const c = CUES.find(x => x.id === S.sel); c[k] = v; buildTimeline(); buildRows(); bump(); buildInspector(); }
+function markOk(){ const c = CUES.find(x => x.id === S.sel); c.review = 'ok'; c.flags = []; buildFilter(); buildRows(); buildTimeline(); buildInspector(); toast('已标记为已审'); }
+function retranslate(){
+  const c = CUES.find(x => x.id === S.sel), box = $('#alts'), ins = $('#rtInstr').value;
+  box.innerHTML = '<div class="dim" style="margin-top:8px">正在请求 deepseek-chat（带前后 3 条上下文' + (ins ? '，要求：' + esc(ins) : '') + '）…</div>';
+  setTimeout(() => {
+    box.innerHTML = c.alts.map(a => `<button>${esc(a)}</button>`).join('');
+    $$('#alts button').forEach(b => b.onclick = () => { c.zh = b.textContent; c.py = ''; $('#zhEdit').value = c.zh; buildRows(); buildTimeline(); bump(); toast('已替换译文（拼音将在保存后重新生成）'); });
+  }, 650);
+}
+function editReading(c, wi, si, ev){
+  closePop();
+  const seg = c.words[wi].segs[si], word = c.words[wi].surface;
+  const p = document.createElement('div'); p.className = 'pop'; p.id = 'pop';
+  p.innerHTML = `<div class="lbl" style="margin-bottom:6px">「${esc(seg[0])}」的读音</div><input class="inp ja" value="${esc(seg[1])}" id="popIn">
+    <label class="row" style="margin-top:8px;font-size:12px"><input type="checkbox" id="popRem" checked> 记入作品读音词典（${esc(word)}）</label>
+    <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn sm" onclick="closePop()">取消</button><button class="btn sm pri" id="popOk">保存</button></div>`;
+  document.body.appendChild(p);
+  const r = ev.target.closest('ruby').getBoundingClientRect();
+  p.style.left = Math.min(innerWidth - 250, r.left) + 'px'; p.style.top = (r.bottom + 6) + 'px';
+  const inp = $('#popIn'); inp.focus(); inp.select();
+  const save = () => {
+    seg[1] = inp.value.trim() || seg[1];
+    if ($('#popRem').checked){ DICT.unshift([word, c.words[wi].segs.map(s => s[1] || s[0]).join(''), '作品']); buildDict(); }
+    c.flags = c.flags.filter(f => f !== 'reading_guess');
+    closePop(); buildInspector(); buildRows(); bump(); markStale('ruby', '读音修改'); toast(`已更新读音：${seg[0]} → ${seg[1]}`);
+  };
+  $('#popOk').onclick = save; inp.onkeydown = e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') closePop(); };
+}
+function closePop(){ const p = $('#pop'); if (p) p.remove(); }
+document.addEventListener('mousedown', e => { if (!e.target.closest('#pop') && !e.target.closest('ruby')) closePop(); });
+
+/* ===================== 图层样式 ===================== */
+function profOptions(sel){
+  return Object.entries(PROFILES).map(([k, p]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${p.name}（${p.fmt}）</option>`).join('');
+}
+function setProfile(k){
+  S.profile = k; $('#edProfile').innerHTML = profOptions(k); $('#lyProfile').innerHTML = profOptions(k);
+  const P = PROFILES[k]; if (!P.layers.find(l => l.id === S.lyLayer)) S.lyLayer = P.layers[0].id;
+  buildLayers(); bump();
+}
+const SHOW_LBL = {on:'开', auto:'自动', off:'关'};
+function layerSummary(ly){
+  const parts = [ly.font + ' ' + ly.size], a = annotLabel(ly);
+  if (a) parts.push(a + (ly.ruby.kind === 'furigana' ? '·' + {all:'全部', difficult:'难读', proper:'专名', first:'首次'}[ly.ruby.scope] : ''));
+  if (ly.kind === 'original' && ly.show === 'auto') parts.push('画面有原文时隐藏');
+  return parts.join(' · ');
+}
+function buildLayers(){
+  const P = PROFILES[S.profile];
+  $('#lyProfMeta').innerHTML = `<span class="chip">${P.fmt}</span><span>${esc(P.file)}</span>`;
+  $('#lyList').innerHTML = P.layers.map(ly => `<div class="lycard ${ly.id === S.lyLayer ? 'sel' : ''}" data-id="${ly.id}">
+      <div class="ord"><button data-mv="-1" title="上移">▲</button><button data-mv="1" title="下移">▼</button></div>
+      <div class="nm"><b>${esc(layerName(ly))}</b><small>${esc(layerSummary(ly))}</small></div>
+      <div class="seg">${(ly.kind === 'original' ? ['on', 'auto', 'off'] : ['on', 'off']).map(v => `<button data-show="${v}" class="${ly.show === v ? 'on' : ''}">${SHOW_LBL[v]}</button>`).join('')}</div>
+      ${ly.kind !== 'original' ? '<button class="del" data-del="1" title="删除图层">×</button>' : ''}</div>`).join('');
+  $$('#lyList .lycard').forEach(card => {
+    const ly = P.layers.find(l => l.id === card.dataset.id);
+    card.onclick = e => {
+      if (e.target.dataset.del){
+        P.layers.splice(P.layers.indexOf(ly), 1);
+        if (S.lyLayer === ly.id) S.lyLayer = P.layers[0].id;
+        buildLayers(); bump(); markStale('render', '图层'); return;
+      }
+      if (e.target.dataset.mv){ const i = P.layers.indexOf(ly), j = i + +e.target.dataset.mv; if (j >= 0 && j < P.layers.length){ P.layers.splice(i, 1); P.layers.splice(j, 0, ly); } }
+      else if (e.target.dataset.show) ly.show = e.target.dataset.show;
+      S.lyLayer = ly.id; buildLayers(); bump(); markStale('render', '图层');
+    };
+  });
+  $('#lyAdd').innerHTML = '<button class="btn sm" data-add="translation">＋ 译文层</button><button class="btn sm" data-add="translit">＋ 转写层</button><span class="dim" style="font-size:11.5px">译注 · 说话人（P2）</span>';
+  $$('#lyAdd [data-add]').forEach(b => b.onclick = () => {
+    let ly;
+    if (b.dataset.add === 'translation'){
+      const lang = TARGETS.find(t => !P.layers.some(l => l.kind === 'translation' && l.lang === t)) || TARGETS[0];
+      ly = TR({id:'L' + (++LUID), lang, font:LANGS[lang].font, size:34, maxChars:LANGS[lang].max});
+    } else ly = TL({id:'L' + (++LUID), show:'on'});
+    P.layers.push(ly); S.lyLayer = ly.id; buildLayers(); bump(); markStale('render', '图层');
+  });
+  buildLayerEditor(); buildRules();
+}
+function ctl(label, html){ return `<span class="lbl">${label}</span><div class="row">${html}</div>`; }
+function buildLayerEditor(){
+  const P = PROFILES[S.profile], ly = P.layers.find(l => l.id === S.lyLayer);
+  const fontOpts = Object.keys(FONTS).map(f => `<option ${f === ly.font ? 'selected' : ''}>${f}</option>`).join('');
+  let langCtl;
+  if (ly.kind === 'original') langCtl = `<span class="chip">${LANGS[ly.lang].name}（源语言，随项目）</span>`;
+  else if (ly.kind === 'translation') langCtl = `<select class="inp" data-lang="lang">${TARGETS.map(t => `<option value="${t}" ${t === ly.lang ? 'selected' : ''}>${LANGS[t].name}</option>`).join('')}</select>`;
+  else langCtl = `<select class="inp" data-lang="of">${[SOURCE, ...TARGETS].filter(t => LANGS[t].translit).map(t => `<option value="${t}" ${t === ly.of ? 'selected' : ''}>${t === SOURCE ? '原文' : '译文'}（${LANGS[t].name}）→ ${LANGS[t].translit}</option>`).join('')}</select>`;
+  let h = `<h3>「${esc(layerName(ly))}」</h3><div class="kv">
+    ${ctl(ly.kind === 'translit' ? '转写对象' : '语言', langCtl)}
+    ${ctl('字体', `<select class="inp" data-k="font">${fontOpts}</select>`)}
+    ${ctl('字号', `<input type="range" min="16" max="80" data-k="size" value="${ly.size}"><span class="dim" style="width:28px">${ly.size}</span>`)}
+    ${ctl('颜色 / 描边', `<input type="color" data-k="color" value="${ly.color}"><input type="color" data-k="outline" value="${ly.outline}"><input type="range" min="0" max="6" step="0.2" data-k="ow" value="${ly.ow}" style="width:90px"><label class="row dim"><input type="checkbox" data-k="shadow" ${ly.shadow ? 'checked' : ''}>阴影</label><label class="row dim"><input type="checkbox" data-k="bold" ${ly.bold ? 'checked' : ''}>粗</label>`)}
+    ${ly.kind !== 'translit' ? ctl(ly.lang === 'en' ? '每行字符' : '每行字数', `<input type="range" min="8" max="60" data-k="maxChars" value="${ly.maxChars}"><span class="dim" style="width:28px">${ly.maxChars}</span>`) : ''}
+  </div>`;
+  if (ly.kind !== 'translit'){
+    const pack = LANGS[ly.lang], R = ly.ruby;
+    h += `<h3 style="margin-top:14px">注音 <span class="dim" style="font-weight:400">— 由「${pack.name}」语言包提供</span></h3>`;
+    if (!pack.annot.length) h += `<div class="dim" style="font-size:12px">${pack.name}没有可用的注音（IPA 音标计划在 P2）。换成别的语言，这里的选项会跟着变。</div>`;
+    else {
+      h += `<div class="kv">${ctl('类型', `<div class="seg">${[['none', '无'], ...pack.annot].map(([v, l]) => `<button data-a="kind" data-v="${v}" class="${R.kind === v ? 'on' : ''}">${l}</button>`).join('')}</div>`)}`;
+      const sizeColor = ctl('大小 / 颜色', `<input type="range" min="0.3" max="0.7" step="0.02" data-a="size" value="${R.size}" style="width:120px"><input type="color" data-a="color" value="${R.color}">`);
+      if (R.kind === 'furigana') h += `
+        ${ctl('范围', `<div class="seg">${[['all', '全部汉字'], ['difficult', '只注难读'], ['proper', '只注专名'], ['first', '首次出现']].map(([v, l]) => `<button data-a="scope" data-v="${v}" class="${R.scope === v ? 'on' : ''}">${l}</button>`).join('')}</div>`)}
+        ${R.scope === 'difficult' ? ctl('难度', `<select class="inp" data-a="level">${[[1, 'N1（只注最难）'], [2, 'N2 及以上'], [3, 'N3 及以上'], [4, 'N4 及以上']].map(([v, l]) => `<option value="${v}" ${R.level == v ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="dim" style="white-space:nowrap">+ 专名</span>`) : ''}
+        ${ctl('文字', `<div class="seg">${[['hira', 'ひらがな'], ['kata', 'カタカナ'], ['roma', 'romaji']].map(([v, l]) => `<button data-a="script" data-v="${v}" class="${R.script === v ? 'on' : ''}">${l}</button>`).join('')}</div>`)}
+        ${sizeColor}
+        ${ctl('数字', `<label class="row dim"><input type="checkbox" checked disabled> 数字不注音（读音易错）</label>`)}`;
+      if (R.kind === 'pinyin') h += `
+        ${ctl('声调', `<div class="seg">${[['mark', 'pīn yīn'], ['num', 'pin1 yin1'], ['none', 'pin yin']].map(([v, l]) => `<button data-a="tone" data-v="${v}" class="${R.tone === v ? 'on' : ''}">${l}</button>`).join('')}</div>`)}
+        ${sizeColor}`;
+      if (R.kind === 'zhuyin') h += `${sizeColor}<span class="lbl"></span><div class="dim" style="font-size:12px">字幕里横排显示在字上方；竖排右侧注音留到 P2。</div>`;
+      h += '</div>';
+    }
+  } else h += `<div class="dim" style="margin-top:10px;font-size:12px">${ly.of === SOURCE ? '由原文读音生成（Hepburn），助词は/へ/を按发音转写，专有名词首字母大写。' : '由译文的拼音生成，带声调。'}</div>`;
+  const ed = $('#lyEditor'); ed.innerHTML = h;
+  const refreshCard = () => { const card = $(`#lyList .lycard[data-id="${ly.id}"]`); if (card){ $('b', card).textContent = layerName(ly); $('small', card).textContent = layerSummary(ly); } };
+  $$('[data-k]', ed).forEach(el => el.oninput = () => {
+    const k = el.dataset.k; ly[k] = el.type === 'checkbox' ? el.checked : el.type === 'range' ? +el.value : el.value;
+    if (el.nextElementSibling && el.type === 'range' && el.nextElementSibling.tagName === 'SPAN') el.nextElementSibling.textContent = el.value;
+    refreshCard(); bump(); markStale('render', '样式');
+  });
+  $$('[data-lang]', ed).forEach(el => el.onchange = () => {
+    if (ly.kind === 'translation'){
+      const old = annotLabel(ly);
+      ly.lang = el.value;
+      const pk = LANGS[ly.lang];
+      ly.font = pk.font; ly.maxChars = pk.max;
+      if (ly.ruby.kind !== 'none' && !pk.annot.some(a => a[0] === ly.ruby.kind)){ ly.ruby = {kind:'none'}; toast(`${pk.name}没有「${old}」，已关闭注音`); }
+    } else ly.of = el.value;
+    buildLayers(); bump(); markStale('ruby', '图层语言');
+  });
+  $$('[data-a]', ed).forEach(el => {
+    const k = el.dataset.a;
+    const apply = () => {
+      if (k === 'kind') ly.ruby = MAKE[el.dataset.v] ? MAKE[el.dataset.v]({}) : {kind:'none'};
+      else ly.ruby[k] = el.dataset.v ?? (el.type === 'range' || k === 'level' ? +el.value : el.value);
+      bump(); markStale('ruby', '注音设置');
+      if (el.tagName === 'BUTTON' || el.tagName === 'SELECT') buildLayerEditor();
+      refreshCard();
+    };
+    if (el.tagName === 'BUTTON') el.onclick = apply; else el.oninput = apply;
+  });
+}
+function buildRules(){
+  const P = PROFILES[S.profile], is = P.infoStyle;
+  const el = $('#lyRules');
+  el.innerHTML = `<h3>说明 / 人名条 / 地名</h3><div class="kv">
+    ${ctl('位置', `<div class="seg">${[['near', '贴在原文旁'], ['top', '画面顶部'], ['off', '不显示']].map(([v, l]) => `<button data-info="${v}" class="${P.info === v ? 'on' : ''}">${l}</button>`).join('')}</div>`)}
+    ${ctl('字号 / 颜色', `<input type="range" min="20" max="64" data-is="size" value="${is.size}" style="width:120px"><input type="color" data-is="color" value="${is.color}">`)}
+  </div>
+  <h3 style="margin-top:14px">排版规则</h3>
+  <label class="row" style="margin-bottom:6px"><input type="checkbox" id="ruleAvoid" ${P.avoid ? 'checked' : ''}> 避开画面原有硬字幕（重叠时自动上移）</label>
+  <label class="row" style="margin-bottom:6px"><input type="checkbox" checked> 中文句末去掉句号、逗号</label>
+  <label class="row" style="margin-bottom:6px"><input type="checkbox" checked> 中文句中逗号、句号换成空格</label>
+  <label class="row" style="margin-bottom:6px"><input type="checkbox" checked> 日文按禁则断行</label>
+  <div class="kv" style="margin-top:6px">${ctl('最多行数', `<div class="seg"><button>1</button><button class="on">2</button><button>3</button></div>`)}${ctl('最短时长', `<input class="inp" value="1.0 秒" style="width:90px">`)}${ctl('语速上限', `<input class="inp" value="9 字/秒" style="width:90px">`)}</div>`;
+  $$('[data-info]', el).forEach(b => b.onclick = () => { P.info = b.dataset.info; buildRules(); bump(); markStale('render', '说明位置'); });
+  $$('[data-is]', el).forEach(i => i.oninput = () => { is[i.dataset.is] = i.type === 'range' ? +i.value : i.value; bump(); });
+  $('#ruleAvoid').onchange = e => { P.avoid = e.target.checked; bump(); markStale('render', '避让'); };
+}
+function buildSamples(){
+  const pick = [['q2', '地名（贴原文）'], ['q4', '方言 + 画面有原文'], ['q5', '半句字幕 + 半句画面字'], ['q9', '旁白长句'], ['q11', '歌词'], ['q13', '竖排说明'], ['q15', '仅语音']];
+  $('#lySamples').innerHTML = '<span class="dim" style="align-self:center">跳到示例：</span>' + pick.map(([id, l]) => `<button class="btn sm" data-id="${id}">${l}</button>`).join('');
+  $$('#lySamples button').forEach(b => b.onclick = () => { const c = CUES.find(x => x.id === b.dataset.id); setTime(c.s + .5); });
+  $('#lyScrub').oninput = e => setTime(+e.target.value);
+}
+
+/* ===================== 流程 ===================== */
+const NODES = [
+  {id:'probe', n:'探测媒体', d:'ffprobe · 3s', c:1, r:2},
+  {id:'audio', n:'提取音频 / 代理', d:'NVENC · 41s', c:2, r:1},
+  {id:'subs', n:'自带字幕', d:'ARIB #0 · 8 条', c:2, r:2},
+  {id:'ocr', n:'画面字识别', d:'RapidOCR · 3fps · 6m02s', c:2, r:3},
+  {id:'asr', n:'语音识别', d:'large-v3 · 3m12s', c:3, r:1},
+  {id:'align', n:'字幕对时', d:'偏移 +0.9s', c:3, r:2},
+  {id:'vlm', n:'VLM 复核', d:'未启用', c:3, r:3, skip:true},
+  {id:'fuse', n:'规则融合', d:'1s', c:4, r:2},
+  {id:'gloss', n:'术语表', d:'新增 6 · 12s', c:5, r:2},
+  {id:'llm', n:'融合 + 翻译', d:'deepseek · 1 段 · 38s', c:6, r:2},
+  {id:'ruby', n:'注音', d:'Sudachi · <1s', c:7, r:2},
+  {id:'render', n:'排版输出', d:'2 个方案 · <1s', c:8, r:2},
+];
+const EDGES = [['probe','audio'],['probe','subs'],['probe','ocr'],['audio','asr'],['subs','align'],['asr','align'],['ocr','vlm'],['vlm','fuse'],['align','fuse'],['fuse','gloss'],['gloss','llm'],['fuse','llm'],['llm','ruby'],['ruby','render']];
+const ORDER = ['probe','audio','subs','ocr','asr','align','vlm','fuse','gloss','llm','ruby','render'];
+const NST = Object.fromEntries(NODES.map(n => [n.id, n.skip ? 'skip' : 'done']));
+const staleWhy = {};
+function descendants(id, acc = new Set()){ acc.add(id); EDGES.filter(e => e[0] === id).forEach(e => descendants(e[1], acc)); return acc; }
+function markStale(id, why){
+  descendants(id).forEach(n => { if (NST[n] !== 'skip'){ NST[n] = 'stale'; staleWhy[n] = staleWhy[n] || why; } });
+  drawDag(); updateBanner();
+}
+function updateBanner(){
+  const st = ORDER.filter(n => NST[n] === 'stale');
+  $('#staleBanner').innerHTML = st.length ? `<div class="banner">⚠ 配置已修改（${[...new Set(st.map(n => staleWhy[n]))].join('、')}），以下 ${st.length} 个步骤将重做：${st.map(n => NODES.find(x => x.id === n).n).join(' → ')}<span style="flex:1"></span><button class="btn sm pri" onclick="runPipeline()">运行受影响的步骤</button></div>` : '';
+  const anyStale = st.length > 0;
+  $('#topStatus').textContent = anyStale ? '● ' + st.length + ' 步待重做' : '● 全部完成';
+  $('#topStatus').className = 'chip ' + (anyStale ? 'warn' : 'ok');
+}
+function drawDag(){
+  const dag = $('#dag');
+  if (!dag.children.length){
+    dag.innerHTML = '<svg id="dagSvg"></svg>' + NODES.map(n => `<div class="node" id="n-${n.id}" style="grid-column:${n.c};grid-row:${n.r}"><span class="st"></span><b>${n.n}</b><small>${n.d}</small><div class="pg"></div></div>`).join('');
+  }
+  NODES.forEach(n => { const el = $('#n-' + n.id); el.className = 'node ' + NST[n.id]; el.title = NST[n.id] === 'stale' ? '原因：' + staleWhy[n.id] : ''; });
+  requestAnimationFrame(drawEdges);
+}
+function drawEdges(){
+  const dag = $('#dag'), svg = $('#dagSvg'); if (!dag.offsetWidth) return;
+  const R = dag.getBoundingClientRect();
+  svg.innerHTML = '<defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#5a5a6c"/></marker></defs>' + EDGES.map(([a, b]) => {
+    const A = $('#n-' + a).getBoundingClientRect(), B = $('#n-' + b).getBoundingClientRect();
+    const x1 = A.right - R.left, y1 = A.top + A.height / 2 - R.top, x2 = B.left - R.left - 2, y2 = B.top + B.height / 2 - R.top, mx = (x1 + x2) / 2;
+    const st = NST[b] === 'stale' ? '#ffc35a88' : '#4a4a5a';
+    return `<path d="M${x1} ${y1} C${mx} ${y1},${mx} ${y2},${x2} ${y2}" stroke="${st}" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>`;
+  }).join('');
+}
+const LOGS = {
+  probe:'探测：3840×2160 HEVC 59.94fps，1:00:12；字幕轨 ARIB #0（日语）',
+  audio:'提取音频 16kHz；生成预览代理 960×540（NVENC）',
+  subs:'自带字幕：ARIB 字幕轨 #0，8 条（剔除振假名小字 23 处）',
+  ocr:'画面字识别完成：9 条，用时 362s',
+  asr:'语音识别完成：8 段，用时 192s',
+  align:'外挂字幕与语音整体差 +0.9 秒，已自动对齐（匹配度提升 31%）',
+  fuse:'融合：字幕 8 条；画面字 9 条（台标 1，实物上的字 1，与字幕重复 0，台词 4，说明 3）；语音 8 段（无字幕覆盖 2，作为参考附到字幕上 1）',
+  gloss:'术语表：新增 6 条，继承 38 条；本集概要已生成',
+  llm:'融合翻译：1 段，15 条字幕，丢弃 0；4 条标记待审校',
+  ruby:'注音：Sudachi 分词 112 词；读音词典命中 5；读音待确认 1',
+  render:'已输出：海辺の暮らし_第3集.zh-ja.ass / .ja-ruby.ass',
+};
+function log(msg, cls){ const l = $('#log'); const now = new Date(); l.innerHTML += `<span class="${cls || ''}">[${now.toTimeString().slice(0, 8)}] ${esc(msg)}</span>\n`; l.scrollTop = l.scrollHeight; }
+let running = false;
+async function runPipeline(){
+  if (running) return;
+  let todo = ORDER.filter(n => NST[n] === 'stale');
+  if (!todo.length){ ORDER.forEach(n => { if (NST[n] !== 'skip') NST[n] = 'stale'; staleWhy[n] = '全部重做'; }); todo = ORDER.filter(n => NST[n] === 'stale'); }
+  running = true; $('#runBtn').disabled = true; go('pipeline'); updateBanner();
+  log('=== 开始运行：' + todo.length + ' 个步骤');
+  for (const n of todo){
+    const el = $('#n-' + n), pg = $('.pg', el); NST[n] = 'run'; drawDag();
+    const dur = {asr:1400, ocr:1600, llm:1300, gloss:700}[n] || 380;
+    const t0 = performance.now();
+    await new Promise(res => { const tick = () => { const p = Math.min(1, (performance.now() - t0) / dur); pg.style.width = p * 100 + '%'; p < 1 ? requestAnimationFrame(tick) : res(); }; tick(); });
+    pg.style.width = 0; NST[n] = 'done'; delete staleWhy[n]; drawDag(); log(LOGS[n], n === 'llm' ? 'w' : '');
+  }
+  log('完成', 'ok'); running = false; $('#runBtn').disabled = false; updateBanner(); toast('运行完成');
+}
+const SRC_CFG = {
+  c:{name:'自带字幕', ic:'字', col:'var(--c-sub)', stage:'subs', body:`
+    <div class="field"><label>来源</label><select class="inp" data-st="subs"><option>ARIB 字幕轨 #0（日语）</option><option>选择外挂文件…</option></select></div>
+    <label class="row" style="margin-bottom:6px"><input type="checkbox" checked data-st="subs"> 剔除振假名小字（字号 &lt; 正文 70%）</label>
+    <label class="row" style="margin-bottom:10px"><input type="checkbox" checked data-st="align"> 与语音自动对时（整体偏移 + 分段漂移）</label>
+    <div class="field"><label>可信度权重 <span class="dim">— 最高：文字以它为准</span></label><input type="range" min="0" max="100" value="90" data-st="fuse"></div>`},
+  a:{name:'语音', ic:'声', col:'var(--c-asr)', stage:'asr', body:`
+    <div class="field"><label>引擎 / 模型</label><select class="inp" data-st="asr"><option>faster-whisper · large-v3</option><option>kotoba-whisper v2.0（日语）</option><option>large-v3-turbo</option><option>云端 API</option></select></div>
+    <div class="grid2" style="gap:8px"><div class="field"><label>设备</label><select class="inp" data-st="asr"><option>CUDA float16</option><option>CPU int8</option></select></div>
+    <div class="field"><label>人声检测门槛 0.25</label><input type="range" min="0.1" max="0.6" step="0.05" value="0.25" data-st="asr"></div></div>
+    <label class="row" style="margin-bottom:10px"><input type="checkbox" data-st="asr"> 人声分离预处理（BGM 大时）</label>
+    <div class="field"><label>可信度权重 <span class="dim">— 主要用来定时间、补漏句</span></label><input type="range" min="0" max="100" value="40" data-st="fuse"></div>`},
+  o:{name:'画面字', ic:'画', col:'var(--c-ocr)', stage:'ocr', body:`
+    <div class="grid2" style="gap:8px"><div class="field"><label>引擎</label><select class="inp" data-st="ocr"><option>RapidOCR · 中</option><option>PaddleOCR</option></select></div>
+    <div class="field"><label>扫描帧率 3 fps</label><input type="range" min="1" max="6" step="0.5" value="3" data-st="ocr"></div></div>
+    <div class="row" style="margin-bottom:6px"><span class="lbl">识别区域</span><span style="flex:1"></span><div class="seg" id="rgMode"><button data-m="in" class="on">＋ 识别区</button><button data-m="ex">＋ 排除区</button></div><button class="btn sm ghost" id="rgClear">清空</button></div>
+    <div class="frame region" id="rgFrame"></div>
+    <div class="dim" style="font-size:11.5px;margin:4px 0 8px">在画面上拖动框选；绿色=识别，红色=排除（台标、固定角标）</div>
+    <label class="row" style="margin-bottom:10px"><input type="checkbox" data-st="vlm" id="vlmChk"> 视觉大模型复核（纠错 + 丢弃招牌等实物上的字）</label>
+    <div class="field"><label>可信度权重</label><input type="range" min="0" max="100" value="70" data-st="fuse"></div>`},
+};
+const REGIONS = [{t:'in', r:[.02,.03,.98,.97]}, {t:'ex', r:[.82,.03,.98,.12], name:'台标'}];
+function buildSrcCards(){
+  $('#srcCards').innerHTML = ['c', 'a', 'o'].map(k => { const s = SRC_CFG[k]; return `<div class="card srccard" id="sc-${k}">
+    <div class="hdr"><div class="ic" style="background:${s.col}22;color:${s.col}">${s.ic}</div><div><b>${s.name}</b><div class="dim" style="font-size:12px">${{c:'外挂 / 内封 / 广播字幕', a:'语音识别 ASR', o:'硬字幕、人名条、说明文字 OCR'}[k]}</div></div><span style="flex:1"></span><label class="switch"><input type="checkbox" checked data-src="${k}"><span></span></label></div>
+    <div class="body">${s.body}</div></div>`; }).join('');
+  $$('#srcCards [data-st]').forEach(el => el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
+    const lbl = el.closest('.field') && $('label', el.closest('.field'));
+    if (el.type === 'range' && lbl && /fps|门槛/.test(lbl.textContent)) lbl.textContent = lbl.textContent.replace(/[\d.]+( fps)?$/, el.value + (lbl.textContent.includes('fps') ? ' fps' : ''));
+    if (el.id === 'vlmChk'){ NST.vlm = el.checked ? 'stale' : 'skip'; const n = NODES.find(x => x.id === 'vlm'); n.d = el.checked ? 'qwen-vl-max' : '未启用'; $('#n-vlm small').textContent = n.d; }
+    markStale(el.dataset.st, SRC_CFG[el.closest('.srccard').id.slice(3)].name + '参数');
+  }));
+  $$('#srcCards [data-src]').forEach(sw => sw.onchange = () => {
+    $('#sc-' + sw.dataset.src).classList.toggle('off', !sw.checked);
+    markStale(SRC_CFG[sw.dataset.src].stage, SRC_CFG[sw.dataset.src].name + (sw.checked ? '开启' : '关闭'));
+  });
+  FR.rg = makeFrame($('#rgFrame'));
+  const rl = document.createElement('div'); rl.id = 'rgLayer'; FR.rg.el.appendChild(rl);
+  drawRegions();
+  let mode = 'in', drag = null;
+  $$('#rgMode button').forEach(b => b.onclick = () => { mode = b.dataset.m; $$('#rgMode button').forEach(x => x.classList.toggle('on', x === b)); });
+  $('#rgClear').onclick = () => { REGIONS.length = 0; drawRegions(); markStale('ocr', '识别区域'); };
+  const pos = e => { const r = FR.rg.el.getBoundingClientRect(); return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))]; };
+  FR.rg.el.onmousedown = e => { const p = pos(e); drag = {t:mode, r:[p[0], p[1], p[0], p[1]], a:p}; REGIONS.push(drag); e.preventDefault(); };
+  addEventListener('mousemove', e => { if (!drag) return; const p = pos(e); drag.r = [Math.min(drag.a[0], p[0]), Math.min(drag.a[1], p[1]), Math.max(drag.a[0], p[0]), Math.max(drag.a[1], p[1])]; drawRegions(); });
+  addEventListener('mouseup', () => { if (!drag) return; if (drag.r[2] - drag.r[0] < .02 || drag.r[3] - drag.r[1] < .02) REGIONS.splice(REGIONS.indexOf(drag), 1); drag = null; drawRegions(); markStale('ocr', '识别区域'); });
+}
+function drawRegions(){
+  $('#rgLayer').innerHTML = REGIONS.map((g, i) => `<div class="rg ${g.t === 'ex' ? 'ex' : ''}" style="left:${g.r[0]*100}%;top:${g.r[1]*100}%;width:${(g.r[2]-g.r[0])*100}%;height:${(g.r[3]-g.r[1])*100}%"><span>${g.t === 'ex' ? '排除' : '识别'}${g.name ? '·' + g.name : ''}</span></div>`).join('');
+}
+function buildStats(){
+  const seg = (arr) => `<div class="bar">${arr.map(([v, c]) => `<div style="flex:${v};background:${c}"></div>`).join('')}</div>`;
+  $('#stats').innerHTML = `<div class="stats">
+    <div class="stat"><div class="n" style="color:var(--c-sub)">8</div><div class="d">字幕条目</div>${seg([[8, 'var(--c-sub)']])}<div class="d">已对时 +0.9s</div></div>
+    <div class="stat"><div class="n" style="color:var(--c-ocr)">9</div><div class="d">画面字</div>${seg([[4, 'var(--c-ocr)'], [3, '#ffd59a'], [2, '#ff6b6b']])}<div class="d">台词 4 · 说明 3 · 丢弃 2</div></div>
+    <div class="stat"><div class="n" style="color:var(--c-asr)">8</div><div class="d">语音段</div>${seg([[5, '#5a7a55'], [2, 'var(--c-asr)'], [1, 'var(--warn)']])}<div class="d">匹配 5 · 无覆盖 2 · 冲突 1</div></div>
+    <div class="stat"><div class="n" style="color:var(--acc)">15</div><div class="d">最终字幕</div>${seg([[11, 'var(--ok)'], [4, 'var(--warn)']])}<div class="d">已审 11 · 待审校 4</div></div>
+  </div>
+  <div class="dim" style="margin-top:10px;font-size:12px">丢弃：o8「NYA TV 4K」台标/水印（同位置长时间出现）· o9「鮮魚 大漁丸」实物上的字（招牌）。<a href="#" onclick="go('editor');return false" style="color:var(--acc2)">去审校 →</a></div>`;
+}
+
+/* ===================== 术语 / 导出 ===================== */
+function buildDict(){ $('#dictRows').innerHTML = DICT.map(d => `<tr><td class="ja">${esc(d[0])}</td><td class="ja">${esc(d[1])}</td><td class="dim">${d[2]}</td></tr>`).join(''); }
+function buildTerms(){
+  $('#termRows').innerHTML = TERMS.map(t => `<tr><td class="ja" contenteditable>${esc(t[0])}</td><td class="ja dim" contenteditable>${esc(t[1])}</td><td contenteditable>${esc(t[2])}</td><td><span class="chip">${t[3]}</span></td><td class="dim">${t[4]}</td></tr>`).join('');
+  $$('#termRows td[contenteditable]').forEach(td => td.oninput = () => markStale('llm', '术语表'));
+}
+function buildExport(){
+  $('#expList').innerHTML = Object.entries(PROFILES).map(([k, p]) => `<div class="prof-card">
+    <input type="checkbox" data-exp="${k}" ${p.export ? 'checked' : ''}>
+    <div><b>${p.name}</b> <span class="dim ja" style="font-size:12px">${esc(p.file.replace('{stem}', '海辺の暮らし_第3集'))}</span>
+      <div class="lychips">${p.layers.filter(l => l.show !== 'off').map(l => `<span class="chip">${esc(layerName(l))}${l.show === 'auto' ? '（自动）' : ''}${annotLabel(l) ? ' + ' + annotLabel(l) : ''}</span>`).join('')}<span class="chip">说明：${{near:'贴原文', top:'顶部', off:'不显示'}[p.info]}</span></div></div>
+    <div class="row"><span class="fmt">${p.fmt}</span><button class="btn sm" onclick="S.profile='${k}';setProfile('${k}');go('layers')">编辑</button></div></div>`).join('');
+  $$('[data-exp]').forEach(c => c.onchange = () => PROFILES[c.dataset.exp].export = c.checked);
+}
+function doExport(){
+  const sel = Object.values(PROFILES).filter(p => p.export);
+  if (!sel.length) return toast('请至少选择一个方案');
+  $('#expResult').innerHTML = `<div class="card"><h3>已导出 ${sel.length + 1} 个文件</h3>${sel.map(p => `<div class="row ja" style="padding:3px 0"><span class="chip ok">✓</span>${esc(p.file.replace('{stem}', '海辺の暮らし_第3集'))}</div>`).join('')}<div class="row ja" style="padding:3px 0"><span class="chip ok">✓</span>海辺の暮らし_第3集.ja-merged.ass</div><button class="btn sm" style="margin-top:8px">打开所在文件夹</button></div>`;
+  toast('导出完成');
+}
+
+/* ===================== 路由 ===================== */
+function go(v){
+  S.view = v;
+  $$('.view').forEach(x => x.classList.toggle('on', x.id === 'v-' + v));
+  $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  if (v === 'export') buildExport();
+  if (v === 'pipeline') requestAnimationFrame(drawEdges);
+  refreshFrames(true);
+  try { localStorage.setItem('nyasub.view', v); } catch (e) {}
+}
+$$('#nav button').forEach(b => b.onclick = () => go(b.dataset.v));
+$$('#presets .preset').forEach(p => p.onclick = () => $$('#presets .preset').forEach(x => x.classList.toggle('sel', x === p)));
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input,textarea,select,[contenteditable]')) return;
+  if (e.code === 'Space' && (S.view === 'editor' || S.view === 'layers')){ e.preventDefault(); togglePlay(); }
+  if (S.view === 'editor' && (e.key === 'j' || e.key === 'J')) stepCue(-1);
+  if (S.view === 'editor' && (e.key === 'k' || e.key === 'K')) stepCue(1);
+});
+$('#showBoxes').onchange = e => { S.showBoxes = e.target.checked; refreshFrames(true); };
+$('#showSubs').onchange = e => { S.showSubs = e.target.checked; refreshFrames(true); };
+$('#edProfile').onchange = e => setProfile(e.target.value);
+$('#lyProfile').onchange = e => setProfile(e.target.value);
+addEventListener('resize', () => { if (S.view === 'pipeline') drawEdges(); });
+
+/* ===================== 启动 ===================== */
+FR.ed = makeFrame($('#edFrame'));
+FR.ly = makeFrame($('#lyFrame'));
+buildTimeline(); buildFilter(); buildRows(); buildSamples(); buildSrcCards(); drawDag(); buildStats(); buildDict(); buildTerms();
+setProfile('bi'); selectCue('q4', false);
+Object.keys(LOGS).forEach(k => log(LOGS[k], k === 'llm' ? 'w' : ''));
+let startView = 'editor'; try { startView = localStorage.getItem('nyasub.view') || 'editor'; } catch (e) {}
+go(startView); setTime(S.t);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
