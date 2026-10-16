@@ -1,17 +1,29 @@
-"""排版（与输出格式无关）：按输出方案取图层 → 规范化 → 断行 → 长句拆条 → 消除重叠。
+"""排版（与输出格式无关）：按输出方案取图层 → 规范化 → 断行 → 长句拆条 → 注音 / 转写 → 消除重叠。
 
 产出的“排版条目”交给 ass.py / srt.py 写文件：
-    {"start", "end", "kind": "main" | "info", "layers": [(LayerCfg, 语言, [行...])], "rect"?, "sources"}
+    {"start", "end", "kind": "main" | "info", "layers": [(LayerCfg, 语言, 行列表)], "rect"?, "sources"}
+每一行是若干块 [(文字, 注音或 None)]；没有注音的行就是一块。
 """
 from .. import lang
 from ..env import log
+from ..lang import ruby
 
 NEAR_TYPES = ("info", "name", "title")
 _warned = set()
 
 
+def _warn(key, msg):
+    if key not in _warned:
+        _warned.add(key)
+        log(msg)
+
+
+def plain(line):
+    return "".join(t for t, _ in line)
+
+
 def resolve_layers(profile, src_code, targets):
-    """方案里实际要输出的图层：[(LayerCfg, 语言代码)]。"""
+    """方案里实际要输出的图层：[(LayerCfg, 语言代码)]；转写层的语言是被转写那一层的语言。"""
     out = []
     for ly in profile.layers:
         if ly.show == "off":
@@ -20,16 +32,17 @@ def resolve_layers(profile, src_code, targets):
             out.append((ly, src_code))
         elif ly.role == "translation":
             out.append((ly, lang.canonical(ly.lang or targets[0])))
-        elif "translit" not in _warned:
-            _warned.add("translit")
-            log("提示：转写图层（罗马字 / 整行拼音）将在 M2 支持，本次跳过")
+        else:
+            code = src_code if ly.of == "original" else lang.canonical(ly.of)
+            if not lang.get(code).translit_name:
+                _warn(("translit", code), f"提示：{lang.get(code).name}没有整行转写，方案「{profile.name}」的转写层跳过")
+                continue
+            out.append((ly, code))
+    for ly, code in out:
+        k = ly.annotate.kind
+        if k != "none" and k not in lang.get(code).annotations:
+            _warn(("annot", code, k), f"提示：{lang.get(code).name}不支持「{k}」注音，方案「{profile.name}」的这一层不注音")
     return out
-
-
-def _text_of(cue, ly, code):
-    if ly.role == "original":
-        return cue["orig"]["text"]
-    return (cue.get("tr", {}).get(code) or {}).get("text", "")
 
 
 def _opts(cfg, code):
@@ -37,60 +50,73 @@ def _opts(cfg, code):
 
 
 def _max_chars(ly, pack, opts):
+    if ly.role == "transliteration":
+        return ly.max_chars or 48
     return ly.max_chars or int(opts.get("line_chars") or pack.line_chars)
 
 
-def build(cues, profile, cfg, src_code):
+def build(cues, profile, cfg, src_code, tokens=None):
+    """tokens：{cue_id: {"orig": 注音词, "tr": {语言: 注音词}}}，来自 annotate 步骤；没有就不注音。"""
     targets = [lang.canonical(t) for t in cfg.project.targets]
     layers = resolve_layers(profile, src_code, targets)
     if not layers:
         return []
+    seen = [set() for _ in layers]  # scope = first：每层记录已经注过的词
     main, info = [], []
-    for cue in cues:
+    for cue in sorted(cues, key=lambda c: c["start"]):
         if cue.get("type") in NEAR_TYPES:
             if profile.info_mode != "off":
                 item = _info_item(cue, layers, cfg)
                 if item:
                     info.append(item)
             continue
-        main += _expand(cue, layers, profile, cfg)
+        main += _expand(cue, layers, profile, cfg, (tokens or {}).get(cue.get("id"), {}), seen)
     main = _extend_short(_resolve_overlaps(main), profile.min_duration)
     return main + info
 
 
+def _source_of(cue, ly, code):
+    """(文字, 注音词的键)。转写层取被转写那一层的文字。"""
+    if ly.role == "original" or (ly.role == "transliteration" and ly.of == "original"):
+        return cue["orig"]["text"], "orig"
+    return (cue.get("tr", {}).get(code) or {}).get("text", ""), code
+
+
 def _info_item(cue, layers, cfg):
     """说明类：用第一个有译文的译文层；没有译文层就用原文层。"""
-    for ly, code in sorted(layers, key=lambda x: x[0].role != "translation"):
-        text = _text_of(cue, ly, code).replace("｜", "")
+    for ly, code in sorted((x for x in layers if x[0].role != "transliteration"), key=lambda x: x[0].role != "translation"):
+        text = _source_of(cue, ly, code)[0].replace("｜", "")
         if text:
             pack = lang.get(code)
             opts = _opts(cfg, code)
             lines = pack.wrap(pack.display(text, opts), _max_chars(ly, pack, opts) + 4)
-            return {"start": cue["start"], "end": cue["end"], "kind": "info", "layers": [(ly, code, lines)],
+            return {"start": cue["start"], "end": cue["end"], "kind": "info", "layers": [(ly, code, [[(l, None)] for l in lines])],
                     "rect": cue.get("rect"), "sources": cue.get("sources", [])}
     return None
 
 
-def _expand(cue, layers, profile, cfg):
+def _expand(cue, layers, profile, cfg, tok, seen):
     """一条字幕 → 一条或几条（按“｜”或按长度拆），时间按主图层字数分配。"""
-    has_orig_shown = any(ly.role == "original" and not (ly.show == "auto" and cue.get("onscreen")) for ly, _ in layers)
-    any_tr = any(_text_of(cue, ly, code) for ly, code in layers if ly.role == "translation")
+    hidden = lambda ly: ly.role == "original" and ly.show == "auto" and cue.get("onscreen")  # 画面上已有原文硬字幕
+    has_orig_shown = any(ly.role == "original" and not hidden(ly) for ly, _ in layers)
+    any_tr = any(_source_of(cue, ly, code)[0] for ly, code in layers if ly.role == "translation")
     fell_back = False
-    texts = []  # [(ly, code, 原始文字)]
-    for ly, code in layers:
-        if ly.role == "original" and ly.show == "auto" and cue.get("onscreen"):
-            continue  # 画面上已经有原文硬字幕
-        t = _text_of(cue, ly, code)
+    texts = []  # [(图层序号, ly, 语言, 文字, 注音词的键)]
+    for li, (ly, code) in enumerate(layers):
+        if hidden(ly):
+            continue
+        t, key = _source_of(cue, ly, code)
         if not t and ly.role == "translation" and not any_tr and not has_orig_shown and not fell_back:
-            t, code = cue["orig"]["text"], cue["orig"]["lang"]  # 一条译文都没有时显示原文（只显示一次）
+            t, key, code = cue["orig"]["text"], "orig", cue["orig"]["lang"]  # 一条译文都没有时显示原文（只显示一次）
             fell_back = True
         if t:
-            texts.append((ly, code, t))
-    if not texts:
+            texts.append((li, ly, code, t, key))
+    if not texts or all(ly.role == "transliteration" for _, ly, _, _, _ in texts):
         return []
-    # 主图层：第一个译文层，决定怎么拆
-    pi = next((i for i, (ly, _, _) in enumerate(texts) if ly.role == "translation"), 0)
-    p_ly, p_code, p_text = texts[pi]
+    # 主图层：第一个译文层（没有就第一个非转写层），决定怎么拆
+    pi = next((i for i, x in enumerate(texts) if x[1].role == "translation"),
+              next(i for i, x in enumerate(texts) if x[1].role != "transliteration"))
+    _, p_ly, p_code, p_text, _ = texts[pi]
     p_pack, p_opts = lang.get(p_code), _opts(cfg, p_code)
     p_pieces = [p for p in p_text.split("｜") if p.strip()] or [p_text]
     groups = []  # [(piece_index, [主图层行])]
@@ -100,9 +126,8 @@ def _expand(cue, layers, profile, cfg):
         groups += [(k, g) for g in chunks]
     weights = [max(1, sum(len(l) for l in g)) for _, g in groups]
 
-    # 其他图层按主图层的分段 / 字数比例切开
-    per_layer = []
-    for i, (ly, code, t) in enumerate(texts):
+    per_layer = []  # 每层每组的行（文字）
+    for i, (_, ly, code, t, _) in enumerate(texts):
         if i == pi:
             per_layer.append([g for _, g in groups])
             continue
@@ -116,16 +141,72 @@ def _expand(cue, layers, profile, cfg):
         else:
             whole = pack.display(t.replace("｜", " " if pack.word_based else ""), opts)
             parts = pack.split(whole, [w / sum(weights) for w in weights])
-        per_layer.append([pack.wrap(p, _max_chars(ly, pack, opts))[: profile.max_lines] if p else [] for p in parts])
+        if ly.role == "transliteration":
+            per_layer.append([[p] if p else [] for p in parts])  # 先保留原文，下面再转写
+        else:
+            per_layer.append([pack.wrap(p, _max_chars(ly, pack, opts))[: profile.max_lines] if p else [] for p in parts])
 
     out, t0 = [], cue["start"]
     dur = cue["end"] - cue["start"]
     for gi, w in enumerate(weights):
         d = dur * w / sum(weights)
-        lys = [(ly, code, per_layer[i][gi]) for i, (ly, code, _) in enumerate(texts) if per_layer[i][gi]]
-        out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": cue.get("type"),
-                    "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
+        lys = []
+        for i, (li, ly, code, _, key) in enumerate(texts):
+            lines = per_layer[i][gi]
+            if not lines:
+                continue
+            words = tok.get("orig") if key == "orig" else tok.get("tr", {}).get(key)
+            lys.append((ly, code, _decorate(lines, ly, code, words, seen[li], profile)))
+        lys = [x for x in lys if x[2]]
+        if lys:
+            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": cue.get("type"),
+                        "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
         t0 += d
+    return out
+
+
+def _decorate(lines, ly, code, words, seen, profile):
+    """文字行 → 块行：注音层加上注音，转写层换成转写文字。"""
+    pack = lang.get(code)
+    if ly.role == "transliteration":
+        if not words:
+            _warn(("nowords", code), "提示：没有注音数据（未安装注音依赖？），转写层跳过")
+            return []
+        covered = []
+        for line in ruby.chunkify(lines, words):
+            for ch in line:
+                if ch["key"] and ch["key"][0] not in covered:
+                    covered.append(ch["key"][0])
+        text = pack.transliterate([words[i] for i in covered], ly.tone)
+        return [[(l, None)] for l in lang.get("en").wrap(text, _max_chars(ly, pack, {}))[: profile.max_lines]]
+    cfg = ly.annotate
+    if cfg.kind == "none" or cfg.kind not in pack.annotations or not words:
+        if cfg.kind != "none" and cfg.kind in pack.annotations and not words:
+            _warn(("nowords", code), "提示：没有注音数据（未安装注音依赖？），本次不注音")
+        return [[(l, None)] for l in lines]
+    out = []
+    done = set()  # 一段底字只注一次（跨行时注在第一次出现处）
+    firsts = {}   # 词 → 本组里第一次出现的位置
+    for line in ruby.chunkify(lines, words):
+        cur = []
+        for ch in line:
+            rt = None
+            if ch["key"] and ch["key"] not in done:
+                wi, si = ch["key"]
+                word, seg = words[wi], words[wi]["segs"][si]
+                first = word["t"] not in seen and firsts.setdefault(word["t"], wi) == wi
+                if len(seg) > 1 and pack.ruby_visible(word, cfg, first):
+                    rt = pack.ruby_text(seg, cfg)
+                done.add(ch["key"])
+            if rt is None and cur and cur[-1][1] is None:
+                cur[-1] = (cur[-1][0] + ch["text"], None)
+            else:
+                cur.append((ch["text"], rt))
+        out.append(cur)
+    for line in ruby.chunkify(lines, words):  # 记下这一组出现过的词（scope = first）
+        for ch in line:
+            if ch["key"]:
+                seen.add(words[ch["key"][0]]["t"])
     return out
 
 

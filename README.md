@@ -11,10 +11,14 @@
 
 技术栈：Python 内核 + FastAPI 本地服务 + React/TypeScript 界面 + Tauri 2 桌面壳（内核作为 sidecar）。开发阶段直接在浏览器里跑。
 
-## 当前状态：M1（内核 + 命令行）
+## 当前状态：M2（内核 + 命令行 + 注音）
 
-内核已经从 subfusion 重构成通用版本，命令行可以完整跑通：识别 → 融合 → 大模型融合翻译 → 按输出方案排版导出。
-还没做的：振假名 / 拼音 / 罗马字等注音和转写图层（M2）、可视化界面（M3）、桌面打包（M4）。
+命令行可以完整跑通：识别 → 融合 → 大模型融合翻译 → 注音 → 按输出方案排版导出。
+- M1：内核从 subfusion 重构成通用版本（任意语言对、多目标语言、作品术语表、指纹缓存）。
+- M2：振假名（全部 / 难读 / 专有名词 / 首次出现；平假名 / 片假名 / 罗马字）、拼音（调号 / 数字 / 无调）、注音符号、
+  整行罗马字 / 拼音转写图层；读音词典；ASS 逐块定位注音，SRT 写成 漢字(かんじ)。
+
+还没做的：可视化界面（M3）、桌面打包（M4）。
 
 ### 安装（开发环境）
 
@@ -25,10 +29,10 @@ uv venv --python 3.11
 ```
 
 ```bash
-uv pip install -e ".[asr,ocr,gpu]" pytest --override overrides.txt
+uv pip install -e ".[asr,ocr,gpu,lang]" pytest --override overrides.txt
 ```
 
-`overrides.txt` 里写一行 `onnxruntime; sys_platform == 'never'`（faster-whisper 会顺带装 CPU 版 onnxruntime，和 GPU 版冲突）。装好后检查环境：
+（pypi.org 连不上时加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。）`overrides.txt` 里写一行 `onnxruntime; sys_platform == 'never'`（faster-whisper 会顺带装 CPU 版 onnxruntime，和 GPU 版冲突）。装好后检查环境：
 
 ```bash
 .venv/Scripts/python -m nyasub doctor
@@ -43,7 +47,9 @@ uv pip install -e ".[asr,ocr,gpu]" pytest --override overrides.txt
 - 配置见 [config.example.toml](config.example.toml)：语言、识别参数、大模型接口、样式、输出方案（图层 = 角色 × 语言）。
 - 没配大模型接口时自动导出翻译任务（`<视频名>.nyasub/jobs/TASK.md`），交给 Claude Code 完成后再运行同一条命令即可导入。
 - 每一步的结果和指纹存在 `<视频名>.nyasub/stages/`：改了哪个参数只重做受影响的步骤，大模型请求也有缓存。`--redo 步骤` 强制重做，`--until fuse` 只做到原文合并。
-- `<视频名>.nyasub/edits.json` 里的手动修改会在输出时套用（以后由审校界面写入）。
+- `<视频名>.nyasub/edits.json` 里的手动修改会在注音和输出前套用（以后由审校界面写入）。
+- 注音写在图层的 `annotate` 里，能用哪种由图层语言决定；读音不对时写进读音词典 `readings.json`（格式见示例配置）。
+  带注音的 ASS 依赖字体度量，播放端要有同一字体，建议封装字体或压制。
 
 ### 测试
 

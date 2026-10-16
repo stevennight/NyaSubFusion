@@ -1,4 +1,4 @@
-"""输出 SRT：图层按顺序一行行叠起来；说明类加 {\\an8} 放顶部（多数播放器支持）。"""
+"""输出 SRT：图层按顺序一行行叠起来；注音写成 漢字(かんじ)；说明类加 {\\an8} 放顶部（多数播放器支持）。"""
 
 
 def ts(t):
@@ -12,7 +12,8 @@ def ts(t):
 def write(path, items):
     out, n = [], 0
     for it in sorted(items, key=lambda i: i["start"]):
-        lines = [l for _, _, ls in it["layers"] for l in ls]
+        lines = ["".join(t + (f"({rt})" if rt and ly.annotate.srt == "paren" else "") for t, rt in l)
+                 for ly, _, ls in it["layers"] for l in ls]
         if not lines:
             continue
         n += 1

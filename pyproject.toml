@@ -17,6 +17,8 @@ dependencies = [
 asr = ["faster-whisper>=1.1"]
 # 画面字识别
 ocr = ["rapidocr>=3.0", "opencv-python-headless>=4.8"]
+# 注音与转写：日语分词（振假名、罗马字）、中文拼音、字体度量（ASS 注音定位）
+lang = ["sudachipy>=0.6", "sudachidict-core", "pypinyin>=0.50", "fonttools>=4.40"]
 # GPU 推理（onnxruntime-gpu 也能跑 CPU，开发环境统一用它）
 gpu = [
     "onnxruntime-gpu[cuda,cudnn]>=1.20",

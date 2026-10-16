@@ -1,4 +1,4 @@
-"""流水线：probe → audio → subs → asr → ocr → ocr_refine → align → fuse → translate → render。
+"""流水线：probe → audio → subs → asr → ocr → ocr_refine → align → fuse → translate → annotate → render。
 
 每一步的结果存在 `<stem>.nyasub/stages/<步骤>.json`，旁边的 `.fp` 记录指纹：
     输入指纹 = hash(算法版本 + 相关配置 + 额外输入（文件大小/时间等）+ 上游各步的输出指纹)
@@ -14,7 +14,7 @@ from ..env import log
 from . import config as config_mod
 from .store import ProjectDir, digest, file_stamp, load_json, save_json
 
-STAGES = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "render"]
+STAGES = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate", "render"]
 ALIASES = {"merge": "fuse", "extract": "audio"}
 VIDEO_EXTS = (".mp4", ".mkv", ".ts", ".m2ts", ".mts", ".avi", ".mov", ".webm", ".flv", ".wmv", ".mpg", ".mpeg")
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
@@ -55,6 +55,8 @@ DEFS = {
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"]),
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
                                      "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=1),
+    # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
+    "annotate": StageDef(["translate"], [], version=1),
 }
 
 
@@ -96,6 +98,9 @@ class Run:
             return {"arg": self.opts.subs_path, "file": file_stamp(path) if path else None}
         if name == "ocr":
             return {"lang": lang.get(self.src).ocr_lang if self.src else None}
+        if name == "annotate":
+            return {"src": self.src, "edits": digest(load_json(self.proj / "edits.json", {})),
+                    "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
         if name == "translate":
@@ -199,7 +204,10 @@ class Run:
         if self._stop("translate"):
             return self._done(t_all)
 
-        self._render(translated["cues"], aspect, boxes)
+        annotated = self.stage("annotate", lambda: self._annotate(translated))
+        if self._stop("annotate"):
+            return self._done(t_all)
+        self._render(annotated["cues"], annotated["tokens"], aspect, boxes)
         return self._done(t_all)
 
     def _done(self, t0):
@@ -431,10 +439,70 @@ class Run:
                 pass
         return names
 
-    def _render(self, cues, aspect, boxes):
+    # ---------- 注音 ----------
+    def _user_readings(self):
+        """读音词典：用户全局 + 作品。{"entries": [{"lang": "ja", "src": "積丹", "reading": "しゃこたん", "proper": true}]}"""
+        from .. import env
+
+        files = [env.home() / "readings.json"]
+        if self.cfg.project.series:
+            files.insert(0, config_mod.series_dir(self.cfg.project.series) / "readings.json")  # 作品优先
+        out = []
+        for f in files:
+            for e in load_json(f, {}).get("entries", []):
+                out.append(dict(e, **{"from": "dict"}))
+        return out
+
+    def _readings(self, glossary):
+        """优先级：读音词典 > 术语表读音（源语言）；同一写法只保留优先级高的。"""
+        out, seen = [], set()
+        terms = [{"lang": self.src, "src": t.get("src", ""), "reading": t.get("reading", ""),
+                  "proper": t.get("type") in ("地名", "人名", "团体"), "from": "glossary"}
+                 for t in (glossary or {}).get("terms", []) if t.get("reading") and t.get("reading") != "—"]
+        for e in self._user_readings() + terms:
+            k = (lang.canonical(e.get("lang") or self.src), e.get("src"))
+            if e.get("src") and e.get("reading") and k not in seen:
+                seen.add(k)
+                out.append(e)
+        return out
+
+    def _annotate(self, translated):
+        cues = apply_edits(translated["cues"], load_json(self.proj / "edits.json", {}))
+        readings = self._readings(translated.get("glossary"))
+        warned = set()
+
+        def ann(code, text):
+            pack = lang.get(code)
+            if not pack.annotations and not pack.translit_name:
+                return None
+            mine = [r for r in readings if lang.canonical(r.get("lang") or self.src) == pack.code]
+            try:
+                return pack.annotate(text.replace("｜", ""), mine)
+            except ImportError as e:
+                if code not in warned:
+                    warned.add(code)
+                    log(f"提示：{pack.name}注音需要额外依赖（{e.name}），请安装 nyasub[lang]；本次不注音")
+                return None
+
+        tokens, n_guess = {}, 0
+        for c in cues:
+            t = {"orig": ann(self.src, c["orig"]["text"]), "tr": {}}
+            for code, v in c.get("tr", {}).items():
+                w = ann(code, v["text"])
+                if w is not None:
+                    t["tr"][code] = w
+            tokens[c["id"]] = t
+            if t["orig"] and any(w["guess"] for w in t["orig"]):
+                c["flags"] = list(c.get("flags", [])) + ["reading_guess"]
+                c["review"] = "todo"
+                n_guess += 1
+        if any(tokens.values()):
+            log(f"注音完成：{len(cues)} 条；读音词典 / 术语表 {len(readings)} 条；{n_guess} 条有读音待确认的专有名词")
+        return {"cues": cues, "tokens": tokens}
+
+    def _render(self, cues, tokens, aspect, boxes):
         from ..render import ass, layout, srt
 
-        cues = apply_edits(cues, load_json(self.proj / "edits.json", {}))
         targets = {lang.canonical(t) for t in self.cfg.project.targets}
         seen = set()
         for prof in self.cfg.render.profiles:
@@ -448,7 +516,7 @@ class Run:
             if name in seen:
                 name = name.rsplit(".", 1)[0] + f".{prof.name}.{prof.format}"
             seen.add(name)
-            items = layout.build(cues, prof, self.cfg, self.src)
+            items = layout.build(cues, prof, self.cfg, self.src, tokens)
             path = self.proj.video.with_name(name)
             if prof.format == "ass":
                 ass.write(str(path), items, prof, self.cfg.render.styles, aspect, boxes)

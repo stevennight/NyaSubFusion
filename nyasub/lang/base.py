@@ -67,6 +67,23 @@ class LanguagePack:
         parts.append(text[start:].strip("　 "))
         return parts
 
+    # ---------- 注音 / 转写（有的语言包才实现） ----------
+    annotations: tuple[str, ...] = ()   # 支持的注音：furigana / pinyin / zhuyin
+    translit_name = None                 # 整行转写的名字，例如“罗马字”；None = 不支持
+
+    def annotate(self, text, readings=()):
+        """返回注音词列表（见 ruby.py）；不支持注音的语言返回 None。"""
+        return None
+
+    def ruby_visible(self, word, cfg, first) -> bool:
+        return False
+
+    def ruby_text(self, seg, cfg) -> str:
+        return seg[1]
+
+    def transliterate(self, words, tone="mark") -> str:
+        return ""
+
     def length(self, text: str) -> int:
         """计算语速用的长度：不算空白和标点。"""
         return len(re.sub(r"[\s　\W]", "", text or ""))

@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .. import env
 
@@ -101,13 +101,29 @@ class StyleCfg(_M):
     italic: bool = False
 
 
+class AnnotateCfg(_M):
+    """字上方的注音。能用哪种由这一层的语言决定：日语 furigana；中文 pinyin / zhuyin。"""
+    kind: Literal["none", "furigana", "pinyin", "zhuyin"] = "none"
+    scope: Literal["all", "difficult", "proper", "first"] = "all"  # 振假名范围：全部 / 难读 / 专有名词 / 每个词首次出现
+    easy_kanji: Literal["grade1", "grade2"] = "grade2"  # difficult：只由这些小学低年级汉字组成的词不注
+    known_words: list[str] = []              # difficult：已经会的词，不注
+    numbers: bool = False                    # 数字（五十年、3人）也注音；读音容易错，默认不注
+    script: Literal["hiragana", "katakana", "romaji"] = "hiragana"
+    tone: Literal["mark", "number", "none"] = "mark"  # 拼音声调：pīn / pin1 / pin
+    size: float = 0.5                        # 注音字号 = 底字 × size
+    color: str = ""                          # 空 = 与底字同色
+    srt: Literal["paren", "none"] = "paren"  # SRT 不支持注音：写成 漢字(かんじ)，或不输出
+
+
 class LayerCfg(_M):
     role: Literal["original", "translation", "transliteration"]
     lang: str = ""                           # translation：目标语言（空 = 第一个目标语言）
-    of: str = "original"                     # transliteration：转写哪一层
+    of: str = "original"                     # transliteration：转写哪一层（original 或某个目标语言代码）
     show: Literal["on", "off", "auto"] = "on"  # auto：画面上已有原文硬字幕时不显示（只对原文有意义）
     style: str = "main"
     max_chars: int = 0                       # 每行字数；0 = 用语言包默认值
+    annotate: AnnotateCfg = AnnotateCfg()
+    tone: Literal["mark", "number", "none"] = "mark"  # transliteration 为拼音时的声调写法
 
 
 class ProfileCfg(_M):
@@ -128,6 +144,7 @@ DEFAULT_STYLES = {
     "sub": StyleCfg(font="Yu Gothic", size=38, color="#E8E8E8", outline=2.4),
     "orig_main": StyleCfg(font="Yu Gothic", size=54),
     "info": StyleCfg(size=42, color="#FFE680", outline=2.4),
+    "translit": StyleCfg(font="Segoe UI", size=30, color="#A8D8FF", outline=2),
 }
 
 DEFAULT_PROFILES = [
@@ -143,6 +160,17 @@ DEFAULT_PROFILES = [
 
 class RenderCfg(_M):
     styles: dict[str, StyleCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_STYLES))
+
+    @field_validator("styles", mode="before")
+    @classmethod
+    def _merge_styles(cls, v):
+        """用户写的样式按名字合并到内置样式上：只写 size 也只改字号，其他内置样式保留。"""
+        out = {k: s.model_dump() for k, s in DEFAULT_STYLES.items()}
+        for name, st in (v or {}).items():
+            st = st.model_dump() if isinstance(st, StyleCfg) else dict(st)
+            out[name] = {**out.get(name, {}), **st}
+        return out
+
     profiles: list[ProfileCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_PROFILES))
     merged_debug: bool = True                # 另外输出按来源上色的原文合并字幕，方便检查
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包

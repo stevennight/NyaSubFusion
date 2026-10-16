@@ -1,9 +1,11 @@
 """输出 ASS。
 
 - 图层按方案顺序从上到下叠在一条字幕里（整块底边对齐），每层用自己的样式。
+- 带注音的字幕逐块定位（libass 不支持 ruby）：底字和注音用同一个中心 x，注音一定在底字正上方。
 - 台词只在真的会撞上原画面硬字幕（或已放好的说明译文）时才往上让。
 - 说明类画面字的译文贴在原文旁边。
 """
+from . import fonts
 
 
 def ts(t):
@@ -44,11 +46,6 @@ def header(play_x, play_y, styles: dict, info_styles=()):
         lines.append(style_line(name, st, align=8 if name in info_styles else 2))
     lines += ["", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     return "\n".join(lines)
-
-
-def text_width(text, size):
-    """粗略估算一行字的像素宽度：全角字按 1 个字号，半角按 0.55。"""
-    return sum(size if ord(ch) > 0x2E7F else size * 0.55 for ch in text)
 
 
 def is_vertical(rect, aspect):
@@ -119,11 +116,12 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
 
     info_st = used.get(profile.info_style)
     for it in (i for i in items if i["kind"] == "info"):
-        lines = it["layers"][0][2]
+        lines = [plain(l) for l in it["layers"][0][2]]
         text = esc("\n".join(lines))
         if profile.info_mode == "near" and it.get("rect"):
             an, x, y = info_pos(it["rect"], is_vertical(it["rect"], aspect), px, py)
-            w = max(text_width(l, info_st.size) for l in lines)
+            m = fonts.metrics(info_st.font)
+            w = max(m.width(l, info_st.size) for l in lines)
             h = len(lines) * info_st.size * 1.25
             bx0 = x if an in (1, 7) else x - w / 2 if an in (2, 8) else x - w
             by0 = y - h if an in (1, 2, 3) else y
@@ -135,19 +133,88 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             out.append(f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{{\\an8}}{text}")
 
     for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: i["start"]):
-        first = it["layers"][0][0].style
-        parts, rows = [], []
-        for k, (ly, _, lines) in enumerate(it["layers"]):
-            st = used[ly.style]
-            seg = esc("\n".join(lines))
-            parts.append(seg if k == 0 else f"{{\\r{ly.style}}}{seg}")
-            rows += [(l, st.size) for l in lines]
-        w = max((text_width(t, sz) for t, sz in rows), default=0) + 12
-        h = sum(sz * 1.2 for _, sz in rows)
+        rows = _rows(it, used)
+        w = max((r["width"] for r in rows), default=0) + 12
+        h = sum(r["height"] for r in rows)
         mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
+        if any(r["ruby"] for r in rows):
+            out += _positioned(it, rows, px, py - mv)
+            continue
+        first = it["layers"][0][0].style
+        parts = []
+        for k, (ly, _, lines) in enumerate(it["layers"]):
+            seg = esc("\n".join(plain(l) for l in lines))
+            parts.append(seg if k == 0 else f"{{\\r{ly.style}}}{seg}")
         body = "\\N".join(parts)
         out.append(f"Dialogue: 0,{ts(it['start'])},{ts(it['end'])},{first},,0,0,{mv},,{body}")
     _save(path, out)
+
+
+def plain(line):
+    return "".join(t for t, _ in line)
+
+
+RUBY_GAP = 0.06  # 注音与底字的间距（底字字号的比例）
+
+
+def _rows(it, used):
+    """每一行的尺寸。带注音的行高 = 底字字号 + 注音字号 + 间距；块宽取底字和注音中较宽的。"""
+    rows = []
+    for ly, _, lines in it["layers"]:
+        st = used[ly.style]
+        m = fonts.metrics(st.font)
+        rsize = st.size * ly.annotate.size
+        for line in lines:
+            chunks = []
+            for i, (text, rt) in enumerate(line):
+                bw = m.width(text, st.size)
+                cw = bw
+                if rt:
+                    # 注音比底字宽时，可以向两侧的普通文字（假名等）各探出一个注音字宽，探不下的部分才撑宽底字；
+                    # 两边挨着别的注音时不能探出，免得注音叠在一起
+                    extra = m.width(rt, rsize) - bw
+                    if extra > 0:
+                        left_ok = i > 0 and not line[i - 1][1]
+                        right_ok = i + 1 < len(line) and not line[i + 1][1]
+                        allow = rsize if (left_ok and right_ok) else 0
+                        cw = bw + max(0.0, extra - 2 * allow)
+                chunks.append((text, rt, bw, cw))
+            has_rt = any(rt for _, rt in line)
+            rows.append({"ly": ly, "st": st, "chunks": chunks, "ruby": has_rt, "rsize": rsize,
+                         "width": sum(c[3] for c in chunks),
+                         "height": st.size + (rsize + st.size * RUBY_GAP if has_rt else 0)})
+    return rows
+
+
+def _positioned(it, rows, px, bottom):
+    """逐块定位：底字和注音都用 \\an2 以同一个中心 x 定位，注音一定正好在底字上方；
+    宽度只影响块与块之间的间距。没有注音的块用 \\an1 从左边定位。"""
+    out = []
+    t0, t1 = ts(it["start"]), ts(it["end"])
+    y = bottom
+    for r in reversed(rows):
+        ly, st = r["ly"], r["st"]
+        x = px / 2 - r["width"] / 2
+        ruby_y = y - st.size - st.size * RUBY_GAP
+        col = _inline_color(ly.annotate.color) if ly.annotate.color else ""
+        bord = st.outline * ly.annotate.size
+        for text, rt, bw, cw in r["chunks"]:
+            body = esc(text).replace(" ", "\\h")
+            if rt:
+                cx = round(x + cw / 2)
+                out.append(f"Dialogue: 0,{t0},{t1},{ly.style},ruby,0,0,0,,{{\\an2\\pos({cx},{round(y)})}}{body}")
+                out.append(f"Dialogue: 0,{t0},{t1},{ly.style},ruby,0,0,0,,{{\\an2\\pos({cx},{round(ruby_y)})"
+                           f"\\fs{r['rsize']:.0f}\\bord{bord:.1f}\\shad{st.shadow * ly.annotate.size:.1f}{col}}}{esc(rt)}")
+            elif text:
+                out.append(f"Dialogue: 0,{t0},{t1},{ly.style},ruby,0,0,0,,{{\\an1\\pos({round(x + (cw - bw) / 2)},{round(y)})}}{body}")
+            x += cw
+        y -= r["height"]
+    return out
+
+
+def _inline_color(hex_rgb):
+    h = hex_rgb.lstrip("#")
+    return f"\\c&H{h[4:6]}{h[2:4]}{h[0:2]}&".upper() if len(h) == 6 else ""
 
 
 MERGED_COLORS = {"subs": "#FFFFFF", "telop": "#C8F0FF", "info": "#FFE680", "asr": "#B4B4B4"}

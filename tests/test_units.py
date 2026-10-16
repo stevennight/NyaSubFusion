@@ -138,6 +138,10 @@ def _profile(*layers, **kw):
     return ProfileCfg(name="t", layers=list(layers), **kw)
 
 
+def _txt(lines):
+    return [layout.plain(l) for l in lines]
+
+
 def test_layout_split_by_bar_and_layers():
     cfg = config.Config.model_validate({"project": {"targets": ["zh-Hans", "en"]}})
     prof = _profile(LayerCfg(role="translation"), LayerCfg(role="translation", lang="en", style="sub"),
@@ -145,7 +149,7 @@ def test_layout_split_by_bar_and_layers():
     items = layout.build([_cue()], prof, cfg, "ja")
     assert len(items) == 2                          # 按“｜”拆成先后两条
     assert items[0]["end"] == items[1]["start"]
-    first = [(ly.role, code, lines) for ly, code, lines in items[0]["layers"]]
+    first = [(ly.role, code, _txt(lines)) for ly, code, lines in items[0]["layers"]]
     assert first == [("translation", "zh-Hans", ["前半句"]), ("translation", "en", ["First half"]),
                      ("original", "ja", ["前半の文です"])]
 
@@ -160,7 +164,7 @@ def test_layout_auto_original_and_info():
     main = [i for i in items if i["kind"] == "main"]
     near = [i for i in items if i["kind"] == "info"]
     assert [ly.role for ly, _, _ in main[0]["layers"]] == ["translation"]  # 画面上有原文 → 不重复显示
-    assert near[0]["rect"] and near[0]["layers"][0][2] == ["地名译文"]
+    assert near[0]["rect"] and _txt(near[0]["layers"][0][2]) == ["地名译文"]
     off = layout.build([info], _profile(LayerCfg(role="translation"), info_mode="off"), cfg, "ja")
     assert off == []
 
@@ -169,7 +173,7 @@ def test_layout_missing_translation_falls_back_to_original():
     cfg = config.Config()
     prof = _profile(LayerCfg(role="translation"), LayerCfg(role="translation", lang="en"))
     items = layout.build([_cue(tr={}, orig={"lang": "ja", "text": "訳なし"})], prof, cfg, "ja")
-    assert [(code, lines) for _, code, lines in items[0]["layers"]] == [("ja", ["訳なし"])]  # 原文只显示一次
+    assert [(code, _txt(lines)) for _, code, lines in items[0]["layers"]] == [("ja", ["訳なし"])]  # 原文只显示一次
     # 有中文、没有英文：英文层留空，不拿原文顶替
     items = layout.build([_cue(tr={"zh-Hans": {"text": "有译文"}})], prof, cfg, "ja")
-    assert [(code, lines) for _, code, lines in items[0]["layers"]] == [("zh-Hans", ["有译文"])]
+    assert [(code, _txt(lines)) for _, code, lines in items[0]["layers"]] == [("zh-Hans", ["有译文"])]

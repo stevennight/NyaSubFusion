@@ -91,3 +91,30 @@ name = "translation"
 format = "srt"
 info_mode = "top"
 layers = [{ role = "translation", style = "main" }]
+
+# ---------------- 注音与转写 ----------------
+# annotate 写在图层上，能用哪种由这一层的语言决定：日语 furigana；中文 pinyin / zhuyin。
+#   scope：all 全部 / difficult 只注难读（含小学低年级以外汉字的词 + 专有名词）/ proper 只注专有名词 / first 每个词首次出现
+#   script（振假名）：hiragana / katakana / romaji；tone（拼音）：mark / number / none
+#   size：注音字号 = 底字 × size；srt：SRT 里写成 漢字(かんじ)（paren）或不输出（none）
+# transliteration 图层是整行转写：日语 → 罗马字，中文 → 整行拼音；of 指定转写哪一层（original 或目标语言代码）。
+# 读音不对时写进读音词典（优先级：读音词典 > 术语表读音 > 分词器）：
+#   %APPDATA%\NyaSubFusion\readings.json 或 作品目录\readings.json
+#   {"entries": [{"lang": "ja", "src": "日本海", "reading": "にほんかい"}, {"lang": "zh-Hans", "src": "长发", "reading": "cháng fà"}]}
+
+[[render.profiles]]
+name = "ja-learn"
+filename = "{stem}.ja-learn.{ext}"
+layers = [
+    { role = "original", style = "orig_main", annotate = { kind = "furigana", scope = "all" } },
+    { role = "transliteration", of = "original", style = "translit" },
+    { role = "translation", style = "sub" },
+]
+
+[[render.profiles]]
+name = "zh-pinyin"
+filename = "{stem}.zh-pinyin.{ext}"
+layers = [
+    { role = "translation", style = "main", annotate = { kind = "pinyin", tone = "mark", size = 0.45 } },
+    { role = "original", show = "auto", style = "sub", annotate = { kind = "furigana", scope = "difficult" } },
+]

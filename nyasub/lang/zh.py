@@ -1,5 +1,6 @@
 import re
 
+from . import ruby
 from .base import LanguagePack
 
 _MID = re.compile(r"[，。；]+")
@@ -37,6 +38,69 @@ class Chinese(LanguagePack):
             if line:
                 lines.append(line)
         return "\n".join(lines)
+
+
+    # ---------- 注音 ----------
+    annotations = ("pinyin", "zhuyin")
+    translit_name = "整行拼音"
+
+    def annotate(self, text, readings=()):
+        """逐字给拼音（pypinyin 按词组判断多音字）。readings：[{"src": "重庆", "reading": "chóng qìng"}]。"""
+        from pypinyin import Style, load_phrases_dict, pinyin
+
+        custom = {r["src"]: [[s] for s in r["reading"].split()] for r in readings
+                  if r.get("src") and r.get("reading") and len(r["reading"].split()) == len(r["src"])}
+        if custom:
+            load_phrases_dict(custom)
+        hans = [c for c in text if ruby.is_kanji(c)]
+        toned = [x[0] for x in pinyin(text, style=Style.TONE, errors="ignore")]
+        bopo = [x[0] for x in pinyin(text, style=Style.BOPOMOFO, errors="ignore")]
+        if len(toned) != len(hans) or len(bopo) != len(hans):  # 对不齐时逐字查
+            toned = [pinyin(c, style=Style.TONE)[0][0] for c in hans]
+            bopo = [pinyin(c, style=Style.BOPOMOFO)[0][0] for c in hans]
+        guessed = {c for r in readings for c in r.get("src", "")}
+        words, k, run = [], 0, ""
+        for c in text:
+            if ruby.is_kanji(c):
+                if run:
+                    words.append(_plain(run))
+                    run = ""
+                words.append({"t": c, "segs": [[c, toned[k], bopo[k]]], "pos": "han", "p": False, "num": False,
+                              "src": "dict" if c in guessed else "auto", "guess": False})
+                k += 1
+            else:
+                run += c
+        if run:
+            words.append(_plain(run))
+        return words
+
+    def ruby_visible(self, word, cfg, first):
+        return len(word["segs"][0]) > 1
+
+    def ruby_text(self, seg, cfg):
+        if cfg.kind == "zhuyin":
+            z = seg[2]
+            return "˙" + z[:-1] if z.endswith("˙") else z  # 轻声点写在前面
+        return ruby.tone_style(seg[1], cfg.tone)
+
+    def transliterate(self, words, tone="mark"):
+        out = ""
+        for w in words:
+            seg = w["segs"][0]
+            if len(seg) > 1:
+                out += ("" if not out or out.endswith((" ", "(", "“")) else " ") + ruby.tone_style(seg[1], tone)
+            else:
+                t = "".join(_PUN.get(c, c) for c in w["t"])
+                out = out.rstrip() + t if t.strip()[:1] in ",.?!;:)”" else out + (" " if out and t.strip() else "") + t
+        return re.sub(r"\s+", " ", out).strip()
+
+
+_PUN = {"，": ",", "。": ".", "、": ",", "？": "?", "！": "!", "；": ";", "：": ":", "（": "(", "）": ")", "　": " ",
+        "…": "..."}
+
+
+def _plain(text):
+    return {"t": text, "segs": [[text]], "pos": "other", "p": False, "num": text.isdigit(), "src": "auto", "guess": False}
 
 
 class ChineseTraditional(Chinese):
