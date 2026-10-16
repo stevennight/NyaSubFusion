@@ -1,0 +1,63 @@
+// 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
+import type { Cfg, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+
+const params = new URLSearchParams(location.search);
+// 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
+const TOKEN: string = (window as unknown as { __NYASUB_TOKEN__?: string }).__NYASUB_TOKEN__ ?? params.get("token") ?? "";
+
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: { "content-type": "application/json", ...(TOKEN ? { "x-nyasub-token": TOKEN } : {}), ...(init?.headers ?? {}) },
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* 不是 JSON */ }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return res.json() as Promise<T>;
+}
+
+const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
+const q = (path: string) => (TOKEN ? `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}` : path);
+
+export const api = {
+  projects: () => call<ProjectEntry[]>("/api/projects"),
+  open: (path: string) => call<ProjectSummary>("/api/projects", json("POST", { path })),
+  project: (pid: string) => call<ProjectSummary>(`/api/projects/${pid}`),
+  plan: (pid: string) => call<PlanItem[]>(`/api/projects/${pid}/plan`),
+  config: (pid: string) => call<{ project: Cfg; effective: Cfg; files: string[] }>(`/api/projects/${pid}/config`),
+  putConfig: (pid: string, project: Cfg) =>
+    call<{ config: { project: Cfg; effective: Cfg }; plan: PlanItem[] }>(`/api/projects/${pid}/config`, json("PUT", { project })),
+  run: (pid: string, body: { until?: string; redo?: string[]; translate?: string }) =>
+    call<{ started: boolean }>(`/api/projects/${pid}/run`, json("POST", body)),
+  log: (pid: string) => call<LiveEvent[]>(`/api/projects/${pid}/log`),
+  data: (pid: string) => call<ProjectData>(`/api/projects/${pid}/data`),
+  preview: (pid: string, profile?: string) =>
+    call<Preview>(`/api/projects/${pid}/preview${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
+  editCue: (pid: string, cid: string, body: Cfg) => call<{ cue: ProjectData["cues"][number] }>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
+  addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
+    call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),
+  retranslate: (pid: string, cid: string, body: { instruction?: string; lang?: string }) =>
+    call<{ alts: string[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
+  export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
+  langs: () => call<LangInfo[]>("/api/langs"),
+  peaks: (pid: string) => call<{ per_second: number; peaks: number[] }>(`/api/projects/${pid}/media/peaks`),
+  videoUrl: (pid: string) => q(`/api/projects/${pid}/media/video`),
+  cropUrl: (pid: string, crop: string) => q(`/api/projects/${pid}/${crop}`),
+};
+
+/** 订阅项目事件（步骤进度、日志），断线自动重连。返回取消函数。 */
+export function subscribe(pid: string, onEvent: (e: LiveEvent) => void): () => void {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let timer = 0;
+  const open = () => {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(q(`${proto}://${location.host}/ws/projects/${pid}`));
+    ws.onmessage = (m) => onEvent(JSON.parse(m.data));
+    ws.onclose = () => { if (!closed) timer = window.setTimeout(open, 1500); };
+  };
+  open();
+  return () => { closed = true; clearTimeout(timer); ws?.close(); };
+}

@@ -96,8 +96,13 @@ def avoid_margin(item, boxes, base, x0, x1, height, py):
     return m
 
 
-def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
-    """items 来自 layout.build。hardsub_boxes：[{start, end, rect, vertical}]，原画面硬字幕的位置。"""
+def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
+    """算出每条字幕在 1080p 画布上的位置（导出 ASS 和界面预览共用）。
+
+    返回 (px, py, 用到的样式, 位置列表)：
+      说明类 {"kind": "info", "item", "an", "x", "y"} 或 {"kind": "info", "item", "top": True}
+      台词   {"kind": "main", "item", "margin_v", "rows", "ruby"}（margin_v 是底边到画面底部的距离）
+    """
     py = 1080
     px = int(round(py * aspect))
     used = {}
@@ -105,7 +110,6 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
         for ly, _, _ in it["layers"]:
             name = profile.info_style if it["kind"] == "info" else ly.style
             used[name] = styles.get(name) or styles["main"]
-    out = [header(px, py, used, info_styles={profile.info_style})]
 
     boxes = []
     if profile.avoid_hardsub:
@@ -114,10 +118,10 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             if not b.get("vertical"):
                 boxes.append(_box(b["start"], b["end"], r[0] * px, r[2] * px, r[1] * py, r[3] * py))
 
+    placed = []
     info_st = used.get(profile.info_style)
     for it in (i for i in items if i["kind"] == "info"):
         lines = [plain(l) for l in it["layers"][0][2]]
-        text = esc("\n".join(lines))
         if profile.info_mode == "near" and it.get("rect"):
             an, x, y = info_pos(it["rect"], is_vertical(it["rect"], aspect), px, py)
             m = fonts.metrics(info_st.font)
@@ -127,18 +131,32 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             by0 = y - h if an in (1, 2, 3) else y
             if profile.avoid_hardsub:
                 boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
-            out.append(f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,"
-                       f"{{\\an{an}\\pos({x},{y})}}{text}")
+            placed.append({"kind": "info", "item": it, "an": an, "x": x, "y": y})
         else:
-            out.append(f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{{\\an8}}{text}")
+            placed.append({"kind": "info", "item": it, "top": True})
 
     for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: i["start"]):
         rows = _rows(it, used)
         w = max((r["width"] for r in rows), default=0) + 12
         h = sum(r["height"] for r in rows)
         mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
-        if any(r["ruby"] for r in rows):
-            out += _positioned(it, rows, px, py - mv)
+        placed.append({"kind": "main", "item": it, "margin_v": mv, "rows": rows, "ruby": any(r["ruby"] for r in rows)})
+    return px, py, used, placed
+
+
+def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
+    """items 来自 layout.build。hardsub_boxes：[{start, end, rect, vertical}]，原画面硬字幕的位置。"""
+    px, py, used, placed = place(items, profile, styles, aspect, hardsub_boxes, margin_v)
+    out = [header(px, py, used, info_styles={profile.info_style})]
+    for p in placed:
+        it = p["item"]
+        if p["kind"] == "info":
+            text = esc("\n".join(plain(l) for l in it["layers"][0][2]))
+            tag = "{\\an8}" if p.get("top") else f"{{\\an{p['an']}\\pos({p['x']},{p['y']})}}"
+            out.append(f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{tag}{text}")
+            continue
+        if p["ruby"]:
+            out += _positioned(it, p["rows"], px, py - p["margin_v"])
             continue
         first = it["layers"][0][0].style
         parts = []
@@ -146,7 +164,7 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             seg = esc("\n".join(plain(l) for l in lines))
             parts.append(seg if k == 0 else f"{{\\r{ly.style}}}{seg}")
         body = "\\N".join(parts)
-        out.append(f"Dialogue: 0,{ts(it['start'])},{ts(it['end'])},{first},,0,0,{mv},,{body}")
+        out.append(f"Dialogue: 0,{ts(it['start'])},{ts(it['end'])},{first},,0,0,{p['margin_v']},,{body}")
     _save(path, out)
 
 

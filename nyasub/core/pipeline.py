@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 from .. import lang
-from ..env import log
+from ..env import emit, log
 from . import config as config_mod
 from .store import ProjectDir, digest, file_stamp, load_json, save_json
 
@@ -42,7 +42,7 @@ class StageDef:
 
 
 DEFS = {
-    "probe": StageDef([], []),
+    "probe": StageDef([], [], version=2),  # v2：记录视频编码（判断能否直接在界面里播放）
     "audio": StageDef(["probe"], []),
     "subs": StageDef(["probe"], ["subs.enabled", "subs.ruby_size_ratio", "subs.track"]),
     "asr": StageDef(["audio"], ["asr.enabled", "asr.model", "asr.beam_size", "asr.vad", "asr.vad_threshold",
@@ -81,6 +81,7 @@ class Run:
         self.fps = {}           # 步骤 → {"in", "out"}
         self.ran = []           # 本次实际重跑的步骤
         self.src = None         # 解析后的源语言
+        self.waiting = False    # 翻译任务已导出、等外部助手完成
         self.config_files = list(config_files)
 
     # ---------- 指纹 ----------
@@ -130,16 +131,73 @@ class Run:
         if rec:
             self.results[name] = load_json(self._out_path(name))
             self.fps[name] = rec
+            emit({"type": "stage", "name": name, "status": "cached", "seconds": rec.get("seconds")})
             return self.results[name]
+        emit({"type": "stage", "name": name, "status": "running"})
         t = time.time()
-        result = fn()
+        try:
+            result = fn()
+        except Waiting:
+            emit({"type": "stage", "name": name, "status": "waiting"})
+            raise
+        except Exception as e:
+            emit({"type": "stage", "name": name, "status": "failed", "error": str(e)})
+            raise
         save_json(self._out_path(name), result)
         rec = {"in": fp_in, "out": digest(result), "seconds": round(time.time() - t, 1)}
         save_json(self._fp_path(name), rec)
         self.results[name] = result
         self.fps[name] = rec
         self.ran.append(name)
+        emit({"type": "stage", "name": name, "status": "done", "seconds": rec["seconds"]})
         return result
+
+    def plan(self):
+        """不运行，算出每一步的状态：done 可复用 / stale 要重做 / missing 还没跑过。界面改配置前用来预演。"""
+        asr = load_json(self._out_path("asr"), {"language": None})
+        subs = load_json(self._out_path("subs"), [])
+        self.src = self._resolve_source(asr, subs, quiet=True)
+        status = {}
+        for name in DEFS:
+            rec = load_json(self._fp_path(name))
+            if not rec or not self._out_path(name).exists():
+                status[name] = "missing"
+                continue
+            if any(status.get(d) != "done" for d in DEFS[name].deps):
+                status[name] = "stale"
+                continue
+            for d in DEFS[name].deps:
+                self.fps[d] = load_json(self._fp_path(d))
+            status[name] = "done" if rec.get("in") == self.input_fp(name) else "stale"
+        return [{"stage": n, "status": status[n], "seconds": (load_json(self._fp_path(n)) or {}).get("seconds")}
+                for n in DEFS]
+
+    def load_state(self):
+        """读取已有的各步结果（不运行），并推断源语言。"""
+        self.results = {n: r for n in DEFS if (r := load_json(self._out_path(n))) is not None}
+        for n in DEFS:
+            rec = load_json(self._fp_path(n))
+            if rec:
+                self.fps[n] = rec
+        self.src = self._resolve_source(self.results.get("asr") or {"language": None},
+                                        self.results.get("subs") or [], quiet=True)
+        return self.results
+
+    def render_context(self):
+        """输出需要的东西：(字幕, 注音词, 画面比例, 硬字幕框)。先调 load_state。"""
+        res = self.results
+        info = res.get("probe") or {}
+        aspect = (info.get("video") or {}).get("aspect") or 16 / 9
+        fused = res.get("fuse")
+        boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused) if fused else []
+        ann = res.get("annotate") or {"cues": (res.get("translate") or {}).get("cues", []), "tokens": {}}
+        return ann["cues"], ann["tokens"], aspect, boxes
+
+    def export(self, only=None):
+        """只做输出（用已有结果）：only 是方案名列表，None = 全部启用的方案。返回输出文件名。"""
+        self.load_state()
+        cues, tokens, aspect, boxes = self.render_context()
+        return self._render(cues, tokens, aspect, boxes, only)
 
     def _stop(self, name):
         return STAGES.index(name) >= STAGES.index(self.opts.until)
@@ -200,6 +258,7 @@ class Run:
         try:
             translated = self.stage("translate", lambda: self._translate(fused, mode))
         except Waiting:
+            self.waiting = True
             return self._done(t_all)
         if self._stop("translate"):
             return self._done(t_all)
@@ -297,7 +356,7 @@ class Run:
         log(f"语音识别完成：{len(segs)} 段，用时 {time.time() - t:.0f}s")
         return {"segments": segs, "language": detected}
 
-    def _resolve_source(self, asr, subs):
+    def _resolve_source(self, asr, subs, quiet=False):
         src = self.cfg.project.source
         if src != "auto":
             return lang.canonical(src)
@@ -306,7 +365,8 @@ class Run:
         guess = lang.detect("".join(c["text"] for c in subs[:200]))
         if guess:
             return guess
-        log("无法判断源语言（没有语音也没有字幕），按日语处理；可在 [project] source 里指定")
+        if not quiet:
+            log("无法判断源语言（没有语音也没有字幕），按日语处理；可在 [project] source 里指定")
         return "ja"
 
     def _run_ocr(self, info):
@@ -467,7 +527,8 @@ class Run:
         return out
 
     def _annotate(self, translated):
-        cues = apply_edits(translated["cues"], load_json(self.proj / "edits.json", {}))
+        edits = load_json(self.proj / "edits.json", {})
+        cues = apply_edits(translated["cues"], edits)
         readings = self._readings(translated.get("glossary"))
         warned = set()
 
@@ -494,19 +555,21 @@ class Run:
             tokens[c["id"]] = t
             if t["orig"] and any(w["guess"] for w in t["orig"]):
                 c["flags"] = list(c.get("flags", [])) + ["reading_guess"]
-                c["review"] = "todo"
+                if "review" not in edits.get(c["id"], {}):  # 用户手动标过的审校状态优先
+                    c["review"] = "todo"
                 n_guess += 1
         if any(tokens.values()):
             log(f"注音完成：{len(cues)} 条；读音词典 / 术语表 {len(readings)} 条；{n_guess} 条有读音待确认的专有名词")
         return {"cues": cues, "tokens": tokens}
 
-    def _render(self, cues, tokens, aspect, boxes):
+    def _render(self, cues, tokens, aspect, boxes, only=None):
         from ..render import ass, layout, srt
 
         targets = {lang.canonical(t) for t in self.cfg.project.targets}
         seen = set()
+        written = []
         for prof in self.cfg.render.profiles:
-            if not prof.enabled:
+            if (only is None and not prof.enabled) or (only is not None and prof.name not in only):
                 continue
             missing = {lang.canonical(ly.lang) for ly in prof.layers
                        if ly.role == "translation" and ly.lang and ly.show != "off"} - targets
@@ -523,6 +586,8 @@ class Run:
             else:
                 srt.write(str(path), items)
             log(f"已输出「{prof.name}」：{name}")
+            written.append(name)
+        return written
 
 
 def apply_edits(cues, edits: dict):
@@ -538,7 +603,7 @@ def apply_edits(cues, edits: dict):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type"):
+        for k in ("start", "end", "type", "review"):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:

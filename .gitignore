@@ -12,3 +12,7 @@ build/
 tests/fixtures/*.ass
 tests/fixtures/*.ja-merged.*
 node_modules/
+
+# 本机开发用的启动配置（含本机路径）
+.claude/launch.json
+web/dist/

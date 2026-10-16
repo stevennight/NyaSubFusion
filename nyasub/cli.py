@@ -1,4 +1,4 @@
-"""命令行：nyasub run / doctor / langs。"""
+"""命令行：nyasub run / serve / doctor / langs。"""
 import argparse
 import shutil
 import sys
@@ -118,6 +118,19 @@ def cmd_doctor(args):
     return 0 if ok else 1
 
 
+def cmd_serve(args):
+    try:
+        import uvicorn
+
+        from .server.app import create_app
+    except ImportError as e:
+        env.log(f"本地服务需要额外依赖（{e.name}），请安装 nyasub[server]")
+        return 1
+    env.log(f"本地服务：http://{args.host}:{args.port}" + ("（需要 token）" if args.token else ""))
+    uvicorn.run(create_app(args.token), host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def cmd_langs(args):
     from . import lang
 
@@ -155,6 +168,12 @@ def main(argv=None):
     d.set_defaults(fn=cmd_doctor)
 
     sub.add_parser("langs", help="列出语言包").set_defaults(fn=cmd_langs)
+
+    sv = sub.add_parser("serve", help="启动本地服务（界面用）")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.add_argument("--token", help="设置后所有接口都要带这个 token（桌面壳启动时用）")
+    sv.set_defaults(fn=cmd_serve)
     args = ap.parse_args(argv)
     return args.fn(args)
 

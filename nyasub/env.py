@@ -56,13 +56,25 @@ def home() -> Path:
 _listeners = []
 
 
-def on_log(fn):
-    """订阅日志（服务层用来推送到界面）。"""
+def on_event(fn):
+    """订阅事件（服务层用来推送到界面）。fn(event: dict) 会在发出事件的线程里调用。"""
     _listeners.append(fn)
+
+
+def off_event(fn):
+    if fn in _listeners:
+        _listeners.remove(fn)
+
+
+def emit(event: dict):
+    for fn in list(_listeners):
+        try:
+            fn(event)
+        except Exception:
+            pass
 
 
 def log(*args):
     msg = " ".join(str(a) for a in args)
     print("[nyasub]", msg, flush=True)
-    for fn in _listeners:
-        fn(msg)
+    emit({"type": "log", "msg": msg})

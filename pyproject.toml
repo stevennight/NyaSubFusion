@@ -10,6 +10,7 @@ dependencies = [
     "rapidfuzz>=3.0",
     "numpy>=1.26",
     "openai>=1.40",
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,8 @@ asr = ["faster-whisper>=1.1"]
 ocr = ["rapidocr>=3.0", "opencv-python-headless>=4.8"]
 # 注音与转写：日语分词（振假名、罗马字）、中文拼音、字体度量（ASS 注音定位）
 lang = ["sudachipy>=0.6", "sudachidict-core", "pypinyin>=0.50", "fonttools>=4.40"]
+# 本地服务（界面通过它调内核）
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 # GPU 推理（onnxruntime-gpu 也能跑 CPU，开发环境统一用它）
 gpu = [
     "onnxruntime-gpu[cuda,cudnn]>=1.20",
@@ -30,7 +33,7 @@ gpu = [
 nyasub = "nyasub.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
 
 [tool.uv]
 # faster-whisper 依赖 CPU 版 onnxruntime，它和 onnxruntime-gpu 是同一个模块名，不能同时装

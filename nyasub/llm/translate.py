@@ -158,3 +158,24 @@ def add_quality_flags(cues):
                 c["flags"].append("cps_high")
         c["review"] = "todo" if c["flags"] else "ok"
     return cues
+
+
+def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruction=""):
+    """单条重译：给出 3 个候选。context 是前后几条字幕（含当前条）。"""
+    from .client import LLM
+
+    llm = LLM(cfg, cache_dir=cache_dir)
+    src, tgt = lang.get(src_code), lang.get(tgt_code)
+    system = (f"你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{cfg.project.context or '（未提供）'}\n"
+              f"给你一条字幕的原文、当前译文和前后文，请给出 3 个不同的{tgt.name}译文候选，按推荐程度排序。"
+              f"{tgt.prompt_target_rules(cfg.render.lang_options.get(tgt_code, {}))}\n"
+              '输出 JSON：{"alts": ["候选1", "候选2", "候选3"]}')
+    lines = []
+    for c in context:
+        mark = "→ 本条" if c["id"] == cue["id"] else "　 "
+        lines.append(f"{mark} {c['orig']['text'].replace(chr(10), ' / ')} ｜ 当前译文：{c.get('tr', {}).get(tgt_code, {}).get('text', '')}")
+    user = f"## 术语表\n{prompts.glossary_text(terms)}\n\n## 前后文\n" + "\n".join(lines)
+    if instruction:
+        user += f"\n\n## 额外要求\n{instruction}"
+    res = llm.chat_json(system, user)
+    return [a.strip() for a in res.get("alts", []) if isinstance(a, str) and a.strip()][:3]

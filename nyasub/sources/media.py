@@ -46,7 +46,7 @@ def probe(path):
                     aspect = w / h
             field = s.get("field_order", "progressive")
             res["video"] = {
-                "index": s["index"], "width": w, "height": h, "aspect": aspect,
+                "index": s["index"], "width": w, "height": h, "aspect": aspect, "codec": s.get("codec_name", ""),
                 "interlaced": field not in ("progressive", "unknown", None),
                 "start_time": float(s.get("start_time") or res["start_time"]),
             }
@@ -158,3 +158,38 @@ def iter_frames(path, vinfo, fps, height, file_start=0.0, hwaccel=False):
             return
         # 一帧都没出来：多半是显卡解码不支持这个格式，退回 CPU
     return
+
+
+BROWSER_CODECS = {"h264", "vp8", "vp9", "av1"}
+
+
+def browser_playable(path, info):
+    """浏览器 / WebView2 能不能直接播放。不能的话要先转一个预览文件。"""
+    v = info.get("video")
+    return bool(v) and v.get("codec") in BROWSER_CODECS and str(path).lower().endswith((".mp4", ".m4v", ".webm", ".mov"))
+
+
+def make_proxy(path, out_path, height=540):
+    """转一个 H.264 预览文件给界面播放：先试显卡编码，失败再用 CPU。"""
+    _need("ffmpeg")
+    base = ["ffmpeg", "-y", "-v", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", f"scale=-2:{height}", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+    for venc in (["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28"], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]):
+        r = subprocess.run(base + venc + [str(out_path)], capture_output=True)
+        if r.returncode == 0:
+            return True
+    raise RuntimeError(f"生成预览视频失败：{r.stderr.decode('utf-8', 'replace')[-300:]}")
+
+
+def waveform_peaks(wav_path, per_second=50):
+    """音频波形峰值（0~255），时间轴用。"""
+    import wave
+
+    with wave.open(str(wav_path), "rb") as w:
+        rate, n = w.getframerate(), w.getnframes()
+        data = np.frombuffer(w.readframes(n), dtype=np.int16)
+    step = max(1, rate // per_second)
+    usable = len(data) // step * step
+    peaks = np.abs(data[:usable].astype(np.int32)).reshape(-1, step).max(axis=1)
+    top = max(1, int(np.percentile(peaks, 99.5)) if len(peaks) else 1)
+    return {"per_second": rate / step, "peaks": np.clip(peaks * 255 // top, 0, 255).astype(int).tolist()}
