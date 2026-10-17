@@ -7,7 +7,17 @@
   时间重叠但文字对不上的（多半是听错了），作为“语音参考”附到那条上。
 产出的 items 交给大模型做最终的合并 / 纠错 / 翻译；cues 是不经过大模型的原文合并字幕。
 """
+import re
+
 from ..textutil import overlap, sim
+
+# 字幕里不是“说话”的部分：（笑い声）（競りの声）这类括号说明、♪♬〜 音乐记号、➡ 接续符号
+_NOT_SPEECH = re.compile(r"[（(\[［【][^）)\]］】]*[）)\]］】]|[♪♬〜～➡→]")
+
+
+def spoken(text):
+    """字幕里真正说出来的话（去掉说话人标注、音效 / 音乐说明）。"""
+    return _NOT_SPEECH.sub("", text or "").strip()
 
 
 def _concat(items, t0, t1, slack=0.0):
@@ -100,6 +110,12 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         a_hit, a_text = _concat(asr, e["start"], e["end"])
         speech_ratio = _coverage([(a["start"], a["end"]) for a in a_hit], e["start"], e["end"])
         s = sim(e["text"], a_text) if a_text else 0
+        # 同时段字幕在说别的话（画面字和字幕、语音都对不上）：多半是没人念出来的标题 / 菜名 / 说明，
+        # 也可能是旁白同时另一个人说的话。这里不下结论（交给大模型按内容判断），只记下事实，
+        # 大模型要是把它和台词合成一条，翻译阶段会按这个标记拆开（见 llm/translate.py split_unspoken）。
+        talk = [c for c in hit if len(spoken(c["text"])) >= 2]
+        sub_cov = _coverage([(c["start"], c["end"]) for c in talk], e["start"], e["end"]) if talk else 0.0
+        other_talk = sub_cov >= 0.6 and s < asr_th
         long_line = len(e["text"].replace("\n", "")) >= 6
         cx = (e["rect"][0] + e["rect"][2]) / 2
         # 人名条：语言包的人名条格式，或靠左下的单行
@@ -114,6 +130,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
                 "zone": e["zone"], "rect": e["rect"], "ocr_score": e["score"]}
         if e.get("crop"):
             item["crop"] = e["crop"]
+        if other_talk:
+            item["over_speech"] = True
         if kind == "telop" and a_hit:  # 起点吸附到语音开始
             first = min(a_hit, key=lambda a: abs(a["start"] - e["start"]))
             if abs(first["start"] - e["start"]) <= m["snap_seconds"]:

@@ -6,8 +6,10 @@
 """
 from .. import lang
 from ..env import log
-from ..textutil import fmt_time
+from ..textutil import fmt_time, full_sim, sim
 from . import prompts
+
+SPEECH, SCREEN = ("subs", "asr"), ("telop", "info")
 
 
 def chunk_items(items, seconds, max_items):
@@ -31,8 +33,8 @@ def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
            "onscreen": any(s["src"] in ("telop", "info") for s in srcs),
            "orig": {"lang": src_lang, "text": orig}, "tr": {tgt: {"text": tr}} if tr else {}}
     rects = [s["rect"] for s in srcs if s.get("rect")]
-    if cue["type"] in ("info", "name", "title") and rects:
-        cue["rect"] = rects[0]
+    if cue["type"] in ("info", "name", "title") and rects:  # 几个画面字合成一条时（标题分成两行识别），取并集
+        cue["rect"] = [min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects)]
     flags = []
     if all(s["src"] == "asr" for s in srcs):
         flags.append("asr_only")
@@ -58,11 +60,57 @@ def apply_result(chunk, result, tgt, src_lang):
         srcs = [by_id[s] for s in src]
         orig = (c.get("orig") or c.get("ja") or "").strip() or "\n".join(s["text"] for s in srcs)
         tr = (c.get("tr") or c.get("zh") or "").strip()
+        srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
         cues.append(make_cue(srcs, orig, tr, tgt, c.get("type"), src_lang))
+        cues += [make_cue([it], o, t, tgt, "info", src_lang) for it, o, t in split]
     for d in result.get("drop", []) or []:
         if d in by_id:
             seen.add(d)
     return cues, [i for i in by_id if i not in seen]
+
+
+def split_unspoken(srcs, orig, tr):
+    """大模型把没人说出来的画面字（菜名、标题）和台词合成了一条时，按“｜”分段拆出来。
+    只拆规则融合标了 over_speech（同一时间字幕在说别的话）的画面字。
+
+    合在一起的话，这几个字会跟着台词提前出现、用台词的样式显示（明明没人说），还会和下一句台词时间重叠。
+    原文和译文的段数一致、能找到和这条画面字整体对得上的连续几段才拆；拆不了就保持原样。
+    返回 (留下的来源, 原文, 译文, [(拆出的画面字, 原文段, 译文段)])。"""
+    speech = [s for s in srcs if s["src"] in SPEECH]
+    screen = [s for s in srcs if s["src"] in SCREEN]
+    if not speech or not screen:
+        return srcs, orig, tr, []
+    said = "".join(s["text"] + s.get("asr_hint", "") for s in speech)
+    # 只拆“同一时间字幕在说别的话”的画面字。半句字幕、半句画面字是同一句话：画面字出现时字幕通常不重复显示，不会有这个标记
+    loose = [s for s in screen if s.get("over_speech") and sim(s["text"], said) < 80]
+    o_parts, t_parts = orig.split("｜"), tr.split("｜")
+    if not loose or len(o_parts) < 2 or len(o_parts) != len(t_parts):
+        return srcs, orig, tr, []
+    split = []
+    for s in loose:
+        # 找和这条画面字整体对得上的连续几段（“五十猛｜三次”这种两行的标签会被分成两段）；
+        # 用整体相似度而不是部分包含：台词里提到同一个词（“昔は「虫踏み」と呼ばれていました”）不算
+        best, span = 0.0, None
+        for i in range(len(o_parts)):
+            for j in range(i + 1, len(o_parts) + 1):
+                if j - i >= len(o_parts):  # 至少留一段给台词
+                    continue
+                part = "".join(o_parts[i:j])
+                score = full_sim(s["text"], part)
+                # 大模型只保留了画面字的一部分（“冬を食べる／坂網鴨”只留“坂網鴨”）：这段是画面字的一部分、台词里又没有，也算
+                if score < 70 and sim(part, s["text"]) >= 90 and sim(part, said) < 60 and len(part.strip()) >= 2:
+                    score = 70
+                if score > best:
+                    best, span = score, (i, j)
+        if not span or best < 70:
+            continue
+        i, j = span
+        split.append((s, "｜".join(p.strip() for p in o_parts[i:j]), "｜".join(p.strip() for p in t_parts[i:j])))
+        del o_parts[i:j], t_parts[i:j]
+    if not split:
+        return srcs, orig, tr, []
+    gone = {id(s) for s, _, _ in split}
+    return [s for s in srcs if id(s) not in gone], "｜".join(o_parts), "｜".join(t_parts), split
 
 
 def fallback(chunk, missing, tgt, src_lang):

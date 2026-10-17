@@ -56,9 +56,10 @@ DEFS = {
                                 "ocr.regions", "ocr.skip_static"]),
     "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"]),
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"]),
-    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"]),
+    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=1),
+                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=2),
+    # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
     "annotate": StageDef(["translate"], [], version=1),
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕

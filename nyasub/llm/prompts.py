@@ -34,6 +34,8 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict) -> str:
 规则：
 1. 每个输入 id 必须且只能出现一次：要么在某条 cue 的 src 里，要么在 drop 里。
 2. 同一句话被拆在字幕和画面字里（半句在这、半句在那），或者两边内容重复时，合并成一条 cue，src 列出全部来源 id；只合并时间上相邻（间隔不超过约 2 秒）的条目。
+   画面上的标题、菜名、人名条、地名这类说明文字，如果没有人把它说出来（字幕和语音里都没有这几个字），
+   就算内容相关、时间重叠，也绝不能和字幕 / 语音的台词合成一条：它单独成一条 type 为 info 的 cue。
 3. cue 按时间顺序输出。不要自己编时间，时间由 src 决定。
 4. OCR 错字结合上下文、语音参考和术语表纠正后写进 orig。
 5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。
@@ -65,6 +67,8 @@ def item_line(it) -> str:
         # 不替模型下结论：只给位置和倾向，台词还是说明由它按内容判断
         extra.append(_position(it))
         extra.append("像台词" if it["src"] == "telop" else "像说明")
+        if it.get("over_speech"):
+            extra.append("同一时间字幕在说别的话")
         if it.get("ocr_score", 1) < 0.85:
             extra.append("OCR 置信度低")
     if it["src"] == "asr":

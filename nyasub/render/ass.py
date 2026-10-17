@@ -72,6 +72,47 @@ def info_pos(rect, vertical, px, py):
     return an, x, y
 
 
+def _info_spot(it, vertical, w, h, px, py, boxes):
+    """说明译文放哪：先试贴着原文（near），再试原文的另一侧，最后放画面顶部 / 底部正中。
+    选第一个不出画面、也不压住同一时间其他画面字（含已经放好的说明译文）的位置。
+    标题卡这种大字常常只识别出一部分框，只看自己的框会压到没识别全的字上。返回 (an, x, y, 左, 上)。"""
+    x0, y0, x1, y1 = it["rect"]
+    first = info_pos(it["rect"], vertical, px, py)
+    cands = [first]
+    if not vertical:  # 另一侧：原文在下半就放到原文下面，反之放上面
+        an, x, _ = first
+        flip = {1: 7, 2: 8, 3: 9, 7: 1, 8: 2, 9: 3}[an]
+        cands.append((flip, x, int(y1 * py) + 10 if flip in (7, 8, 9) else int(y0 * py) - 10))
+    cands += [(8, px // 2, 24), (2, px // 2, py - 24)]
+
+    def rect_of(an, x, y):
+        bx0 = x if an in (1, 7) else x - w / 2 if an in (2, 8) else x - w
+        bx0 = max(8, min(px - w - 8, bx0))  # 不出画面左右
+        by0 = y - h if an in (1, 2, 3) else y
+        return bx0, by0
+
+    def clear(bx0, by0):
+        if by0 < 0 or by0 + h > py:
+            return False
+        for b in boxes:
+            if min(it["end"], b["end"]) - max(it["start"], b["start"]) <= 0.2:
+                continue
+            if b["x1"] <= bx0 or b["x0"] >= bx0 + w or b["bottom"] <= by0 or b["top"] >= by0 + h:
+                continue
+            return False
+        return True
+
+    for an, x, y in cands:
+        bx0, by0 = rect_of(an, x, y)
+        if clear(bx0, by0):
+            # 左右被挪进画面时，锚点跟着换算
+            x = bx0 if an in (1, 7) else bx0 + w / 2 if an in (2, 8) else bx0 + w
+            return an, int(x), y, bx0, by0
+    an, x, y = first
+    bx0, by0 = rect_of(an, x, y)
+    return an, int(bx0 if an in (1, 7) else bx0 + w / 2 if an in (2, 8) else bx0 + w), y, bx0, by0
+
+
 def _box(start, end, x0, x1, top, bottom):
     return {"start": start, "end": end, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
 
@@ -123,12 +164,10 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     for it in (i for i in items if i["kind"] == "info"):
         lines = [plain(l) for l in it["layers"][0][2]]
         if profile.info_mode == "near" and it.get("rect"):
-            an, x, y = info_pos(it["rect"], is_vertical(it["rect"], aspect), px, py)
             m = fonts.metrics(info_st.font)
             w = max(m.width(l, info_st.size) for l in lines)
             h = len(lines) * info_st.size * 1.25
-            bx0 = x if an in (1, 7) else x - w / 2 if an in (2, 8) else x - w
-            by0 = y - h if an in (1, 2, 3) else y
+            an, x, y, bx0, by0 = _info_spot(it, is_vertical(it["rect"], aspect), w, h, px, py, boxes)
             if profile.avoid_hardsub:
                 boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
             placed.append({"kind": "info", "item": it, "an": an, "x": x, "y": y})
