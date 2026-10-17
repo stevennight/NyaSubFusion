@@ -37,6 +37,8 @@ def _overrides(args) -> dict:
         put("ocr.enabled", False)
     if args.ocr_refine:
         put("ocr.refine", args.ocr_refine)
+    if args.video:
+        put("render.video.mode", args.video)
     return o
 
 
@@ -238,6 +240,8 @@ def main(argv=None):
     r.add_argument("--no-asr", action="store_true", help="不做语音识别")
     r.add_argument("--no-ocr", action="store_true", help="不做画面字识别")
     r.add_argument("--ocr-refine", choices=["none", "vlm"], help="是否用视觉大模型复核画面字")
+    r.add_argument("--video", choices=["off", "mux", "burn"],
+                   help="输出视频：mux 封装 MKV（字幕轨 + 字体）/ burn 压制硬字幕 MP4")
     r.add_argument("--translate", choices=["api", "export", "off"], help="翻译方式，覆盖配置")
     r.add_argument("--until", help="做到哪一步为止：probe / subs / asr / ocr / fuse / translate / render")
     r.add_argument("--redo", default="", help="强制重做的步骤，逗号分隔，例如 ocr,fuse；all = 全部")

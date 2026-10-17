@@ -80,10 +80,11 @@ class Projects:
 class Job:
     def __init__(self, pid):
         self.pid = pid
-        self.status = "running"   # running / done / failed / waiting
+        self.status = "running"   # running / done / failed / waiting / cancelled
         self.error = None
         self.started = time.time()
         self.thread = None
+        self.cancel = None        # threading.Event：取消（步骤之间停下；输出视频时直接中断）
 
 
 class Hub:
@@ -111,11 +112,12 @@ class Hub:
             for q in list(self.subs.get(pid, ())):
                 self.loop.call_soon_threadsafe(q.put_nowait, ev)
 
-    def start(self, pid, fn):
+    def start(self, pid, fn, cancel=None):
         job = self.jobs.get(pid)
         if job and job.status == "running":
             raise HTTPException(409, "这个项目正在运行")
         job = Job(pid)
+        job.cancel = cancel
         self.jobs[pid] = job
         self.backlog[pid] = []
 
@@ -124,6 +126,9 @@ class Hub:
             try:
                 result = fn()
                 job.status = "waiting" if getattr(result, "waiting", False) else "done"
+            except pipeline.Cancelled:
+                job.status = "cancelled"
+                env.log("已取消")
             except Exception as e:
                 job.status, job.error = "failed", str(e)
                 env.log(f"运行失败：{e}")
@@ -202,6 +207,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "id": pid, "video": p["video"], "name": Path(p["video"]).name, "workdir": str(proj.root),
             "meta": meta, "src": run.src, "plan": run.plan(), "job": hub.status(pid),
             "config_files": run.config_files, "outputs": run.output_names(),
+            "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
             "proxy": "direct" if playable else ("ready" if proj.media("proxy.mp4").exists() else proxy_jobs.get(pid, "none")),
         }
 
@@ -399,8 +405,20 @@ def create_app(token: str | None = None) -> FastAPI:
     @app.post("/api/projects/{pid}/run")
     def run_project(pid: str, body: dict = Body(default={})):
         run = make_run(pid, body.get("until") or "render", body.get("redo") or (), body.get("translate"))
-        hub.start(pid, run.run)
+        run.cancel = threading.Event()
+        hub.start(pid, run.run, run.cancel)
         return {"started": True}
+
+    @app.post("/api/projects/{pid}/cancel")
+    def cancel_project(pid: str):
+        job = hub.jobs.get(pid)
+        if not job or job.status != "running":
+            raise HTTPException(409, "没有在运行")
+        if job.cancel is None:
+            raise HTTPException(400, "这个任务不能取消")
+        job.cancel.set()
+        env.log("正在取消：当前步骤做完后停下")
+        return {"ok": True}
 
     @app.get("/api/projects/{pid}/log")
     def get_log(pid: str):
@@ -646,6 +664,17 @@ def create_app(token: str | None = None) -> FastAPI:
         run = make_run(pid)
         names = run.export(body.get("profiles"))
         return {"files": names, "dir": str(Path(run.proj.video).parent)}
+
+    @app.post("/api/projects/{pid}/export_video")
+    def export_video(pid: str, body: dict = Body(...)):
+        """{"mode": "mux" | "burn", "profiles": [方案名]（可选）}：后台输出视频，进度推到项目频道。"""
+        mode = body.get("mode")
+        if mode not in pipeline.VIDEO_STAGES:
+            raise HTTPException(400, "mode 只能是 mux / burn")
+        run = make_run(pid)
+        run.cancel = threading.Event()
+        hub.start(pid, lambda: run.export_video(mode, body.get("profiles") or None), run.cancel)
+        return {"started": True, "file": run.video_names()[mode]}
 
     # ---------- 媒体 ----------
     @app.get("/api/projects/{pid}/media/video")

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
 import type { Cfg, StageStatus } from "../types";
-import { deepGet, setIn, STAGE_LBL } from "../util";
+import { deepGet, pct, setIn, STAGE_LBL } from "../util";
 
 // 步骤图：列 / 行位置与连线
 const NODES: { id: string; c: number; r: number }[] = [
@@ -12,7 +12,9 @@ const NODES: { id: string; c: number; r: number }[] = [
 ];
 const EDGES = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
-const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译" };
+const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消" };
+const ENCODERS: [string, string][] = [["auto", "自动（先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
+  ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
 export function PipelinePage({ onReview }: { onReview: () => void }) {
   const s = useStore();
@@ -31,6 +33,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   }, [s.summary, s.live]);
   const seconds = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.seconds]));
   const stale = (s.summary?.plan ?? []).filter((p) => p.status !== "done");
+  const vmode = String(s.config ? deepGet(s.config.effective, "render.video.mode") ?? "off" : "off");
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
   const set = (path: string, v: unknown) => setDraft((d) => setIn(d, path, v));
@@ -48,13 +51,14 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
           {["subs", "asr", "ocr", "fuse", "translate", "annotate", "render"].map((x) => <option key={x} value={x}>做到：{STAGE_LBL[x]}</option>)}
         </select>
         <label className="row dim"><input type="checkbox" checked={redoAll} onChange={(e) => setRedoAll(e.target.checked)} />全部重做</label>
+        {s.running && <button className="btn" onClick={s.cancel}>■ 停止</button>}
         <button className="btn pri" disabled={s.running || dirty} title={dirty ? "先保存配置" : ""}
                 onClick={() => s.run({ until, redo: redoAll ? ["all"] : [] })}>{s.running ? "运行中…" : "▶ 运行"}</button>
       </div>
       {stale.length > 0 && !s.running && (
         <div className="banner">⚠ 以下 {stale.length} 个步骤需要运行：{stale.map((p) => STAGE_LBL[p.stage]).join(" → ")}</div>
       )}
-      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} /></div>
+      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} video={vmode === "off" ? null : vmode} /></div>
       <div className="gap" />
 
       <div className="row" style={{ marginBottom: 8 }}>
@@ -122,6 +126,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         </div>
       </div>
       <div className="gap" />
+      <div className="gap" />
+      <VideoCard val={val} set={set} dirty={dirty} />
+      <div className="gap" />
       <div className="grid2" style={{ gridTemplateColumns: "1.1fr .9fr" }}>
         <div className="card"><h3>融合结果</h3><Stats /><div className="gap" /><button className="btn" disabled={!s.data?.cues.length} onClick={onReview}>去审校 →</button></div>
         <div className="card"><h3>日志</h3><LogView lines={s.logs} /></div>
@@ -130,15 +137,76 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   );
 }
 
-function StageGraph({ status, seconds }: { status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined> }) {
+function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: string, v: unknown) => void; dirty: boolean }) {
+  const s = useStore();
+  const mode = String(val("render.video.mode") ?? "off");
+  const profiles = ((deepGet(s.config?.effective, "render.profiles") as { name: string; format: string; enabled: boolean }[]) ?? []);
+  const picked = (val("render.video.profiles") as string[]) ?? [];
+  const toggle = (n: string) => set("render.video.profiles", picked.includes(n) ? picked.filter((x) => x !== n) : [...picked, n]);
+  const ready = !!s.data?.cues.length && !s.running && !dirty;
+  const p = s.progress;
+  const videos = s.summary?.videos ?? {};
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>输出视频</h3>
+        <span className="dim" style={{ fontSize: 12 }}>封装：字幕轨 + 用到的字体放进 MKV，不重新编码，几秒完成；压制：字幕画进画面，任何播放器都能看</span>
+      </div>
+      <div className="grid2">
+        <div className="kv">
+          <span className="lbl">运行完自动</span>
+          <div className="seg">{[["off", "不输出"], ["mux", "封装 MKV"], ["burn", "压制硬字幕"]].map(([v, l]) =>
+            <button key={v} className={mode === v ? "on" : ""} onClick={() => set("render.video.mode", v)}>{l}</button>)}</div>
+          <span className="lbl">用哪些方案</span>
+          <div className="row wrap">
+            <span className={`chip ${picked.length ? "" : "acc"}`} style={{ cursor: "pointer" }} onClick={() => set("render.video.profiles", [])}>全部启用的</span>
+            {profiles.map((pr) => <span key={pr.name} className={`chip ${picked.includes(pr.name) ? "acc" : ""}`} style={{ cursor: "pointer" }}
+                                        onClick={() => toggle(pr.name)}>{pr.name} · {pr.format.toUpperCase()}</span>)}
+          </div>
+          <span className="lbl">封装</span>
+          <div className="row wrap">
+            <select className="inp" style={{ width: "auto" }} value={String(val("render.video.fonts"))} onChange={(e) => set("render.video.fonts", e.target.value)}>
+              <option value="subset">嵌入字体（只含用到的字）</option><option value="full">嵌入完整字体</option><option value="none">不嵌入字体</option></select>
+            <label className="row dim"><input type="checkbox" checked={!!val("render.video.keep_subs")} onChange={(e) => set("render.video.keep_subs", e.target.checked)} />保留原有字幕轨</label>
+          </div>
+        </div>
+        <div className="kv">
+          <span className="lbl">压制编码</span>
+          <select className="inp" value={String(val("render.video.encoder"))} onChange={(e) => set("render.video.encoder", e.target.value)}>
+            {ENCODERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <span className="lbl">画质</span>
+          <div className="row"><input type="range" min={14} max={32} step={1} value={Number(val("render.video.quality"))} onChange={(e) => set("render.video.quality", Number(e.target.value))} />
+            <span className="dim">{String(val("render.video.quality"))}（越小越清晰，常用 18~23）</span></div>
+          <span className="lbl">尺寸</span>
+          <select className="inp" style={{ width: "auto" }} value={String(val("render.video.height"))} onChange={(e) => set("render.video.height", Number(e.target.value))}>
+            {[[0, "原尺寸"], [2160, "2160p"], [1080, "1080p"], [720, "720p"], [480, "480p"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        </div>
+      </div>
+      <div className="row wrap" style={{ marginTop: 10 }}>
+        <button className="btn" disabled={!ready} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("mux")}>现在封装 MKV</button>
+        <button className="btn" disabled={!ready || !s.summary?.meta?.video} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("burn")}>现在压制硬字幕</button>
+        {p && s.running && (<>
+          <div className="pbar" style={{ flex: 1, minWidth: 160 }}><div style={{ width: `${pct(p)}%` }} /></div>
+          <span className="dim">{STAGE_LBL[p.stage] ?? p.stage} {pct(p)}%</span>
+          <button className="btn sm" onClick={s.cancel}>取消</button>
+        </>)}
+        {!s.running && (videos.mux || videos.burn) && <span className="dim">已输出：{[videos.mux, videos.burn].filter(Boolean).join("、")}</span>}
+      </div>
+    </div>
+  );
+}
+
+function StageGraph({ status, seconds, video }: { status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; video: string | null }) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<string[]>([]);
+  const nodes = video ? [...NODES, { id: video, c: 8, r: 2 }] : NODES;
+  const edges = video ? [...EDGES, ["render", video]] : EDGES;
   useLayoutEffect(() => {
     const draw = () => {
       const el = box.current;
       if (!el) return;
       const R = el.getBoundingClientRect();
-      setPaths(EDGES.map(([a, b]) => {
+      setPaths(edges.map(([a, b]) => {
         const A = el.querySelector(`[data-n="${a}"]`)!.getBoundingClientRect();
         const B = el.querySelector(`[data-n="${b}"]`)!.getBoundingClientRect();
         const x1 = A.right - R.left, y1 = A.top + A.height / 2 - R.top, x2 = B.left - R.left - 2, y2 = B.top + B.height / 2 - R.top;
@@ -149,12 +217,12 @@ function StageGraph({ status, seconds }: { status: Record<string, StageStatus>; 
     draw();
     window.addEventListener("resize", draw);
     return () => window.removeEventListener("resize", draw);
-  }, []);
+  }, [video]);
   return (
-    <div className="dag" ref={box} style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
+    <div className="dag" ref={box} style={{ gridTemplateColumns: `repeat(${nodes.length > NODES.length ? 8 : 7}, minmax(0, 1fr))` }}>
       <svg><defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#5a5a6c" /></marker></defs>
         {paths.map((d, i) => <path key={i} d={d} stroke="#4a4a5a" strokeWidth="1.5" fill="none" markerEnd="url(#ar)" />)}</svg>
-      {NODES.map((n) => {
+      {nodes.map((n) => {
         const st = status[n.id] ?? "missing";
         return (
           <div key={n.id} data-n={n.id} className={`node ${st}`} style={{ gridColumn: n.c, gridRow: n.r }}>

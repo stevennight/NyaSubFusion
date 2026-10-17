@@ -1,7 +1,7 @@
 // 全局状态：当前项目、数据、配置、运行中的实时事件。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, subscribe } from "./api";
-import type { Cfg, LangInfo, LiveEvent, ProjectData, ProjectSummary, StageStatus } from "./types";
+import type { Cfg, LangInfo, LiveEvent, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
 
 interface Store {
   pid: string | null;
@@ -12,12 +12,15 @@ interface Store {
   logs: string[];
   live: Record<string, StageStatus>;
   running: boolean;
+  progress: Progress | null;    // 输出视频的进度
   version: number;              // 数据 / 配置变了就加一，预览据此刷新
   error: string | null;
   open: (pid: string | null) => void;
   reload: () => Promise<void>;
   setConfig: (project: Cfg) => Promise<void>;
   run: (body?: { until?: string; redo?: string[]; translate?: string }) => Promise<void>;
+  exportVideo: (mode: "mux" | "burn", profiles?: string[]) => Promise<void>;
+  cancel: () => Promise<void>;
   bump: () => void;
   setError: (e: string | null) => void;
   toast: (msg: string) => void;
@@ -36,6 +39,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<string[]>([]);
   const [live, setLive] = useState<Record<string, StageStatus>>({});
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [toastMsg, setToast] = useState<string | null>(null);
@@ -85,10 +89,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return subscribe(pid, (e: LiveEvent) => {
       if (e.type === "log" && e.msg) setLogs((l) => [...l.slice(-1500), e.msg!]);
       if (e.type === "stage" && e.name) setLive((m) => ({ ...m, [e.name!]: e.status as StageStatus }));
+      if (e.type === "progress") setProgress({ stage: e.stage ?? "", done: e.done ?? 0, total: e.total ?? 0 });
       if (e.type === "hello") setRunning(e.job?.status === "running");
       if (e.type === "job") {
         setRunning(false);
         setLive({});
+        setProgress(null);
         reload();
         if (e.status === "failed") setError(e.error ?? "运行失败");
       }
@@ -116,10 +122,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [pid]);
 
+  const exportVideo = useCallback(async (mode: "mux" | "burn", profiles?: string[]) => {
+    if (!pid) return;
+    setLogs([]);
+    setLive({});
+    setProgress(null);
+    setRunning(true);
+    try {
+      const r = await api.exportVideo(pid, mode, profiles);
+      toast(`开始${mode === "mux" ? "封装" : "压制"}：${r.file}`);
+    } catch (e) {
+      setRunning(false);
+      setError(String((e as Error).message));
+    }
+  }, [pid, toast]);
+
+  const cancel = useCallback(async () => {
+    if (!pid) return;
+    try { await api.cancel(pid); toast("正在取消…"); } catch (e) { setError(String((e as Error).message)); }
+  }, [pid, toast]);
+
   const value = useMemo<Store>(() => ({
-    pid, summary, data, config, langs, logs, live, running, version, error,
-    open, reload, setConfig, run, bump, setError, toast, toastMsg,
-  }), [pid, summary, data, config, langs, logs, live, running, version, error, open, reload, setConfig, run, bump, toast, toastMsg]);
+    pid, summary, data, config, langs, logs, live, running, progress, version, error,
+    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg,
+  }), [pid, summary, data, config, langs, logs, live, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

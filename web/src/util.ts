@@ -18,7 +18,12 @@ export const SRC_LBL: Record<string, string> = { c: "字幕", o: "画面字", a:
 export const STAGE_LBL: Record<string, string> = {
   probe: "探测媒体", audio: "提取音频", subs: "自带字幕", asr: "语音识别", ocr: "画面字识别", ocr_refine: "VLM 复核",
   align: "字幕对时", fuse: "规则融合", translate: "融合 + 翻译", annotate: "注音", render: "排版输出",
+  mux: "封装 MKV", burn: "压制硬字幕",
 };
+
+export function pct(p: { done: number; total: number } | null | undefined) {
+  return p && p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
+}
 
 export function langName(code: string, langs: { code: string; name: string }[]) {
   return langs.find((l) => l.code === code)?.name ?? code;

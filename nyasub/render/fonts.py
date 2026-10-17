@@ -33,11 +33,25 @@ def _scan_files():
     return sorted(files)
 
 
+def _uni(rec):
+    try:
+        return rec.toUnicode().strip().lower()
+    except Exception:
+        return ""
+
+
+REGULAR = {"regular", "normal", "standard", "roman", "book", "標準", "常规", "常規", "보통"}
+
+
 @lru_cache(maxsize=1)
 def _index():
-    """{字体名（小写，含本地化名）: [路径, 序号, 是否粗体]}；缓存在用户数据目录。"""
+    """{字体名（小写，含本地化名）: [路径, 序号, 是否粗体, 优先级]}；缓存在用户数据目录。
+
+    同一个名字对应多个字形时（"Yu Gothic" 既是常规体的家族名，也是细体 / 粗体的“排版家族名”），
+    按 libass 的选法优先：家族名相同的常规体 > 家族名 > 全名 > 排版家族名；同级里非粗体优先。
+    """
     files = _scan_files()
-    key = digest([(f, os.path.getsize(f)) for f in files])
+    key = digest(["v2", [(f, os.path.getsize(f)) for f in files]])
     cache_path = env.home() / "cache" / "fonts.json"
     cache = load_json(cache_path, {})
     if cache.get("key") == key:
@@ -54,29 +68,39 @@ def _index():
             try:
                 names = face["name"]
                 bold = bool(face["OS/2"].fsSelection & 0x20) if "OS/2" in face else False
+                regular = any(_uni(r) in REGULAR for r in names.names if r.nameID == 2)
                 for rec in names.names:
-                    if rec.nameID in (1, 4, 16):
-                        try:
-                            n = rec.toUnicode().strip().lower()
-                        except Exception:
-                            continue
-                        # 同名时优先常规体
-                        if n and (n not in fonts or (fonts[n][2] and not bold)):
-                            fonts[n] = [f, i, bold]
+                    if rec.nameID not in (1, 4, 16):
+                        continue
+                    n = _uni(rec)
+                    prio = {1: 0 if regular else 1, 4: 2, 16: 3}[rec.nameID] * 2 + bold
+                    if n and (n not in fonts or prio < fonts[n][3]):
+                        fonts[n] = [f, i, bold, prio]
             except Exception:
                 continue
     save_json(cache_path, {"key": key, "fonts": fonts})
     return fonts
 
 
+def find(family, bold=False):
+    """按名字找字体文件：[路径, 序号, 是否粗体, 优先级] 或 None。bold=True 时先找同家族的粗体。"""
+    try:
+        idx = _index()
+    except Exception:
+        return None
+    name = family.strip().lower()
+    if bold:
+        for k in (name + " bold", name + " bd", name + "-bold"):
+            if k in idx and idx[k][2]:
+                return idx[k]
+    return idx.get(name)
+
+
 class Metrics:
     def __init__(self, family):
         self.family = family
         self.cmap = None
-        try:
-            hit = _index().get(family.strip().lower())
-        except Exception:
-            hit = None
+        hit = find(family)
         if not hit:
             return
         from fontTools.ttLib import TTFont

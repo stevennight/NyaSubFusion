@@ -58,7 +58,7 @@ class Queue:
 
     # ---------- 操作 ----------
     def add(self, videos, options):
-        """options：{"until", "redo", "translate", "preset", "source", "targets", "series", "context"}"""
+        """options：{"until", "redo", "translate", "video", "preset", "source", "targets", "series", "context"}"""
         added = []
         with self.lock:
             for v in videos:
@@ -153,8 +153,12 @@ class Queue:
         tid = threading.get_ident()
         self.hub.threads[tid] = pid
 
-        def relay(ev):  # 步骤事件也推给队列页
-            if threading.get_ident() == tid and ev.get("type") == "stage":
+        def relay(ev):  # 步骤和进度事件也推给队列页
+            if threading.get_ident() != tid:
+                return
+            if ev.get("type") == "progress":
+                self.hub.publish("_queue", {**ev, "type": "queue_progress", "item": it["id"]})
+            if ev.get("type") == "stage":
                 if ev.get("status") == "running":  # 只记真正开始运行的步骤（复用缓存、取消的不算）
                     with self.lock:
                         it["stage"] = ev.get("name")
@@ -164,7 +168,9 @@ class Queue:
             if not self.configured(pid):
                 self.setup_project(pid, opts)
             run = self.make_run(pid, opts.get("until") or "render", opts.get("redo") or (), opts.get("translate"))
-            run.cancel = threading.Event()
+            run.cancel = job.cancel = threading.Event()  # 项目页的“停止”也能取消
+            if opts.get("video"):  # 这一批要不要输出视频（覆盖项目配置）
+                run.cfg.render.video.mode = opts["video"]
             with self.lock:
                 self.current = (it["id"], run)
             run.run()

@@ -62,14 +62,21 @@ DEFS = {
                                      "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=1),
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
     "annotate": StageDef(["translate"], [], version=1),
+    # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
+    "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
+    "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
 }
+VIDEO_STAGES = ("mux", "burn")
 
 
 def collect_inputs(paths):
     out = []
     for p in paths:
         if os.path.isdir(p):
-            out += sorted(os.path.join(p, n) for n in os.listdir(p) if n.lower().endswith(VIDEO_EXTS + AUDIO_EXTS))
+            from ..render.video import is_output
+
+            out += sorted(os.path.join(p, n) for n in os.listdir(p)
+                          if n.lower().endswith(VIDEO_EXTS + AUDIO_EXTS) and not is_output(n))  # 跳过自己输出的视频
         elif os.path.isfile(p):
             out.append(p)
         else:
@@ -87,7 +94,9 @@ class Run:
         self.ran = []           # 本次实际重跑的步骤
         self.src = None         # 解析后的源语言
         self.waiting = False    # 翻译任务已导出、等外部助手完成
-        self.cancel = None      # threading.Event：设置后在下一个步骤开始前停下
+        self.cancel = None      # threading.Event：设置后在下一个步骤开始前停下（输出视频时会直接中断）
+        self.written = []       # 本次输出的字幕：[(方案, 文件名)]
+        self._video_profiles = None  # 这次输出视频指定的方案（None = 按配置）
         self.config_files = list(config_files)
 
     # ---------- 指纹 ----------
@@ -116,6 +125,11 @@ class Run:
                     "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
+        if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
+            return {"video": file_stamp(self.proj.video), "tracks": [
+                {"lang": t["lang"], "title": t["title"],
+                 "sub": digest(t["path"].read_text(encoding="utf-8-sig")) if t["path"].exists() else None}
+                for t in self._video_tracks(name, self._video_profiles)]}
         if name == "ocr_refine":
             return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None}
         if name == "translate":
@@ -158,6 +172,9 @@ class Run:
         except Waiting:
             emit({"type": "stage", "name": name, "status": "waiting"})
             raise
+        except Cancelled:
+            emit({"type": "stage", "name": name, "status": "cancelled"})
+            raise
         except Exception as e:
             emit({"type": "stage", "name": name, "status": "failed", "error": str(e)})
             raise
@@ -176,7 +193,7 @@ class Run:
         subs = load_json(self._out_path("subs"), [])
         self.src = self._resolve_source(asr, subs, quiet=True)
         status = {}
-        for name in DEFS:
+        for name in self._stage_names():
             rec = load_json(self._fp_path(name))
             if not rec or not self._out_path(name).exists():
                 status[name] = "missing"
@@ -188,7 +205,12 @@ class Run:
                 self.fps[d] = load_json(self._fp_path(d))
             status[name] = "done" if rec.get("in") == self.input_fp(name) else "stale"
         return [{"stage": n, "status": status[n], "seconds": (load_json(self._fp_path(n)) or {}).get("seconds")}
-                for n in DEFS]
+                for n in self._stage_names()]
+
+    def _stage_names(self):
+        """要显示的步骤：输出视频只算配置里开着的那一种。"""
+        mode = self.cfg.render.video.mode
+        return [n for n in DEFS if n not in VIDEO_STAGES or n == mode]
 
     def load_state(self):
         """读取已有的各步结果（不运行），并推断源语言。"""
@@ -226,6 +248,16 @@ class Run:
         self.load_state()
         cues, tokens, aspect, boxes = self.render_context()
         return self._render(cues, tokens, aspect, boxes, only)
+
+    def export_video(self, mode, profiles=None):
+        """用已有结果输出字幕，再封装 MKV / 压制硬字幕。profiles：用哪些方案（None = 按配置）。"""
+        self.load_state()
+        if "annotate" not in self.results:
+            raise RuntimeError("还没有字幕结果，先运行一次")
+        cues, tokens, aspect, boxes = self.render_context()
+        self._render(cues, tokens, aspect, boxes, profiles)
+        self._video(mode, profiles)
+        return self
 
     def _stop(self, name):
         return STAGES.index(name) >= STAGES.index(self.opts.until)
@@ -295,6 +327,8 @@ class Run:
         if self._stop("annotate"):
             return self._done(t_all)
         self._render(annotated["cues"], annotated["tokens"], aspect, boxes)
+        if cfg.render.video.mode != "off":
+            self._video(cfg.render.video.mode)
         return self._done(t_all)
 
     def _done(self, t0):
@@ -625,7 +659,82 @@ class Run:
                 srt.write(str(path), items)
             log(f"已输出「{prof.name}」：{name}")
             written.append(name)
+            self.written.append((prof, name))
         return written
+
+    # ---------- 输出视频 ----------
+    def video_names(self):
+        from ..render.video import BURN_SUFFIX, MUX_SUFFIX
+
+        return {"mux": self.proj.stem + MUX_SUFFIX, "burn": self.proj.stem + BURN_SUFFIX}
+
+    def _track(self, prof, name):
+        targets = [lang.canonical(t) for t in self.cfg.project.targets] or [self.src]
+        codes = []
+        for ly in prof.layers:
+            if ly.show == "off" or ly.role == "transliteration":
+                continue
+            c = lang.canonical(ly.lang or targets[0]) if ly.role == "translation" else self.src
+            if c and c not in codes:
+                codes.append(c)
+        return {"path": self.proj.video.with_name(name), "lang": codes[0] if codes else self.src,
+                "title": " / ".join(lang.get(c).name for c in codes) or prof.name, "profile": prof.name}
+
+    def _video_tracks(self, mode, profiles=None):
+        """要封装 / 压制的字幕：这次输出的（没输出过就按配置推算文件名）里，按指定方案挑。"""
+        want = profiles or self.cfg.render.video.profiles
+        written = self.written or [(p, self._profile_names(p)) for p in self.cfg.render.profiles if p.enabled]
+        picked = [(p, n) for p, n in written if not want or p.name in want]
+        if mode == "burn":
+            picked = [(p, n) for p, n in picked if p.format == "ass"][:1]
+        tracks = [self._track(p, n) for p, n in picked]
+        dup = [sum(x["title"] == t["title"] for x in tracks) > 1 for t in tracks]
+        for t, d in zip(tracks, dup):  # 名字重复时（比如同一种语言的 ASS 和 SRT）加上方案名
+            if d:
+                t["title"] += f"（{t['profile']}）"
+        return tracks
+
+    def _video(self, mode, profiles=None):
+        from ..render import video
+
+        vc = self.cfg.render.video
+        self._video_profiles = profiles
+        tracks = self._video_tracks(mode, profiles)
+        if not tracks:
+            raise RuntimeError("没有可用的字幕方案" + ("（压制硬字幕需要 ASS 方案）" if mode == "burn" else ""))
+        out = self.proj.video.with_name(self.video_names()[mode])
+        info = self.results.get("probe") or {}
+        vinfo, duration = info.get("video"), info.get("duration") or 0.0
+
+        def do():
+            from ..sources.media import _need
+
+            _need("ffmpeg")
+            ass_files = [t["path"] for t in tracks if str(t["path"]).endswith(".ass")]
+            fmode = "subset" if mode == "burn" else vc.fonts
+            files, notes = video.collect_fonts(ass_files, self.proj.media(f"{mode}_fonts"), fmode)
+            for n in notes:
+                log(n)
+            if files:
+                kb = sum(f.stat().st_size for f in files) // 1024
+                log(f"字体：{', '.join(f.name for f in files)}（{'子集，' if fmode == 'subset' else ''}共 {kb} KB）")
+            t0 = time.time()
+            try:
+                if mode == "mux":
+                    log(f"封装 MKV：{len(tracks)} 条字幕轨（{'、'.join(t['title'] for t in tracks)}）")
+                    video.mux(self.proj.video, tracks, out, files, vc.keep_subs, vinfo, duration, self.cancel)
+                    enc = "copy"
+                else:
+                    _, enc = video.burn(self.proj.video, tracks[0]["path"], files, out, vinfo, vc.encoder, vc.quality,
+                                        vc.height, duration, self.cancel, self.proj.media("burn"))
+            except video.Stopped:
+                log("已取消输出视频")
+                raise Cancelled()
+            mb = out.stat().st_size / 1e6
+            log(f"已输出视频：{out.name}（{mb:.0f} MB，用时 {time.time() - t0:.0f}s）")
+            return {"file": out.name, "tracks": [{k: t[k] for k in ("lang", "title", "profile")} for t in tracks],
+                    "fonts": [f.name for f in files], "encoder": enc}
+        return self.stage(mode, do, force=not out.exists())
 
 
 def apply_edits(cues, edits: dict, src_lang=None):

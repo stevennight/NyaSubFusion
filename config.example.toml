@@ -101,6 +101,16 @@ format = "srt"
 info_mode = "top"
 layers = [{ role = "translation", style = "main" }]
 
+# ---------------- 输出视频 ----------------
+[render.video]
+mode = "off"                  # 运行完自动：off 不输出 / mux 封装 MKV（<名>.sub.mkv）/ burn 压制硬字幕（<名>.hardsub.mp4）
+profiles = []                 # 用哪些方案；空：封装 = 所有启用的方案，压制 = 第一个启用的 ASS 方案
+keep_subs = true              # 封装：保留原视频里的字幕轨
+fonts = "subset"              # 封装时嵌入字体：subset 只含用到的字 / full 完整字体 / none 不嵌入
+encoder = "auto"              # 压制：auto（先试 NVIDIA 显卡）/ h264_nvenc / libx264 / hevc_nvenc / libx265
+quality = 20                  # 压制画质（CRF / CQ）：越小越清晰，常用 18~23
+height = 0                    # 压制时缩放到这个高度；0 = 原尺寸
+
 # ---------------- 注音与转写 ----------------
 # annotate 写在图层上，能用哪种由这一层的语言决定：日语 furigana；中文 pinyin / zhuyin。
 #   scope：all 全部 / difficult 只注难读（含小学低年级以外汉字的词 + 专有名词）/ proper 只注专有名词 / first 每个词首次出现

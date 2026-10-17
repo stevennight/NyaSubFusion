@@ -172,6 +172,17 @@ DEFAULT_PROFILES = [
 ]
 
 
+class VideoOutCfg(_M):
+    """输出视频：封装 MKV（字幕轨 + 字体，不重新编码）或压制硬字幕 MP4。"""
+    mode: Literal["off", "mux", "burn"] = "off"  # 运行完自动做：off 不输出视频 / mux 封装 MKV / burn 压制硬字幕
+    profiles: list[str] = []                 # 用哪些输出方案；空：封装 = 所有启用的方案，压制 = 第一个启用的 ASS 方案
+    keep_subs: bool = True                   # 封装：保留原视频里的字幕轨
+    fonts: Literal["subset", "full", "none"] = "subset"  # 封装时嵌入字体：只含用到的字 / 完整字体 / 不嵌入（压制总是用子集）
+    encoder: Literal["auto", "h264_nvenc", "libx264", "hevc_nvenc", "libx265"] = "auto"  # auto：先试显卡，再用 CPU
+    quality: int = Field(20, ge=0, le=51)    # 压制画质（CRF / CQ）：越小越清晰、文件越大，常用 18~23
+    height: int = 0                          # 压制时缩放到这个高度；0 = 原尺寸
+
+
 class RenderCfg(_M):
     styles: dict[str, StyleCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_STYLES))
 
@@ -186,6 +197,7 @@ class RenderCfg(_M):
         return out
 
     profiles: list[ProfileCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_PROFILES))
+    video: VideoOutCfg = VideoOutCfg()
     merged_debug: bool = True                # 另外输出按来源上色的原文合并字幕，方便检查
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包
 

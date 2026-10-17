@@ -1,15 +1,16 @@
 // 与内核接口对应的数据类型（只写界面用到的字段）
 
-export type StageStatus = "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting";
+export type StageStatus = "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting" | "cancelled";
 
 export interface PlanItem { stage: string; status: StageStatus; seconds?: number | null }
 
-export interface Job { status: "running" | "done" | "failed" | "waiting"; error?: string | null; started: number }
+export interface Job { status: "running" | "done" | "failed" | "waiting" | "cancelled"; error?: string | null; started: number }
 
 export interface ProjectSummary {
   id: string; video: string; name: string; workdir: string;
   meta: { duration: number; video?: { width: number; height: number; aspect: number; codec?: string } | null } | null;
   src: string | null; plan: PlanItem[]; job: Job | null; config_files: string[]; outputs: string[];
+  videos?: { mux?: string; burn?: string };
   proxy: "direct" | "ready" | "building" | "failed" | "none";
   configured?: boolean;
   probe?: {
@@ -83,7 +84,11 @@ export interface Profile {
 }
 export type Cfg = Record<string, any>;
 
-export interface LiveEvent { type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null }
+export interface LiveEvent {
+  type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null;
+  stage?: string; done?: number; total?: number;   // type = "progress"：输出视频的进度（秒）
+}
+export interface Progress { stage: string; done: number; total: number }
 
 export interface ComponentStatus {
   gpu: { cuda_devices: number; name: string | null; ort_cuda: boolean };
@@ -108,7 +113,7 @@ export interface Settings {
   translate: { name: string; base_url: string; model: string };
 }
 
-export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; until?: string }
+export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
 export interface QueueItem {
   id: string; pid: string; video: string; name: string; options: QueueOptions;
   status: "pending" | "running" | "done" | "failed" | "waiting" | "cancelled";

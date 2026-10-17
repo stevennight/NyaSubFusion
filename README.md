@@ -35,7 +35,11 @@
 - 批量队列：一次加入多个文件 / 文件夹，按顺序处理；暂停 / 继续、调整顺序、取消（当前步骤做完后停下）、重试、移除；
   没配置过的视频按加入时选的预设建项目；重启后自动恢复。
 
-还没做的：自动更新、硬字幕压制 / 封装 MKV、托盘 / 通知 / 文件关联。
+- 输出视频：封装 MKV（字幕轨标好语言和名字，附带字体子集，只含用到的字，几百 KB；不重新编码，几秒完成），
+  或压制硬字幕 MP4（先试 NVENC 显卡编码，不行用 x264；隔行先反交错，非方形像素先转方形）。显示进度，可以中途取消。
+  可以设成运行完自动做，也可以在流程页 / 图层页单独导出；批量队列可以让整批都封装或压制。
+
+还没做的：自动更新、托盘 / 通知 / 文件关联。
 
 ### 安装（开发环境）
 
@@ -59,6 +63,7 @@ uv pip install -e ".[asr,ocr,gpu,lang,server]" pytest httpx --override overrides
 
 ```bash
 .venv/Scripts/python -m nyasub run 视频.ts --target zh-Hans,en --series 作品名
+.venv/Scripts/python -m nyasub run 视频.ts --video mux    # 另外输出 视频.sub.mkv（字幕 + 字体）；burn = 压制成 视频.hardsub.mp4
 ```
 
 - 配置见 [config.example.toml](config.example.toml)：语言、识别参数、大模型接口、样式、输出方案（图层 = 角色 × 语言）。
@@ -66,7 +71,7 @@ uv pip install -e ".[asr,ocr,gpu,lang,server]" pytest httpx --override overrides
 - 每一步的结果和指纹存在 `<视频名>.nyasub/stages/`：改了哪个参数只重做受影响的步骤，大模型请求也有缓存。`--redo 步骤` 强制重做，`--until fuse` 只做到原文合并。
 - `<视频名>.nyasub/edits.json` 里的手动修改会在注音和输出前套用（以后由审校界面写入）。
 - 注音写在图层的 `annotate` 里，能用哪种由图层语言决定；读音不对时写进读音词典 `readings.json`（格式见示例配置）。
-  带注音的 ASS 依赖字体度量，播放端要有同一字体，建议封装字体或压制。
+  带注音的 ASS 依赖字体度量，播放端要有同一字体，建议用 `--video mux`（嵌入字体）或 `--video burn`（压制）。
 
 ### 界面
 

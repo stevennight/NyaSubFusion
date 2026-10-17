@@ -172,3 +172,6 @@ table.tb { width: 100%; border-collapse: collapse }
 .lycard .ord button:hover { color: var(--tx) } .lycard .del:hover { color: var(--bad) }
 .lyprev { display: flex; flex-direction: column; gap: 10px; min-width: 0; overflow: auto }
 .drop-zone { border: 2px dashed var(--line2); border-radius: 12px; padding: 22px; text-align: center; color: var(--tx2); background: var(--bg2) }
+.pbar { height: 6px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line2); overflow: hidden }
+.pbar > div { height: 100%; background: var(--acc2); transition: width .4s }
+.node.cancelled .st { background: var(--tx3, #777) }

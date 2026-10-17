@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, subscribe } from "../api";
 import { useStore } from "../store";
 import type { QueueItem, QueueOptions, QueueState, TauriGlobal } from "../types";
-import { STAGE_LBL } from "../util";
+import { pct, STAGE_LBL } from "../util";
 
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 const MEDIA_EXTS = ["mp4", "mkv", "ts", "m2ts", "mts", "mov", "webm", "avi", "flv", "wmv", "mp3", "wav", "flac", "m4a", "aac", "ogg"];
@@ -23,15 +23,17 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
   const [q, setQ] = useState<QueueState | null>(null);
   const [paths, setPaths] = useState("");
   const [presets, setPresets] = useState<{ id: string; name: string }[]>([]);
-  const [opt, setOpt] = useState<QueueOptions>({ preset: "documentary", source: "auto", targets: ["zh-Hans"], series: "", until: "render" });
+  const [opt, setOpt] = useState<QueueOptions>({ preset: "documentary", source: "auto", targets: ["zh-Hans"], series: "", until: "render", video: "" });
+  const [prog, setProg] = useState<Record<string, { done: number; total: number }>>({});
   const [, tick] = useState(0);
 
   useEffect(() => {
     api.queue().then(setQ).catch((e) => s.setError(e.message));
     api.presets().then(setPresets);
     const off = subscribe("_queue", (e) => {
-      const ev = e as unknown as QueueState & { type: string; item?: string; name?: string; status?: string };
+      const ev = e as unknown as QueueState & { type: string; item?: string; name?: string; status?: string; done?: number; total?: number };
       if (ev.type === "queue") setQ({ paused: ev.paused, items: ev.items, running: ev.running });
+      if (ev.type === "queue_progress" && ev.item) { const id = ev.item; setProg((m) => ({ ...m, [id]: { done: Number(ev.done ?? 0), total: Number(ev.total ?? 0) } })); }
       if (ev.type === "queue_stage" && ev.status === "running") setQ((cur) => cur && { ...cur, items: cur.items.map((i) => (i.id === ev.item ? { ...i, stage: ev.name ?? i.stage } : i)) });
     });
     const t = setInterval(() => tick((n) => n + 1), 1000);  // 运行中的用时
@@ -97,6 +99,9 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
               <span className="lbl">做到</span>
               <select className="inp" value={opt.until} onChange={(e) => setOpt({ ...opt, until: e.target.value })}>
                 {["fuse", "translate", "render"].map((x) => <option key={x} value={x}>{STAGE_LBL[x]}</option>)}</select>
+              <span className="lbl">输出视频</span>
+              <select className="inp" value={opt.video} disabled={opt.until !== "render"} onChange={(e) => setOpt({ ...opt, video: e.target.value as QueueOptions["video"] })}>
+                <option value="">按各项目的设置</option><option value="off">这一批都不输出</option><option value="mux">这一批都封装 MKV（字幕 + 字体）</option><option value="burn">这一批都压制硬字幕</option></select>
             </div>
           </div>
         </div>
@@ -111,7 +116,7 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
                 <tr key={it.id}>
                   <td className="dim">{i + 1}</td>
                   <td><b>{it.name}</b><div className="dim" style={{ fontSize: 11.5, wordBreak: "break-all" }}>{it.video}</div></td>
-                  <td style={{ whiteSpace: "nowrap" }}><span className={`chip ${cls}`}>{lbl}{it.status === "running" && it.stage ? ` · ${STAGE_LBL[it.stage] ?? it.stage}` : ""}</span></td>
+                  <td style={{ whiteSpace: "nowrap" }}><span className={`chip ${cls}`}>{lbl}{it.status === "running" && it.stage ? ` · ${STAGE_LBL[it.stage] ?? it.stage}` : ""}{it.status === "running" && (it.stage === "mux" || it.stage === "burn") && prog[it.id] ? ` ${pct(prog[it.id])}%` : ""}</span></td>
                   <td className="dim" style={{ whiteSpace: "nowrap" }}>{dur(it.started, it.status === "running" ? null : it.finished)}</td>
                   <td style={{ fontSize: 12, color: it.error ? "var(--bad)" : "var(--tx2)", maxWidth: 320, wordBreak: "break-all" }}>{it.error ?? it.note ?? ""}</td>
                   <td style={{ whiteSpace: "nowrap" }}>

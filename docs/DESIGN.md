@@ -416,7 +416,27 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 6. 行高 = 底字字号 +（有注音时）注音字号 + 间距；整块高度参与避让计算，与普通字幕一样会避开画面硬字幕。
 
 已用 ffmpeg（libass）把样片烧录截图核对过：振假名、拼音都正好居中在对应底字上方。
-限制：播放端必须有同一字体，否则会错位 → 推荐封装字体进 MKV（`ffmpeg -attach`）或直接压制。
+限制：播放端必须有同一字体，否则会错位 → 封装 MKV 时嵌入字体，或直接压制（见 7.3）。
+
+字体查找：同一个名字可能对应多个字形（“Yu Gothic”既是常规体的家族名，也是细体、粗体的排版家族名），
+按 libass 的选法取：家族名相同的常规体 > 家族名 > 全名 > 排版家族名，同级非粗体优先。
+
+### 7.3 输出视频（已实现，`render/video.py`）
+
+`[render.video]`：`mode = "mux" | "burn"` 时在排版输出后多一步 `mux` / `burn`（同样有指纹：视频文件 + 实际用到的字幕内容 + 相关配置，
+没变就不重做）；界面和接口也可以随时单独导出。
+
+- **字体**：解析 ASS 的样式和行内 `\fn` `\b` `\r`，得到每种字体（区分粗体）实际用到的字；用 fontTools 取子集
+  （保留全部 name 记录和排版特性，去掉 hinting），通常几百 KB。字体许可 `fsType` 为“受限”的跳过，“不允许取子集”的嵌入完整字形。
+  字体集合（.ttc）只取用到的那一个字形。
+- **封装 MKV**（`<名>.sub.mkv`）：视频、音频原样复制；可选保留原有字幕轨（mov_text 转成 SRT，ARIB 之类不能放进 MKV 的丢掉）；
+  新字幕轨标 ISO 639-2 语言和图层语言组成的名字（如“简体中文 / 日语”），第一条设为默认；字体用 `-attach` 加 mimetype。
+- **压制**（`<名>.hardsub.mp4`）：字幕和字体先复制到工作目录，ffmpeg 在那里运行（`subtitles=sub.ass:fontsdir=fonts`，
+  避免在滤镜参数里转义 Windows 路径）。滤镜：隔行 → `bwdif`；非方形像素或指定了高度 → 缩放成方形像素（否则 libass 画出的字会变形）；
+  最后 `subtitles`。编码 `auto` = 先 `h264_nvenc`，一开始就失败（没有 N 卡）再用 `libx264`；音频是 AAC / MP3 / AC3 时直接复制，否则转 AAC。
+- **进度与取消**：`ffmpeg -progress pipe:1` 读出处理到的时间，推 `{"type": "progress", "stage", "done", "total"}`；
+  取消时结束 ffmpeg 并删掉 `.part` 半成品，步骤状态记为 cancelled。
+- 加文件夹时跳过 `.sub.mkv` / `.hardsub.mp4`，不会把输出当成新视频再处理一遍。
 
 其他格式：
 
@@ -440,6 +460,8 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | POST | `/api/projects/{id}/cues/{cid}/split` / `merge` | 拆分 / 合并 |
 | GET | `/api/projects/{id}/layout?profile=&t=` | 某时刻的排版结果（精确预览） |
 | POST | `/api/projects/{id}/export` | `{profiles[]}` |
+| POST | `/api/projects/{id}/export_video` | `{mode: "mux" \| "burn", profiles[]}`：后台封装 / 压制，进度事件推到项目频道 |
+| POST | `/api/projects/{id}/cancel` | 取消正在运行的任务（步骤之间停下；输出视频时直接中断） |
 | GET/PUT | `/api/series/{name}` | 作品设置、术语表、读音词典 |
 | GET | `/api/schema/config` | 配置 JSON Schema（前端自动生成表单） |
 | GET | `/api/langs` | 已安装语言包，及其注音 / 转写选项的 JSON Schema |
