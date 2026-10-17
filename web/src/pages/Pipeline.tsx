@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
+import { RegionEditor, type Region } from "../components/RegionEditor";
 import type { Cfg, StageStatus } from "../types";
 import { deepGet, setIn, STAGE_LBL } from "../util";
 
@@ -99,6 +100,12 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <span className="lbl">视觉复核</span>
             <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
           </div>
+          {s.pid && s.summary?.meta?.video && (
+            <div style={{ marginTop: 10 }}>
+              <RegionEditor pid={s.pid} duration={s.summary.meta.duration} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
+                            boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} />
+            </div>
+          )}
         </div>
         <div className="card">
           <h3>大模型</h3>

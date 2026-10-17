@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, subscribe } from "../api";
 import { useStore } from "../store";
-import type { ComponentStatus, ProjectEntry, TauriGlobal } from "../types";
+import { SetupWizard } from "../components/SetupWizard";
+import type { ComponentStatus, ProjectEntry, ProjectSummary, TauriGlobal } from "../types";
 
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 const MEDIA_EXTS = ["mp4", "mkv", "ts", "m2ts", "mts", "mov", "webm", "avi", "flv", "wmv", "mp3", "wav", "flac", "m4a", "aac", "ogg"];
@@ -11,6 +12,7 @@ export function ProjectsPage({ onOpened }: { onOpened: () => void }) {
   const [path, setPath] = useState("");
   const [recent, setRecent] = useState<ProjectEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const [wizard, setWizard] = useState<ProjectSummary | null>(null);
 
   useEffect(() => { api.projects().then(setRecent).catch((e) => s.setError(e.message)); }, [s]);
 
@@ -18,8 +20,12 @@ export function ProjectsPage({ onOpened }: { onOpened: () => void }) {
     setBusy(true);
     try {
       const sum = await api.open(p.trim().replace(/^"|"$/g, ""));
-      s.open(sum.id);
-      onOpened();
+      if (sum.configured === false) {
+        setWizard(sum);  // 第一次打开：先选语言、作品、预设
+      } else {
+        s.open(sum.id);
+        onOpened();
+      }
     } catch (e) {
       s.setError((e as Error).message);
     } finally {
@@ -71,6 +77,8 @@ export function ProjectsPage({ onOpened }: { onOpened: () => void }) {
       </div>
       <div className="gap" />
       <Components />
+      {wizard && <SetupWizard summary={wizard} onCancel={() => setWizard(null)}
+                              onDone={() => { const id = wizard.id; setWizard(null); s.open(id); onOpened(); }} />}
     </div></div>
   );
 }

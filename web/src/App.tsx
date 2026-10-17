@@ -1,18 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { EditorPage } from "./pages/Editor";
+import { GlossaryPage } from "./pages/Glossary";
 import { LayersPage } from "./pages/Layers";
 import { PipelinePage } from "./pages/Pipeline";
 import { ProjectsPage } from "./pages/Projects";
 import { useStore } from "./store";
 import { langName } from "./util";
 
-type View = "projects" | "pipeline" | "editor" | "layers";
+type View = "projects" | "pipeline" | "editor" | "layers" | "glossary";
 
 const NAV: { v: View; label: string; icon: ReactNode; needProject?: boolean }[] = [
   { v: "projects", label: "项目", icon: <path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /> },
   { v: "pipeline", label: "流程", needProject: true, icon: <><circle cx="5" cy="12" r="2.5" /><circle cx="19" cy="5" r="2.5" /><circle cx="19" cy="19" r="2.5" /><path d="M7.5 12h4M11.5 12l5-6M11.5 12l5 6" /></> },
   { v: "editor", label: "审校", needProject: true, icon: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M7 12h6M15 12h2M3 20h18" /></> },
   { v: "layers", label: "图层样式", needProject: true, icon: <><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13l9 5 9-5" /></> },
+  { v: "glossary", label: "术语", needProject: true, icon: <><path d="M4 4h11a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3z" /><path d="M8 9h6M8 13h5" /></> },
 ];
 
 export default function App() {
@@ -55,6 +57,7 @@ export default function App() {
         {view === "pipeline" && s.pid && <PipelinePage onReview={() => setView("editor")} />}
         {view === "editor" && s.pid && <EditorPage />}
         {view === "layers" && s.pid && <LayersPage />}
+        {view === "glossary" && s.pid && <GlossaryPage />}
       </main>
       {s.toastMsg && <div className="toast">{s.toastMsg}</div>}
     </div>

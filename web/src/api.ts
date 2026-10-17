@@ -1,5 +1,5 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
-import type { Cfg, ComponentStatus, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ComponentStatus, EditResult, Glossary, Reading, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -35,18 +35,31 @@ export const api = {
   data: (pid: string) => call<ProjectData>(`/api/projects/${pid}/data`),
   preview: (pid: string, profile?: string) =>
     call<Preview>(`/api/projects/${pid}/preview${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
-  editCue: (pid: string, cid: string, body: Cfg) => call<{ cue: ProjectData["cues"][number] }>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
+  editCue: (pid: string, cid: string, body: Cfg) => call<EditResult>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
+  splitCue: (pid: string, cid: string, at: number) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/split`, json("POST", { at })),
+  mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
+  insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),
+  undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
     call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),
   retranslate: (pid: string, cid: string, body: { instruction?: string; lang?: string }) =>
     call<{ alts: string[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
   langs: () => call<LangInfo[]>("/api/langs"),
+  presets: () => call<{ id: string; name: string; desc: string }[]>("/api/presets"),
+  setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string }) =>
+    call<unknown>(`/api/projects/${pid}/setup`, json("POST", body)),
+  series: () => call<{ name: string; terms: number; episodes: number }[]>("/api/series"),
+  glossary: (pid: string) => call<Glossary>(`/api/projects/${pid}/glossary`),
+  putGlossary: (pid: string, terms: Term[]) => call<{ terms: Term[]; plan: PlanItem[] }>(`/api/projects/${pid}/glossary`, json("PUT", { terms })),
+  readings: (pid: string) => call<Record<string, Reading[]>>(`/api/projects/${pid}/readings`),
+  putReadings: (pid: string, body: Record<string, Reading[]>) => call<Record<string, Reading[]>>(`/api/projects/${pid}/readings`, json("PUT", body)),
   components: () => call<ComponentStatus>("/api/components"),
   installComponent: (name: string, remove = false) => call<unknown>(`/api/components/${name}`, json("POST", { remove })),
   peaks: (pid: string) => call<{ per_second: number; peaks: number[] }>(`/api/projects/${pid}/media/peaks`),
   videoUrl: (pid: string) => q(`/api/projects/${pid}/media/video`),
   cropUrl: (pid: string, crop: string) => q(`/api/projects/${pid}/${crop}`),
+  frameUrl: (pid: string, t: number, h = 360) => q(`/api/projects/${pid}/media/frame?t=${t}&h=${h}`),
 };
 
 /** 订阅项目事件（步骤进度、日志），断线自动重连。返回取消函数。 */

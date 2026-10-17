@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__, env, lang
 from ..core import config as config_mod
 from ..core import pipeline
+from ..core.edits import Store as EditStore
 from ..core.store import ProjectDir, load_json, save_json
 
 def _web_dist() -> Path:
@@ -188,12 +189,15 @@ def create_app(token: str | None = None) -> FastAPI:
         p, proj = project_paths(pid)
         run = make_run(pid)
         run.load_state()
-        meta = run.results.get("probe")
-        playable = None
-        if meta:
-            from ..sources import media
+        from ..sources import media
 
-            playable = media.browser_playable(p["video"], meta)
+        meta = run.results.get("probe")
+        if not meta:  # 还没运行过：临时探测一次（ffprobe 很快），新项目也能马上框选识别区域、预览视频
+            try:
+                meta = media.probe(p["video"])
+            except Exception:
+                meta = None
+        playable = media.browser_playable(p["video"], meta) if meta else None
         return {
             "id": pid, "video": p["video"], "name": Path(p["video"]).name, "workdir": str(proj.root),
             "meta": meta, "src": run.src, "plan": run.plan(), "job": hub.status(pid),
@@ -252,8 +256,37 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.post("/api/projects")
     def open_project(body: dict = Body(...)):
+        """打开项目。还没配置过（没有 project.toml）时额外返回探测结果，界面据此显示新建向导。"""
+        from ..sources import media, subtitle
+
         entry = projects.add(body["path"], body.get("workdir"))
-        return summary(entry["id"])
+        out = summary(entry["id"])
+        _, proj = project_paths(entry["id"])
+        out["configured"] = (proj / "project.toml").exists()
+        if not out["configured"]:
+            try:
+                info = media.probe(entry["video"])
+                out["probe"] = {"duration": info["duration"], "video": info.get("video"), "has_audio": info.get("has_audio"),
+                                "subtitles": info.get("subtitles"), "arib_ttml": bool(info.get("data_streams")),
+                                "external_subs": subtitle.find_external(entry["video"])}
+            except Exception as e:
+                out["probe"] = {"error": str(e)}
+        return out
+
+    @app.get("/api/presets")
+    def get_presets():
+        from .. import presets
+
+        return presets.listing()
+
+    @app.post("/api/projects/{pid}/setup")
+    def setup_project(pid: str, body: dict = Body(...)):
+        """新建向导：{"preset", "source", "targets", "series", "context"} → 写 project.toml。"""
+        from .. import presets
+
+        cfg = presets.build(body.get("preset") or "custom", body.get("source") or "auto", body.get("targets"),
+                            body.get("series") or "", body.get("context") or "")
+        return put_config(pid, {"project": cfg})
 
     @app.get("/api/projects/{pid}")
     def get_project(pid: str):
@@ -338,7 +371,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "ocr": ocr, "asr": (res.get("asr") or {}).get("segments", []),
             "fused": {"items": fused.get("items", []), "stats": fused.get("stats")},
             "cues": cues, "tokens": tokens, "glossary": (res.get("translate") or {}).get("glossary"),
-            "edits": load_json(run.proj / "edits.json", {}),
+            "edits": EditStore(run.proj).load(), "history": EditStore(run.proj).depth(),
         }
 
     @app.get("/api/projects/{pid}/preview")
@@ -371,28 +404,135 @@ def create_app(token: str | None = None) -> FastAPI:
                 "styles": {k: v.model_dump() for k, v in used.items()}, "items": out}
 
     def _reannotate(pid):
-        run = make_run(pid, until="annotate")
-        run.run()
+        run = make_run(pid)
+        try:
+            run.reannotate()
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
         run.load_state()
         return run
+
+    def _edit_result(pid, cid=None):
+        run = _reannotate(pid)
+        cues, tokens, _, _ = run.render_context()
+        cue = next((c for c in cues if c["id"] == cid), None) if cid else None
+        return {"cue": cue, "tokens": tokens.get(cid) if cid else None, "history": EditStore(run.proj).depth()}
 
     @app.patch("/api/projects/{pid}/cues/{cid}")
     def edit_cue(pid: str, cid: str, body: dict = Body(...)):
         """改字幕：{"orig": "...", "tr": {"zh-Hans": "..."}, "start", "end", "type", "review", "delete"}"""
         _, proj = project_paths(pid)
-        edits = load_json(proj / "edits.json", {})
-        cur = edits.get(cid, {})
-        for k, v in body.items():
-            if k == "tr":
-                cur.setdefault("tr", {}).update(v)
-            else:
-                cur[k] = v
-        edits[cid] = cur
-        save_json(proj / "edits.json", edits)
-        run = _reannotate(pid)
-        cues, tokens, _, _ = run.render_context()
+        EditStore(proj).set_fields(cid, body)
+        return _edit_result(pid, cid)
+
+    def _current_cues(pid):
+        run = make_run(pid)
+        run.load_state()
+        return run, run.render_context()[0]
+
+    @app.post("/api/projects/{pid}/cues/{cid}/split")
+    def split_cue(pid: str, cid: str, body: dict = Body(...)):
+        """在 {"at": 秒} 处拆成两条，文字按时间比例切开（之后可以再改）。"""
+        from ..core.edits import split_op
+
+        run, cues = _current_cues(pid)
         cue = next((c for c in cues if c["id"] == cid), None)
-        return {"cue": cue, "tokens": tokens.get(cid), "edit": cur}
+        if not cue:
+            raise HTTPException(404, "没有这条字幕")
+        at = float(body["at"])
+        if not (cue["start"] + 0.2 < at < cue["end"] - 0.2):
+            raise HTTPException(400, "拆分点要在这条字幕中间（离两端至少 0.2 秒）")
+        EditStore(run.proj).add_op(split_op(cue, at))
+        return _edit_result(pid, cid + "a")
+
+    @app.post("/api/projects/{pid}/cues/{cid}/merge")
+    def merge_cue(pid: str, cid: str):
+        """和下一条合并。"""
+        run, cues = _current_cues(pid)
+        i = next((k for k, c in enumerate(cues) if c["id"] == cid), None)
+        if i is None or i + 1 >= len(cues):
+            raise HTTPException(400, "后面没有字幕可以合并")
+        EditStore(run.proj).add_op({"op": "merge", "ids": [cid, cues[i + 1]["id"]]})
+        return _edit_result(pid, cid)
+
+    @app.post("/api/projects/{pid}/cues")
+    def insert_cue(pid: str, body: dict = Body(...)):
+        """插入一条：{"start", "end", "orig"?, "tr"?, "type"?}"""
+        from ..core.edits import next_insert_id
+
+        run, _ = _current_cues(pid)
+        store = EditStore(run.proj)
+        nid = next_insert_id(store.load())
+        store.add_op({"op": "insert", "id": nid, "start": float(body["start"]), "end": float(body["end"]),
+                      "type": body.get("type", "dialogue"), "orig": body.get("orig", ""), "tr": body.get("tr") or {}})
+        return _edit_result(pid, nid)
+
+    @app.post("/api/projects/{pid}/edits/{action}")
+    def undo_redo(pid: str, action: str):
+        if action not in ("undo", "redo"):
+            raise HTTPException(404)
+        _, proj = project_paths(pid)
+        store = EditStore(proj)
+        if (store.undo() if action == "undo" else store.redo()) is None:
+            raise HTTPException(400, "没有可以撤销的修改" if action == "undo" else "没有可以重做的修改")
+        return _edit_result(pid)
+
+    # ---------- 术语与读音词典 ----------
+    @app.get("/api/series")
+    def list_series():
+        root = env.home() / "series"
+        out = []
+        for d in sorted(root.iterdir()) if root.is_dir() else []:
+            if d.is_dir():
+                terms = load_json(d / "glossary.json", {"terms": []})["terms"]
+                out.append({"name": d.name, "terms": len(terms), "episodes": len({t.get("from") for t in terms} - {None, "manual"})})
+        return out
+
+    @app.get("/api/projects/{pid}/glossary")
+    def get_glossary(pid: str):
+        run = make_run(pid)
+        run.load_state()
+        saved = load_json(run.glossary_path(), {"terms": []})["terms"]
+        gl = (run.results.get("translate") or {}).get("glossary") or {}
+        known = {t.get("src") for t in saved}  # 翻译结果里还没存进术语表的（旧项目），也列出来
+        saved = saved + [dict(t, **{"from": run.proj.stem}) for t in gl.get("terms", []) if t.get("src") not in known]
+        return {"series": run.cfg.project.series, "context": run.cfg.project.context, "summary": gl.get("summary", ""),
+                "path": str(run.glossary_path()), "episode": run.proj.stem, "terms": saved}
+
+    @app.put("/api/projects/{pid}/glossary")
+    def put_glossary(pid: str, body: dict = Body(...)):
+        """整表替换：{"terms": [{"src", "reading", "tr", "type", "note", "from"}]}。改了要重新翻译才生效。"""
+        run = make_run(pid)
+        terms = []
+        for t in body.get("terms") or []:
+            if (t.get("src") or "").strip():
+                terms.append({k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from") and v not in (None, "")}
+                             | {"from": t.get("from") or "manual"})
+        save_json(run.glossary_path(), {"terms": terms})
+        return {"terms": terms, "plan": run.plan()}
+
+    def _reading_files(run):
+        files = {"global": env.home() / "readings.json"}
+        if run.cfg.project.series:
+            files["series"] = config_mod.series_dir(run.cfg.project.series) / "readings.json"
+        return files
+
+    @app.get("/api/projects/{pid}/readings")
+    def get_readings(pid: str):
+        run = make_run(pid)
+        return {k: load_json(f, {"entries": []})["entries"] for k, f in _reading_files(run).items()}
+
+    @app.put("/api/projects/{pid}/readings")
+    def put_readings(pid: str, body: dict = Body(...)):
+        """{"global": [...], "series": [...]}：整表替换，然后重新注音。"""
+        run = make_run(pid)
+        for k, f in _reading_files(run).items():
+            if k in body:
+                entries = [{kk: vv for kk, vv in e.items() if kk in ("lang", "src", "reading", "proper")}
+                           for e in body[k] if (e.get("src") or "").strip() and (e.get("reading") or "").strip()]
+                save_json(f, {"entries": entries})
+        _reannotate(pid)
+        return get_readings(pid)
 
     @app.post("/api/projects/{pid}/readings")
     def add_reading(pid: str, body: dict = Body(...)):
@@ -463,6 +603,21 @@ def create_app(token: str | None = None) -> FastAPI:
                     env.log(f"生成预览视频失败：{e}")
             threading.Thread(target=build, daemon=True).start()
         return JSONResponse({"detail": "正在生成预览视频", "proxy": proxy_jobs[pid]}, status_code=202)
+
+    @app.get("/api/projects/{pid}/media/frame")
+    def frame(pid: str, t: float = 0.0, h: int = 360):
+        """某一时刻的画面（JPEG），框选识别区域用。"""
+        import subprocess
+
+        from fastapi.responses import Response
+
+        p, _ = project_paths(pid)
+        cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", p["video"], "-frames:v", "1",
+               "-vf", f"scale=-2:{max(90, min(h, 1080))}", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-"]
+        r = subprocess.run(cmd, capture_output=True, timeout=60)
+        if r.returncode != 0 or not r.stdout:
+            raise HTTPException(500, f"取画面失败：{r.stderr.decode('utf-8', 'replace')[-200:]}")
+        return Response(r.stdout, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
 
     @app.get("/api/projects/{pid}/media/peaks")
     def peaks(pid: str):

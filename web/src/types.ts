@@ -11,6 +11,12 @@ export interface ProjectSummary {
   meta: { duration: number; video?: { width: number; height: number; aspect: number; codec?: string } | null } | null;
   src: string | null; plan: PlanItem[]; job: Job | null; config_files: string[]; outputs: string[];
   proxy: "direct" | "ready" | "building" | "failed" | "none";
+  configured?: boolean;
+  probe?: {
+    error?: string; duration?: number; has_audio?: boolean; arib_ttml?: boolean; external_subs?: string | null;
+    video?: { width: number; height: number; codec?: string } | null;
+    subtitles?: { sub_index: number; codec: string; lang: string; title: string }[];
+  };
 }
 
 export interface ProjectEntry { id: string; video: string; name: string; exists: boolean; opened: number }
@@ -35,6 +41,8 @@ export type Seg = [string] | [string, string] | [string, string, string];
 export interface Word { t: string; segs: Seg[]; pos: string; p: boolean; num: boolean; src: string; guess: boolean }
 export interface Tokens { orig: Word[] | null; tr: Record<string, Word[]> }
 
+export interface EditResult { cue: Cue | null; history: { undo: number; redo: number } }
+
 export interface ProjectData {
   meta: ProjectSummary["meta"]; src: string; targets: string[]; aspect: number;
   hardsub: { start: number; end: number; rect: number[] }[];
@@ -42,6 +50,7 @@ export interface ProjectData {
   fused: { items: FusedItem[]; stats: Record<string, number> | null };
   cues: Cue[]; tokens: Record<string, Tokens>;
   glossary: { summary: string; terms: { src: string; reading?: string; tr: string; type?: string }[] } | null;
+  history: { undo: number; redo: number };
 }
 
 export interface Style {
@@ -87,3 +96,7 @@ export interface TauriGlobal {
   dialog: { open: (o: { multiple?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string | string[] | null> };
   event: { listen: (name: string, cb: (e: { payload: { paths?: string[] } }) => void) => Promise<() => void> };
 }
+
+export interface Term { src: string; reading?: string; tr?: string; type?: string; note?: string; from?: string }
+export interface Glossary { series: string; context: string; summary: string; path: string; episode: string; terms: Term[] }
+export interface Reading { lang: string; src: string; reading: string; proper?: boolean }

@@ -22,6 +22,7 @@ class ProjectCfg(_M):
     targets: list[str] = ["zh-Hans"]         # 目标语言，可多个；第一个用于融合+翻译，其余在其基础上翻译
     series: str = ""                         # 所属作品：共享节目说明、术语表
     context: str = ""                        # 节目说明，会告诉大模型
+    preset: str = ""                         # 新建项目时选的内容预设（只做记录）
 
 
 class SubsCfg(_M):

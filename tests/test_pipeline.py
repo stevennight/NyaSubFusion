@@ -117,3 +117,28 @@ def test_real_asr_ocr(sample, api_config, fake):
     fused = json.loads((sample.with_name("sample.nyasub") / "stages" / "fuse.json").read_text(encoding="utf-8"))
     s = fused["stats"]
     assert s["subs"] == 4 and s["telop"] >= 2 and s["asr_uncovered"] >= 1
+
+
+def test_saving_new_terms_does_not_retrigger_translation(sample, api_config, fake, isolated_home):
+    """这一集自己存进作品术语表的术语，不应该让这一集下次运行时重新翻译。"""
+    args = (sample, "--no-asr", "--no-ocr", "--config", api_config, "--series", "海辺")
+    assert run(*args) == 0
+    calls = len(fake.CALLS)
+    terms = json.loads((isolated_home / "series" / "海辺" / "glossary.json").read_text(encoding="utf-8"))["terms"]
+    assert terms[0]["from"] == "sample"
+    assert run(*args) == 0
+    assert len(fake.CALLS) == calls
+
+
+def test_project_glossary_without_series(sample, api_config, fake):
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    gl = sample.with_name("sample.nyasub") / "glossary.json"
+    assert json.loads(gl.read_text(encoding="utf-8"))["terms"][0]["src"] == "深浦町"
+    # 手动加一条术语：下次运行要重新翻译，并且提示词里带上它
+    data = json.loads(gl.read_text(encoding="utf-8"))
+    data["terms"].append({"src": "青森県", "tr": "青森县", "from": "manual"})
+    gl.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    calls = len(fake.CALLS)
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    assert len(fake.CALLS) > calls
+    assert any("青森県" in user and "青森县" in user for _, user in fake.CALLS[calls:])

@@ -138,3 +138,83 @@ def test_shutdown_closes_websockets(client):
         assert client.post("/api/shutdown").json()["ok"]
         with pytest.raises(Exception):  # 服务端主动关闭了连接
             ws.receive_json()
+
+
+def test_split_merge_insert_undo(client, sample):
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    ids = lambda: [c["id"] for c in client.get(f"/api/projects/{pid}/data").json()["cues"]]
+    assert ids() == ["q1", "q2", "q3", "q4"]
+
+    r = client.post(f"/api/projects/{pid}/cues/q1/split", json={"at": 4.0})
+    assert r.status_code == 200 and r.json()["cue"]["id"] == "q1a"
+    assert ids() == ["q1a", "q1b", "q2", "q3", "q4"]
+    assert client.post(f"/api/projects/{pid}/cues/q1/split", json={"at": 4.0}).status_code == 404  # q1 已经不存在
+    assert client.post(f"/api/projects/{pid}/cues/q2/split", json={"at": 0.1}).status_code == 400
+
+    client.post(f"/api/projects/{pid}/cues/q3/merge")
+    assert ids() == ["q1a", "q1b", "q2", "q3"]
+    r = client.post(f"/api/projects/{pid}/cues", json={"start": 36, "end": 38, "orig": "追加のセリフ"}).json()
+    assert r["cue"]["id"] == "u1" and r["history"]["undo"] == 3
+    # 插入的条目也会被注音、出现在预览里
+    assert client.get(f"/api/projects/{pid}/data").json()["tokens"]["u1"]["orig"]
+
+    client.post(f"/api/projects/{pid}/edits/undo")
+    client.post(f"/api/projects/{pid}/edits/undo")
+    assert ids() == ["q1a", "q1b", "q2", "q3", "q4"]
+    client.post(f"/api/projects/{pid}/edits/redo")
+    assert ids() == ["q1a", "q1b", "q2", "q3"]
+    for _ in range(2):
+        client.post(f"/api/projects/{pid}/edits/undo")
+    assert ids() == ["q1", "q2", "q3", "q4"]
+    assert client.post(f"/api/projects/{pid}/edits/undo").status_code == 400
+
+
+def test_frame_jpeg(client, sample):
+    pid, _ = opened(client, sample)
+    r = client.get(f"/api/projects/{pid}/media/frame", params={"t": 9.5, "h": 180})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
+
+
+def test_glossary_and_readings_api(client, sample, isolated_home):
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    g = client.get(f"/api/projects/{pid}/glossary").json()
+    assert g["series"] == "" and g["terms"][0]["src"] == "深浦町" and g["terms"][0]["from"] == "sample"
+    r = client.put(f"/api/projects/{pid}/glossary", json={"terms": g["terms"] + [{"src": "青森県", "tr": "青森县"}, {"src": " "}]}).json()
+    assert [t["src"] for t in r["terms"]] == ["深浦町", "青森県"] and r["terms"][1]["from"] == "manual"
+    assert {p["stage"]: p["status"] for p in r["plan"]}["translate"] == "stale"  # 术语改了要重新翻译
+
+    rd = client.put(f"/api/projects/{pid}/readings", json={"global": [{"lang": "ja", "src": "深浦町", "reading": "ふかうらまち"}]}).json()
+    assert rd["global"][0]["reading"] == "ふかうらまち" and (isolated_home / "readings.json").exists()
+    assert client.get("/api/series").json() == []
+
+
+def test_open_wizard_and_presets(client, sample):
+    s = client.post("/api/projects", json={"path": str(sample)}).json()
+    assert s["configured"] is False
+    assert s["probe"]["has_audio"] and s["probe"]["external_subs"].endswith("sample.srt")
+    ids = [p["id"] for p in client.get("/api/presets").json()]
+    assert ids[0] == "documentary" and "lecture" in ids
+    r = client.post(f"/api/projects/{s['id']}/setup", json={"preset": "lecture", "source": "ja", "targets": ["zh-Hans", "en"], "series": "测试"})
+    assert r.status_code == 200, r.text
+    eff = r.json()["config"]["effective"]
+    assert eff["ocr"]["enabled"] is False and eff["project"]["targets"] == ["zh-Hans", "en"] and eff["project"]["preset"] == "lecture"
+    assert eff["render"]["profiles"][0]["format"] == "srt"
+    assert client.post("/api/projects", json={"path": str(sample)}).json()["configured"] is True
+
+
+def test_edit_never_reruns_translation(client, sample):
+    """上游配置改了（翻译过期）时编辑字幕，只重做注音，不会调大模型。"""
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    client.put(f"/api/projects/{pid}/config", json={"project": dict(PROJECT, project={"context": "改了说明"})})
+    assert {p["stage"]: p["status"] for p in client.get(f"/api/projects/{pid}/plan").json()}["translate"] == "stale"
+    calls = len(fakellm.CALLS)
+    r = client.patch(f"/api/projects/{pid}/cues/q1", json={"tr": {"zh-Hans": "改字"}})
+    assert r.status_code == 200 and r.json()["cue"]["tr"]["zh-Hans"]["text"] == "改字"
+    assert client.post(f"/api/projects/{pid}/cues/q2/split", json={"at": 14.0}).status_code == 200
+    assert len(fakellm.CALLS) == calls

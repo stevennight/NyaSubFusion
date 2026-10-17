@@ -4,7 +4,7 @@ import { Player, type PlayerHandle } from "../components/Player";
 import { Timeline } from "../components/Timeline";
 import { usePeaks, usePreview } from "../hooks";
 import { useStore } from "../store";
-import type { Candidate, Cue, Word } from "../types";
+import type { Candidate, Cue, EditResult, Word } from "../types";
 import { FLAG_LBL, fmt, langName, SRC_LBL, TYPE_LBL } from "../util";
 
 type Filter = "all" | "todo" | "asr" | "ocr";
@@ -33,6 +33,19 @@ export function EditorPage() {
     const c = cues.find((x) => x.id === id);
     if (c && seek) player.current?.seek(c.start + Math.min(0.5, (c.end - c.start) / 3));
   }, [cues]);
+  // 结构修改（拆分 / 合并 / 插入 / 撤销 / 重做）：做完重新加载，选中结果条目
+  const edit = useCallback(async (fn: () => Promise<EditResult>, msg?: string) => {
+    try {
+      const r = await fn();
+      await s.reload();
+      if (r.cue) setSel(r.cue.id);
+      if (msg) s.toast(msg);
+    } catch (e) { s.setError((e as Error).message); }
+  }, [s]);
+  const undo = useCallback(() => s.pid && edit(() => api.undoRedo(s.pid!, "undo"), "已撤销"), [s.pid, edit]);
+  const redo = useCallback(() => s.pid && edit(() => api.undoRedo(s.pid!, "redo"), "已重做"), [s.pid, edit]);
+  const insertAt = useCallback(() => s.pid && edit(() => api.insertCue(s.pid!, { start: Math.round(time * 100) / 100, end: Math.round((time + 2) * 100) / 100 }), "已插入一条空字幕"), [s.pid, edit, time]);
+
   const step = useCallback((dir: number) => {
     const i = cues.findIndex((c) => c.id === sel);
     const n = cues[Math.max(0, Math.min(cues.length - 1, i + dir))];
@@ -41,14 +54,16 @@ export function EditorPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest("input,textarea,select")) return;
+      if ((e.target as HTMLElement)?.closest?.("input,textarea,select")) return;
       if (e.code === "Space") { e.preventDefault(); player.current?.toggle(); }
       if (e.key === "j" || e.key === "J") step(-1);
       if (e.key === "k" || e.key === "K") step(1);
+      if (e.ctrlKey && (e.key === "z" || e.key === "Z") && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (e.ctrlKey && (e.key === "y" || e.key === "Y" || ((e.key === "z" || e.key === "Z") && e.shiftKey))) { e.preventDefault(); redo(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step]);
+  }, [step, undo, redo]);
 
   if (!d) return <div className="empty">加载中…</div>;
   if (!cues.length) return <div className="empty">还没有字幕。先在「流程」里运行一次。</div>;
@@ -88,6 +103,9 @@ export function EditorPage() {
           <span className="sp" />
           <span className="dim">缩放</span>
           <input type="range" min={4} max={80} value={pps} onChange={(e) => setPps(Number(e.target.value))} style={{ maxWidth: 120 }} />
+          <button className="btn sm" title="在播放头处插入一条 2 秒的空字幕" onClick={insertAt}>＋ 插入</button>
+          <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
+          <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
           <span className="dim">J/K 上下条 · 空格播放</span>
         </div>
         <div className="bd">
@@ -106,14 +124,20 @@ export function EditorPage() {
         </div>
       </div>
       <aside className="inspector">
-        {selected ? <Inspector key={selected.id} cue={selected} index={cues.indexOf(selected)} onStep={step} />
+        {selected ? <Inspector key={selected.id + JSON.stringify(selected.tr) + selected.orig.text} cue={selected} index={cues.indexOf(selected)} onStep={step}
+                               time={time} isLast={cues.indexOf(selected) === cues.length - 1}
+                               onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
+                               onMerge={() => edit(() => api.mergeNext(s.pid!, selected.id), "已和下一条合并")} />
           : <div className="isec dim">点时间轴或列表里的一条字幕，在这里对照来源、修改原文 / 译文 / 读音。</div>}
       </aside>
     </div>
   );
 }
 
-function Inspector({ cue, index, onStep }: { cue: Cue; index: number; onStep: (d: number) => void }) {
+function Inspector({ cue, index, onStep, time, isLast, onSplit, onMerge }: {
+  cue: Cue; index: number; onStep: (d: number) => void; time: number; isLast: boolean; onSplit: () => void; onMerge: () => void;
+}) {
+  const canSplit = time > cue.start + 0.2 && time < cue.end - 0.2;
   const s = useStore();
   const d = s.data!;
   const [texts, setTexts] = useState<Record<string, string>>(() => ({ orig: cue.orig.text, ...Object.fromEntries(d.targets.map((t) => [t, cue.tr[t]?.text ?? ""])) }));
@@ -228,7 +252,9 @@ function Inspector({ cue, index, onStep }: { cue: Cue; index: number; onStep: (d
       <div className="row wrap">
         <button className="btn pri" disabled={busy} onClick={() => patch({ review: cue.review === "ok" ? "todo" : "ok" }, cue.review === "ok" ? "已改回待审校" : "已标记为已审")}>
           {cue.review === "ok" ? "✓ 已审（点击撤销）" : "✓ 标记已审"}</button>
-        <button className="btn ghost" disabled={busy} onClick={() => patch({ delete: true }, "已删除（可在 edits.json 里恢复）")}>删除</button>
+        <button className="btn" disabled={busy || !canSplit} title={canSplit ? `在 ${fmt(time)} 处拆开` : "把播放头移到这条字幕中间"} onClick={onSplit}>✂ 在播放头拆分</button>
+        <button className="btn" disabled={busy || isLast} onClick={onMerge}>与下一条合并</button>
+        <button className="btn ghost" disabled={busy} onClick={() => patch({ delete: true }, "已删除（Ctrl+Z 可撤销）")}>删除</button>
       </div>
 
       {pop && (

@@ -13,6 +13,7 @@ from .. import lang
 from ..env import emit, log
 from . import config as config_mod
 from .store import ProjectDir, digest, file_stamp, load_json, save_json
+from .edits import normalize as normalize_edits
 
 STAGES = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate", "render"]
 ALIASES = {"merge": "fuse", "extract": "audio"}
@@ -198,6 +199,16 @@ class Run:
         boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused) if fused else []
         ann = res.get("annotate") or {"cues": (res.get("translate") or {}).get("cues", []), "tokens": {}}
         return ann["cues"], ann["tokens"], aspect, boxes
+
+    def reannotate(self):
+        """只重做注音（编辑字幕、改读音词典后调用）：直接用已有的翻译结果。
+        就算上游配置改过、翻译已经“过期”，也不会在这里重新识别或重新翻译（那要用户自己点运行）。"""
+        self.load_state()
+        translated = self.results.get("translate")
+        if translated is None:
+            raise RuntimeError("还没有翻译结果，先运行一次")
+        self.results["annotate"] = self.stage("annotate", lambda: self._annotate(translated))
+        return self
 
     def export(self, only=None):
         """只做输出（用已有结果）：only 是方案名列表，None = 全部启用的方案。返回输出文件名。"""
@@ -434,14 +445,18 @@ class Run:
     def _llm_mode(self):
         return self.opts.translate or self.cfg.llm_mode()
 
-    def _series_terms(self):
+    def glossary_path(self):
+        """术语表存哪：归入作品时存作品目录（多集共享），否则存项目目录。"""
         name = self.cfg.project.series
-        if not name:
-            return []
-        return load_json(config_mod.series_dir(name) / "glossary.json", {"terms": []})["terms"]
+        return config_mod.series_dir(name) / "glossary.json" if name else self.proj / "glossary.json"
+
+    def _series_terms(self):
+        """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍）。"""
+        terms = load_json(self.glossary_path(), {"terms": []})["terms"]
+        return [t for t in terms if t.get("from") != self.proj.stem]
 
     def _series_terms_digest(self):
-        return digest(self._series_terms()) if self.cfg.project.series else None
+        return digest(self._series_terms())
 
     def _translate(self, fused, mode):
         from ..llm import jobs, translate
@@ -477,12 +492,17 @@ class Run:
         return {"cues": cues, "glossary": glossary}
 
     def _save_series_terms(self, glossary):
-        name = self.cfg.project.series
-        if not name or not glossary.get("new"):
+        """把这一集新发现的术语存回术语表（记上来自哪一集）。"""
+        path = self.glossary_path()
+        saved = load_json(path, {"terms": []})["terms"]
+        keep = [t for t in saved if t.get("from") != self.proj.stem]
+        known = {t.get("src") for t in keep}
+        new = [dict(t, **{"from": self.proj.stem}) for t in glossary.get("terms", []) if t.get("src") not in known]
+        if not new and len(keep) == len(saved):
             return
-        path = config_mod.series_dir(name) / "glossary.json"
-        save_json(path, {"terms": glossary["terms"]})
-        log(f"作品「{name}」术语表已更新：共 {len(glossary['terms'])} 条")
+        save_json(path, {"terms": keep + new})
+        where = f"作品「{self.cfg.project.series}」" if self.cfg.project.series else "项目"
+        log(f"{where}术语表已更新：本集新增 {len(new)} 条，共 {len(keep) + len(new)} 条")
 
     def _hint(self, job_dir):
         log("下一步：在 Claude Code 里对它说（翻译完它会自己生成最终字幕）：")
@@ -534,7 +554,8 @@ class Run:
 
     def _annotate(self, translated):
         edits = load_json(self.proj / "edits.json", {})
-        cues = apply_edits(translated["cues"], edits)
+        cues = apply_edits(translated["cues"], edits, self.src)
+        edits = normalize_edits(edits)["cues"]
         readings = self._readings(translated.get("glossary"))
         warned = set()
 
@@ -596,28 +617,11 @@ class Run:
         return written
 
 
-def apply_edits(cues, edits: dict):
-    """edits.json：{cue_id: {"start": .., "end": .., "type": .., "orig": "..", "tr": {"zh-Hans": ".."}}}"""
-    if not edits:
-        return cues
-    out = []
-    for c in cues:
-        e = edits.get(c["id"])
-        if not e:
-            out.append(c)
-            continue
-        if e.get("delete"):
-            continue
-        c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review"):
-            if k in e:
-                c[k] = e[k]
-        if "orig" in e:
-            c["orig"]["text"] = e["orig"]
-        for code, text in (e.get("tr") or {}).items():
-            c["tr"][code] = {"text": text}
-        out.append(c)
-    return out
+def apply_edits(cues, edits: dict, src_lang=None):
+    """手动修改（字段、拆分 / 合并 / 插入），见 core/edits.py。"""
+    from .edits import apply
+
+    return apply(cues, edits, src_lang)
 
 
 def process(video, cfg, opts: Options, config_files=()):
