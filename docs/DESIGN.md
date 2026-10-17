@@ -474,7 +474,7 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | GET | `/api/projects/{id}/layout?profile=&t=` | 某时刻的排版结果（精确预览） |
 | POST | `/api/projects/{id}/export` | `{profiles[]}` |
 | POST | `/api/projects/{id}/export_video` | `{mode: "mux" \| "burn", profiles[]}`：后台封装 / 压制，进度事件推到项目频道 |
-| POST | `/api/projects/{id}/cancel` | 取消正在运行的任务（步骤之间停下；输出视频时直接中断） |
+| POST | `/api/projects/{id}/cancel` | 取消正在运行的任务：语音识别每段、画面字每帧、大模型每次请求前、ffmpeg 运行中都会检查（`env.check_cancel`），几秒内停下 |
 | GET/PUT | `/api/series/{name}` | 作品设置、术语表、读音词典 |
 | GET | `/api/schema/config` | 配置 JSON Schema（前端自动生成表单） |
 | GET | `/api/langs` | 已安装语言包，及其注音 / 转写选项的 JSON Schema |
@@ -487,7 +487,7 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | GET/PUT | `/api/projects/{id}/glossary` · `/readings` | 术语表（记录来源集数）、读音词典 |
 | POST | `/api/projects/{id}/setup` · GET `/api/presets` | 新建向导：按内容预设写 project.toml |
 | GET/POST | `/api/queue` | 批量队列状态 / 加入（文件或文件夹 + 未配置视频用的预设、语言、作品、做到哪一步） |
-| POST | `/api/queue/{项}/up·down·remove·retry·cancel` · `/api/queue/pause` · `/api/queue/clear` | 调整顺序、移除、重试、取消（步骤之间停下）、暂停 / 继续、清除已完成；进度推送到 `/ws/projects/_queue` |
+| POST | `/api/queue/{项}/up·down·remove·retry·cancel` · `/api/queue/pause` · `/api/queue/clear` | 调整顺序、移除、重试、取消（几秒内停下）、暂停 / 继续、清除已完成；进度推送到 `/ws/projects/_queue` |
 | WS | `/ws/projects/{id}` | 进度、日志、步骤完成事件 |
 
 ## 9. 插件

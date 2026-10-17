@@ -132,7 +132,7 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
             })}
           </tbody></table>
         )}
-        <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>取消正在运行的项时，会等当前步骤做完再停下（语音 / 画面字识别不能中途打断）。程序重启后队列会恢复。</div>
+        <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>取消正在运行的项会在几秒内停下（已完成的步骤保留，重试时接着做）。程序重启后队列会恢复。</div>
       </div>
     </div></div>
   );

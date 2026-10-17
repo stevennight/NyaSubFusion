@@ -2,7 +2,7 @@
 
 - 存在 <用户数据目录>/queue.json，重启后恢复；上次中断时“运行中”的项改回“待处理”。
 - 单个后台线程按顺序处理；事件同时推给 "_queue" 频道（队列页）和该项目自己的频道（流程页）。
-- 取消：在当前步骤做完后停下（语音 / 画面字识别这类长步骤不能中途打断）。
+- 取消：几秒内停下（语音识别、画面字识别、大模型请求、输出视频都在循环里检查）；已完成的步骤保留。
 - 同一个项目正在别处运行时先跳过，稍后再试。
 """
 import threading
@@ -103,7 +103,7 @@ class Queue:
             if it["status"] == "pending":
                 it["status"] = "cancelled"
             elif it["status"] == "running" and self.current and self.current[0] == item_id:
-                it["note"] = "正在取消：当前步骤做完后停下"
+                it["note"] = "正在取消…"
                 self.current[1].cancel.set()
             self._changed()
 

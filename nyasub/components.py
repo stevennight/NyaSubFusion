@@ -8,8 +8,10 @@
 onnxruntime 的 CUDA 插件必须和 onnxruntime 本体放在一起，所以 cuda-ocr 会把插件复制到 onnxruntime/capi/
 （安装包默认装在用户目录，可写）。
 """
+import filecmp
 import fnmatch
 import html.parser
+import os
 import shutil
 import sys
 import tempfile
@@ -157,6 +159,22 @@ def _download(url, dest, progress):
         progress(done, total)
 
 
+IN_USE = "文件正在被程序使用（{}），请重启程序后再安装"
+
+
+def _place(src, target):
+    """把下载好的文件放到位。目标已经是同样的文件就不动（它可能正被加载着，Windows 不让覆盖）。"""
+    target = Path(target)
+    if target.exists() and target.stat().st_size == src.stat().st_size and filecmp.cmp(src, target, shallow=False):
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src, target) if src.drive == target.drive else shutil.copy2(src, target)
+    except PermissionError:
+        raise RuntimeError(IN_USE.format(target.name)) from None
+    return True
+
+
 def install(name, index=None):
     """下载并安装组件。index 为空时依次尝试官方源和国内镜像。"""
     m = manifest().get(name)
@@ -196,17 +214,28 @@ def install(name, index=None):
                         files.append(target.name)
                         total_size += info.file_size
             whl.unlink()
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.move(str(staging / "out"), dest)
-        # onnxruntime 的插件要和本体放在一起
+        env.emit({"type": "component", "name": name, "phase": "install"})
+        # onnxruntime 的插件要和本体放在一起（providers_shared.dll 本体自带、正被加载着：内容相同就跳过）
         ort_files = [f for f in files if f.startswith("onnxruntime_providers_")]
         if ort_files:
             import onnxruntime
 
             capi = Path(onnxruntime.__file__).parent / "capi"
             for f in ort_files:
-                shutil.copy2(dest / f, capi / f)
+                tmp = staging / "ort" / f
+                tmp.parent.mkdir(exist_ok=True)
+                shutil.copy2(staging / "out" / f, tmp)
+                _place(tmp, capi / f)
+        # 逐个文件放进组件目录（不整个删掉重来：上次装到一半的 DLL 可能已经被显卡检测加载了）
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            _place(staging / "out" / f, dest / f)
+        for old in dest.iterdir():  # 旧版本留下的多余文件
+            if old.name not in files and old.name != "component.json":
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
         save_json(dest / "component.json", {"name": name, "files": files, "size_mb": round(total_size / 2**20),
                                             "installed": int(time.time())})
         env.log(f"组件「{m['label']}」已安装：{len(files)} 个文件，{total_size / 2**30:.2f} GB。重启后生效")

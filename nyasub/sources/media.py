@@ -172,8 +172,7 @@ def browser_playable(path, info):
 PROXY_NAME = "proxy2.mp4"  # v2：一律 8 位 H.264、最高约 30 帧（v1 遇到 10 位视频会转出浏览器放不了的 High 10）
 
 
-class Stopped(Exception):
-    """取消了：ffmpeg 已结束，半成品已删除。"""
+from ..env import Cancelled as Stopped  # noqa: E402（取消了：ffmpeg 已结束，半成品已删除）
 
 
 def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None):

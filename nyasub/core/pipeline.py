@@ -9,7 +9,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from .. import lang
+from .. import env, lang
 from ..env import emit, log
 from . import config as config_mod
 from .store import ProjectDir, digest, file_stamp, load_json, save_json
@@ -35,8 +35,7 @@ class Waiting(Exception):
     """翻译任务已导出，等外部助手完成。"""
 
 
-class Cancelled(Exception):
-    """用户取消：在两个步骤之间停下（正在跑的步骤会先做完）。"""
+Cancelled = env.Cancelled  # 用户取消：语音识别、画面字识别、大模型请求、输出视频都会在循环里及时停下
 
 
 @dataclass
@@ -94,7 +93,7 @@ class Run:
         self.ran = []           # 本次实际重跑的步骤
         self.src = None         # 解析后的源语言
         self.waiting = False    # 翻译任务已导出、等外部助手完成
-        self.cancel = None      # threading.Event：设置后在下一个步骤开始前停下（输出视频时会直接中断）
+        self.cancel = None      # threading.Event：设置后尽快停下（长步骤在循环里检查，见 env.check_cancel）
         self.written = []       # 本次输出的字幕：[(方案, 文件名)]
         self._video_profiles = None  # 这次输出视频指定的方案（None = 按配置）
         self.config_files = list(config_files)
@@ -256,7 +255,11 @@ class Run:
             raise RuntimeError("还没有字幕结果，先运行一次")
         cues, tokens, aspect, boxes = self.render_context()
         self._render(cues, tokens, aspect, boxes, profiles)
-        self._video(mode, profiles)
+        env.set_cancel(self.cancel)
+        try:
+            self._video(mode, profiles)
+        finally:
+            env.set_cancel(None)
         return self
 
     def _stop(self, name):
@@ -264,6 +267,13 @@ class Run:
 
     # ---------- 主流程 ----------
     def run(self):
+        env.set_cancel(self.cancel)
+        try:
+            return self._run()
+        finally:
+            env.set_cancel(None)
+
+    def _run(self):
         cfg, p = self.cfg, self.proj
         log(f"=== {p.video.name}")
         log(f"工作目录：{p.root}")

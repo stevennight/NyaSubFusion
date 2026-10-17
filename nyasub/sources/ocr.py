@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from rapidfuzz import fuzz
 
-from ..env import log
+from ..env import check_cancel, log
 from ..textutil import norm
 from . import media
 
@@ -185,6 +185,7 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
     max_gap = float(c["max_gap"])
 
     for t, frame in media.iter_frames(video, vinfo, fps, c["height"], info["start_time"], c.get("hwaccel", False)):
+        check_cancel()
         n_frames += 1
         img = frame if full_roi else frame[roi[1]:roi[3], roi[0]:roi[2]]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)

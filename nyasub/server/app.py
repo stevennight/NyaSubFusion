@@ -84,7 +84,7 @@ class Job:
         self.error = None
         self.started = time.time()
         self.thread = None
-        self.cancel = None        # threading.Event：取消（步骤之间停下；输出视频时直接中断）
+        self.cancel = None        # threading.Event：取消（长步骤在循环里检查，几秒内停下）
 
 
 class Hub:
@@ -418,7 +418,7 @@ def create_app(token: str | None = None) -> FastAPI:
         if job.cancel is None:
             raise HTTPException(400, "这个任务不能取消")
         job.cancel.set()
-        env.log("正在取消：当前步骤做完后停下")
+        env.log("正在停止…")
         return {"ok": True}
 
     @app.get("/api/projects/{pid}/log")

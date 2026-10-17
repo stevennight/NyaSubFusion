@@ -2,6 +2,7 @@
 import glob
 import os
 import sys
+import threading
 from pathlib import Path
 
 _done = False
@@ -128,3 +129,23 @@ def kill_children_on_exit():
             _job = job  # 句柄一直开着；进程结束时系统关闭它，作业里的进程随之结束
     except Exception:
         pass
+
+
+# ---------------- 取消 ----------------
+class Cancelled(Exception):
+    """用户取消（停止按钮、队列里取消）。"""
+
+
+_local = threading.local()
+
+
+def set_cancel(event):
+    """给当前线程设置取消标志（threading.Event 或 None）。流水线开始时设置。"""
+    _local.cancel = event
+
+
+def check_cancel():
+    """长循环里调用：当前线程的取消标志已设置就抛 Cancelled。语音识别每段、画面字每帧、大模型每次请求前都会检查。"""
+    ev = getattr(_local, "cancel", None)
+    if ev is not None and ev.is_set():
+        raise Cancelled()

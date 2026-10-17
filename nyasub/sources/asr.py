@@ -2,7 +2,7 @@
 import os
 import time
 
-from ..env import log
+from ..env import check_cancel, log
 
 
 def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
@@ -41,12 +41,14 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
         condition_on_previous_text=False,
         no_speech_threshold=0.6,
     )
+    check_cancel()
     if not language:
         log(f"语音语言检测：{info.language}（{info.language_probability:.0%}）")
     out = []
     t0 = time.time()
     last_report = 0
     for seg in segments:
+        check_cancel()  # 每识别出一段检查一次：一小时的节目也能随时停下
         text = seg.text.strip()
         if not text:
             continue

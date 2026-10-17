@@ -86,14 +86,14 @@ export function ProjectsPage({ onOpened }: { onOpened: () => void }) {
 function Components() {
   const s = useStore();
   const [st, setSt] = useState<ComponentStatus | null>(null);
-  const [prog, setProg] = useState<{ pkg: string; done: number; total: number } | null>(null);
+  const [prog, setProg] = useState<{ pkg: string; done: number; total: number; phase?: string } | null>(null);
   const load = () => api.components().then(setSt).catch(() => setSt(null));
   useEffect(() => {
     load();
     return subscribe("_components", (e) => {
-      const ev = e as unknown as { type: string; package?: string; done?: number; total?: number; status?: string };
-      if (ev.type === "component") setProg({ pkg: ev.package!, done: ev.done!, total: ev.total! });
-      if (ev.type === "job") { setProg(null); load(); s.toast(ev.status === "done" ? "组件已安装，重启程序后生效" : "组件安装失败，见日志"); }
+      const ev = e as unknown as { type: string; package?: string; done?: number; total?: number; status?: string; phase?: string };
+      if (ev.type === "component") setProg((p) => ev.phase ? { pkg: p?.pkg ?? "", done: 0, total: 0, phase: ev.phase } : { pkg: ev.package!, done: ev.done!, total: ev.total! });
+      if (ev.type === "job") { setProg(null); load(); s.toast(ev.status === "done" ? "组件已安装，重启程序后生效" : "组件安装失败"); }
     });
   }, []);
   if (!st) return null;
@@ -113,7 +113,9 @@ function Components() {
             : <button className="btn sm" disabled={busy || !st.gpu.name} onClick={() => api.installComponent(c.name).then(load)}>下载安装</button>}
         </div>
       ))}
-      {prog && <div className="dim" style={{ marginTop: 8 }}>正在下载 {prog.pkg}：{(prog.done / 2 ** 20).toFixed(0)} / {prog.total ? (prog.total / 2 ** 20).toFixed(0) : "?"} MB</div>}
+      {prog && <div className="dim" style={{ marginTop: 8 }}>{prog.phase === "install" ? "下载完成，正在安装…"
+        : `正在下载 ${prog.pkg}：${(prog.done / 2 ** 20).toFixed(0)} / ${prog.total ? (prog.total / 2 ** 20).toFixed(0) : "?"} MB`}</div>}
+      {!prog && st.job?.status === "failed" && <div style={{ marginTop: 8, fontSize: 12, color: "var(--bad)", wordBreak: "break-all" }}>上次安装失败：{st.job.error}</div>}
     </div>
   );
 }

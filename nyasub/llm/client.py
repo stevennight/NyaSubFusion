@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from ..core.store import digest, load_json, save_json
-from ..env import log
+from ..env import check_cancel, log
 
 
 class FatalLLMError(RuntimeError):
@@ -52,6 +52,7 @@ class LLM:
         last_err = None
         json_mode = self.c.json_mode
         for attempt in range(int(self.c.max_retries) + 1):
+            check_cancel()  # 翻译 / 复核分很多次请求：每次请求前检查停止按钮
             try:
                 kw = {"model": self.model, "messages": messages, "temperature": self.c.temperature}
                 if json_mode:
