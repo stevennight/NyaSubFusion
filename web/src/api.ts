@@ -1,5 +1,5 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
-import type { Cfg, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ComponentStatus, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -42,6 +42,8 @@ export const api = {
     call<{ alts: string[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
   langs: () => call<LangInfo[]>("/api/langs"),
+  components: () => call<ComponentStatus>("/api/components"),
+  installComponent: (name: string, remove = false) => call<unknown>(`/api/components/${name}`, json("POST", { remove })),
   peaks: (pid: string) => call<{ per_second: number; peaks: number[] }>(`/api/projects/${pid}/media/peaks`),
   videoUrl: (pid: string) => q(`/api/projects/${pid}/media/video`),
   cropUrl: (pid: string, crop: string) => q(`/api/projects/${pid}/${crop}`),

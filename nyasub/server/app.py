@@ -8,6 +8,7 @@ import asyncio
 import copy
 import hashlib
 import os
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -23,7 +24,16 @@ from ..core import config as config_mod
 from ..core import pipeline
 from ..core.store import ProjectDir, load_json, save_json
 
-WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+def _web_dist() -> Path:
+    """界面文件：NYASUB_WEB_DIST > 打包后的 web/ > 源码里的 web/dist。"""
+    if os.environ.get("NYASUB_WEB_DIST"):
+        return Path(os.environ["NYASUB_WEB_DIST"])
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "web"
+    return Path(__file__).resolve().parents[2] / "web" / "dist"
+
+
+WEB_DIST = _web_dist()
 
 
 # ---------------- 项目登记 ----------------
@@ -196,6 +206,36 @@ def create_app(token: str | None = None) -> FastAPI:
     def health():
         return {"ok": True, "version": __version__}
 
+    @app.post("/api/shutdown")
+    def shutdown():
+        """桌面壳关闭前调用：优雅退出。"""
+        server = getattr(app.state, "server", None)
+        if hub.loop:  # 先让所有 WebSocket 正常断开，免得关闭时被强制取消
+            for qs in hub.subs.values():
+                for q in list(qs):
+                    hub.loop.call_soon_threadsafe(q.put_nowait, None)
+        if server:
+            server.should_exit = True
+        return {"ok": True, "running": [pid for pid, j in hub.jobs.items() if j.status == "running"]}
+
+    @app.get("/api/components")
+    def get_components():
+        from .. import components
+
+        return dict(components.status(), job=hub.status("_components"))
+
+    @app.post("/api/components/{name}")
+    def install_component(name: str, body: dict = Body(default={})):
+        """后台下载安装；进度通过 /ws/projects/_components 推送。"""
+        from .. import components
+
+        if name not in components.manifest():
+            raise HTTPException(404, "没有这个组件")
+        if body.get("remove"):
+            return components.remove(name)
+        hub.start("_components", lambda: components.install(name, body.get("index")))
+        return {"started": True}
+
     @app.get("/api/langs")
     def langs():
         return [{"code": p.code, "name": p.name, "annotations": list(p.annotations), "translit": p.translit_name,
@@ -272,7 +312,11 @@ def create_app(token: str | None = None) -> FastAPI:
         try:
             await socket.send_json({"type": "hello", "job": hub.status(pid)})
             while True:
-                await socket.send_json(await q.get())
+                ev = await q.get()
+                if ev is None:  # 服务要关闭了
+                    await socket.close()
+                    break
+                await socket.send_json(ev)
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

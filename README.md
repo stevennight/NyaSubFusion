@@ -11,7 +11,7 @@
 
 技术栈：Python 内核 + FastAPI 本地服务 + React/TypeScript 界面 + Tauri 2 桌面壳（内核作为 sidecar）。开发阶段直接在浏览器里跑。
 
-## 当前状态：M3（内核 + 命令行 + 注音 + 本地服务与界面）
+## 当前状态：M4（内核 + 命令行 + 注音 + 本地服务与界面 + 桌面安装包）
 
 命令行可以完整跑通：识别 → 融合 → 大模型融合翻译 → 注音 → 按输出方案排版导出。
 - M1：内核从 subfusion 重构成通用版本（任意语言对、多目标语言、作品术语表、指纹缓存）。
@@ -22,7 +22,10 @@
   视频预览代理与波形）和 React 界面：项目、流程（步骤图、运行、日志、参数）、审校（视频 + 字幕叠加、多轨时间轴、
   列表、来源对照、点字改读音、译文编辑与重译）、图层样式（方案、图层、注音、样式，改动即时预览）。
 
-还没做的：桌面打包（M4，Tauri 2 + 内核 sidecar）、批量队列、术语页、硬字幕压制。
+- M4：Tauri 2 桌面壳（启动内核、随机端口与 token、壳退出时内核跟着退出、选择文件 / 拖入、单实例），
+  PyInstaller 打包内核（不含 CUDA 库），NSIS 安装包；GPU 加速做成可下载组件（`cuda-asr` / `cuda-ocr`）。
+
+还没做的：自动更新、批量队列、术语页、硬字幕压制、托盘 / 通知 / 文件关联。
 
 ### 安装（开发环境）
 
@@ -67,6 +70,22 @@ cd web && pnpm install && pnpm build
 
 打开 http://127.0.0.1:8765 ，输入视频路径打开项目。开发界面时另开一个终端在 `web/` 里跑 `pnpm dev`（http://localhost:5173 ，接口自动代理到 8765）。
 界面里的预览和导出的 ASS 用同一套排版位置（服务端算好坐标，浏览器只负责画）。
+
+### 桌面安装包
+
+```bash
+.venv/Scripts/python packaging/fetch_ffmpeg.py
+```
+
+```bash
+.venv/Scripts/python packaging/build_core.py
+```
+
+```bash
+cd desktop && pnpm install && pnpm tauri build
+```
+
+安装包在 `desktop/src-tauri/target/release/bundle/nsis/`。需要 Rust 工具链；crates.io 连不上时在 `desktop/.cargo/config.toml` 里配 rsproxy 镜像（见 docs/DESIGN.md 第 10 节）。
 
 ### 测试
 

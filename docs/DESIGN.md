@@ -1,5 +1,6 @@
 # NyaSubFusion 技术设计
 
+> 版本 v0.4 · 2026-10-17　·　v0.4：M3 服务与界面、M4 桌面打包已实现，第 10 节按实现更新
 > 版本 v0.3 · 2026-10-17　·　v0.3：M1 内核、M2 注音已实现，6.2~6.4、7.2 按实现更新
 > 版本 v0.2（草案）· 2026-10-16　·　v0.2：桌面壳定为 Tauri 2；新增打包分发；图层按“角色 × 语言”设计
 > 配套：[PRD.md](PRD.md) · [交互原型](../prototype/index.html)
@@ -460,39 +461,58 @@ ja = "nyasub.lang.ja:Japanese"
 
 插件声明自己的配置模型（pydantic），界面自动生成设置表单。
 
-## 10. 打包与分发
+## 10. 打包与分发（M4 已实现）
 
 ### 10.1 组成
 
-模型不放进安装包，但 GPU 运行库很大，所以拆成三部分。体积是估计值，M4 实际打包后再核对。
+模型和 GPU 运行库都不放进安装包，按需下载。下表是实测体积。
 
-| 部分 | 内容 | 体积（估计） | 获取方式 |
+| 部分 | 内容 | 体积 | 获取方式 |
 |---|---|---|---|
-| 基础安装包 | Tauri 壳 + 前端 + `nyasub-core`（Python 运行时、CPU 版 onnxruntime / CTranslate2、OpenCV 等）+ ffmpeg | 几百 MB | NSIS 安装包；没有显卡也能完整使用（较慢），也可配云端语音识别 |
-| GPU 加速组件 | CUDA 12 运行库（cuBLAS、cuDNN 9）、onnxruntime-gpu | 约 1~1.5 GB | 设置页一键下载；检测到 NVIDIA 显卡时主动提示 |
-| 模型 | whisper large-v3 约 3 GB、kotoba-whisper 约 1.5 GB、OCR 模型几十 MB、分词词典 | 按需 | 第一次用到时下载，支持镜像（如 hf-mirror） |
+| 安装包 | Tauri 壳 + `nyasub-core`（Python 运行时、界面、onnxruntime 本体、CTranslate2、OpenCV、Sudachi 词典、OCR 模型 medium + small）+ ffmpeg（共享库版） | 安装包约 337 MB，装好后约 950 MB | NSIS，装在用户目录（不需要管理员权限）；没有显卡也能完整使用 |
+| `cuda-asr` 组件 | CUDA 12 cuBLAS + cuDNN 9（语音识别用） | 约 1.3 GB | 项目页「GPU 加速组件」一键下载，或 `nyasub components install cuda-asr` |
+| `cuda-ocr` 组件 | onnxruntime CUDA 插件 + CUDA 13 运行库（画面字识别用） | 约 1.2 GB | 同上 |
+| 模型 | whisper large-v3 约 3 GB 等 | 按需 | 第一次用到时下载，支持镜像（`[asr] hf_endpoint`） |
 
-- 组件装在 `%LOCALAPPDATA%\NyaSubFusion\components\<名称>\<版本>\`，每个组件有清单（版本、大小、sha256、下载地址、镜像）。
-- 组件和程序**分开版本**：程序自动更新只替换壳和内核，不会重新下载 CUDA 和模型。
-- 内核启动时用 `os.add_dll_directory` 加载已装好的 GPU 组件；`nyasub doctor` 检查显卡、驱动版本、组件完整性。
+- 组件来自 NVIDIA / onnxruntime 发布在 PyPI 上的 wheel，只解出 DLL，装在 `<用户数据目录>\components\<名称>\`；
+  依次尝试官方源和国内镜像，也可以用 `--index` 指定。onnxruntime 的 CUDA 插件要和本体放在一起，会复制到内核的 `onnxruntime\capi\`。
+- 组件和程序分开：程序更新不会重新下载 CUDA 和模型。
+- **GPU 就绪检查**（`nyasub/gpu.py`）：CTranslate2 / onnxruntime 自己报告的“CUDA 可用”只说明编译时带了 CUDA。识别前实际加载一遍需要的 DLL，
+  缺了就直接用 CPU，不会在转写到一半时崩溃。
+- **没有 GPU 时画面字识别很慢**（实测 720p 每帧：medium 模型 CPU 5 秒、small 模型 CPU 1.2 秒、medium 模型 GPU 0.27 秒），
+  所以模型默认 `auto`：有 GPU 用 medium，只有 CPU 时用 small；实际用的模型计入步骤指纹。
+- ffmpeg 用 BtbN 的共享库版（`packaging/fetch_ffmpeg.py`）：ffmpeg / ffprobe 共用一套 DLL，约 210 MB（静态版两份约 460 MB），
+  并检查包含 libaribcaption（ARIB 字幕）、NVENC、libass。
 
-### 10.2 内核作为 Tauri sidecar
+### 10.2 桌面壳与内核
 
-1. Tauri 启动 `nyasub-core serve --port 0 --token <随机值>`；内核只监听 `127.0.0.1`，就绪后在 stdout 输出实际端口。
-2. 壳把端口和 token 注入前端；前端所有请求都带 token，防止本机其他程序乱调。
-3. 健康检查；内核崩溃时弹窗显示日志位置，提供“重启内核”。
-4. 关窗口时，有任务在跑就询问“后台继续 / 取消”；退出时先调 `/api/shutdown`，超时再强制结束。
-5. 单实例运行：再次双击视频或拖入文件，转发给已打开的窗口。
+```
+nyasubfusion.exe（Tauri 2）
+  ├─ 启动页（本地 splash）
+  ├─ 启动 core\nyasub-core.exe serve --port 0 --token <随机> --parent-pid <壳的 PID>（不弹黑窗口）
+  ├─ 读到内核 stdout 的 NYASUB_READY {"port": …} → 主窗口跳到 http://127.0.0.1:<port>/?token=…
+  │     界面由内核直接提供（同源，没有跨域问题）；token 从地址栏交给前端，所有请求都带上
+  └─ 退出：POST /api/shutdown → 等 3 秒 → 强制结束
+```
 
-用到的 Tauri 插件：shell（sidecar）、dialog、notification、updater、single-instance、opener（打开所在文件夹）、window-state。
+- 内核只监听 127.0.0.1；没有 token 的 `/api` 请求返回 401。
+- 正常关窗口：内核先让界面的 WebSocket 断开再退出，实测 0.3 秒；最多等 1 秒（uvicorn 优雅关闭超时）。
+- 内核监视壳的进程：壳崩溃或被强制结束时，内核 1 秒左右自己退出（实测），不留孤儿进程。
+- 内核日志写到 `%LOCALAPPDATA%\app.nyasubfusion.desktop\logs\core.log`；内核没启动成功时启动页显示日志位置。
+- 原生能力通过 Tauri 插件：dialog（选择文件）、窗口拖入文件、single-instance（再次打开时把已有窗口拉到前面）、opener。
+  因为界面来自 127.0.0.1，`capabilities/default.json` 用 `remote.urls` 给它开放这些权限。
+- 还没做：自动更新（需要签名密钥和发布地址）、托盘、通知、文件关联、关窗口时“后台继续 / 取消”的询问。
 
-### 10.3 开发方式
+### 10.3 开发与构建
 
 | 场景 | 做法 |
 |---|---|
-| 日常开发（M1~M3） | `uv run nyasub serve --dev` + `pnpm dev`（Vite 把 `/api` 代理到内核），在浏览器里调试 |
-| 调原生功能 | `pnpm tauri dev`（壳直接连开发中的内核，不打包 sidecar） |
-| 打包 | PyInstaller 打 `nyasub-core`（onedir）→ `pnpm tauri build` 生成安装包 |
+| 日常开发 | `python -m nyasub serve` + `web/` 里 `pnpm dev`（Vite 把 `/api` 代理到内核），在浏览器里调试 |
+| 调桌面壳 | `desktop/src-tauri` 里 `cargo build`，运行 `target/debug/nyasubfusion.exe`；没有打包好的内核时自动用仓库里的 `.venv`，也可以用 `NYASUB_CORE_CMD` 指定 |
+| 打包内核 | `python packaging/fetch_ffmpeg.py`（一次）→ `python packaging/build_core.py`：构建界面 → PyInstaller（onedir，排除 CUDA 库）→ 附带 ffmpeg → 复制到 `desktop/src-tauri/core/` |
+| 生成安装包 | `desktop/` 里 `pnpm tauri build` → `desktop/src-tauri/target/release/bundle/nsis/NyaSubFusion_<版本>_x64-setup.exe` |
+
+网络受限时：crates.io 可以换 rsproxy 镜像（在 `desktop/.cargo/config.toml` 里设置，不提交），PyPI 可以换清华 / 阿里镜像。
 
 ## 11. 从 subfusion 迁移
 

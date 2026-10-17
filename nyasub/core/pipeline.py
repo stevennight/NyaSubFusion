@@ -97,8 +97,14 @@ class Run:
         if name == "subs":
             path = self._subs_file()
             return {"arg": self.opts.subs_path, "file": file_stamp(path) if path else None}
-        if name == "ocr":
-            return {"lang": lang.get(self.src).ocr_lang if self.src else None}
+        if name == "ocr":  # 识别语言和实际用的模型（auto 时取决于有没有 GPU）都会影响结果
+            models = None
+            if self.cfg.ocr.det_model == "auto" or self.cfg.ocr.rec_model == "auto":
+                from ..sources.ocr import resolve
+
+                r = resolve(self.cfg.ocr.model_dump())
+                models = [r["det_model"], r["rec_model"]]
+            return {"lang": lang.get(self.src).ocr_lang if self.src else None, "models": models}
         if name == "annotate":
             return {"src": self.src, "edits": digest(load_json(self.proj / "edits.json", {})),
                     "readings": digest(self._user_readings())}

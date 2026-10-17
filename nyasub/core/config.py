@@ -55,8 +55,8 @@ class OcrCfg(_M):
     height: int = 720
     use_cuda: bool = True
     hwaccel: bool = True                     # 显卡解码，失败自动退回 CPU
-    det_model: str = "medium"
-    rec_model: str = "medium"
+    det_model: str = "auto"                  # auto：有 GPU 用 medium，只有 CPU 时用 small（快 4 倍）
+    rec_model: str = "auto"
     min_score: float = 0.6
     min_duration: float = 0.6
     max_gap: float = 0.75

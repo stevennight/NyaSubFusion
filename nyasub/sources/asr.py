@@ -14,6 +14,11 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
     from faster_whisper.utils import download_model
 
     root = c.get("download_root") or None
+    from .. import gpu
+
+    if c["device"] == "cuda" and not gpu.asr_ready():
+        log("没有可用的 CUDA（缺显卡或“语音识别 GPU 加速”组件），语音识别用 CPU，会慢一些")
+        c = dict(c, device="cpu", compute_type="int8")
     try:
         download_model(c["model"], local_files_only=True, cache_dir=root)
         log(f"加载语音模型 {c['model']}（已在本地缓存）")

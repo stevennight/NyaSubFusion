@@ -16,3 +16,10 @@ node_modules/
 # 本机开发用的启动配置（含本机路径）
 .claude/launch.json
 web/dist/
+
+# 桌面版构建产物
+desktop/.cargo/
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/core/
+desktop/src-tauri/gen/

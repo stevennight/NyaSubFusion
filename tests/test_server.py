@@ -130,3 +130,11 @@ def test_token_required(sample):
     with TestClient(create_app("secret")) as c:
         assert c.get("/api/health").status_code == 401
         assert c.get("/api/health", headers={"x-nyasub-token": "secret"}).status_code == 200
+
+
+def test_shutdown_closes_websockets(client):
+    with client.websocket_connect("/ws/projects/_components") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        assert client.post("/api/shutdown").json()["ok"]
+        with pytest.raises(Exception):  # 服务端主动关闭了连接
+            ws.receive_json()

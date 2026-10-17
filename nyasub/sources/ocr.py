@@ -30,9 +30,22 @@ def _imread(path):
     return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
+def resolve(c):
+    """确定实际用 GPU 还是 CPU、用哪种模型（det_model / rec_model 为 auto 时按有没有 GPU 选）。"""
+    from .. import gpu
+
+    cuda = bool(c.get("use_cuda")) and gpu.ocr_ready()
+    size = "medium" if cuda else "small"
+    return dict(c, use_cuda=cuda, det_model=size if c["det_model"] == "auto" else c["det_model"],
+                rec_model=size if c["rec_model"] == "auto" else c["rec_model"])
+
+
 def make_engine(c, ocr_lang="japan"):
     from rapidocr import LangRec, ModelType, RapidOCR
 
+    if c.get("use_cuda") and not resolve(c)["use_cuda"]:
+        log("没有可用的 CUDA（缺显卡或“画面字识别 GPU 加速”组件），画面字识别用 CPU（会慢很多，建议安装 GPU 加速组件）")
+    c = resolve(c)
     params = {
         "Global.log_level": "error",
         "Global.text_score": float(c["min_score"]),
@@ -159,7 +172,8 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
     frames_dir = os.path.join(workdir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
     eng = make_engine(c, ocr_lang)
-    log(f"扫描画面字：{fps} 帧/秒，分辨率 {W}x{H}，识别模型 {ocr_lang}")
+    r = resolve(c)
+    log(f"扫描画面字：{fps} 帧/秒，分辨率 {W}x{H}，识别模型 {ocr_lang} / {r['det_model']}，{'GPU' if r['use_cuda'] else 'CPU'}")
 
     active, closed = [], []
     next_id = 1

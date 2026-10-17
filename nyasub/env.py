@@ -19,10 +19,14 @@ def setup():
             pass
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")  # 屏蔽 onnxruntime 的噪声日志
+    if getattr(sys, "frozen", False):  # 打包后：随程序附带的 ffmpeg
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        if (base / "ffmpeg").is_dir():
+            os.environ["PATH"] = str(base / "ffmpeg") + os.pathsep + os.environ.get("PATH", "")
+    dirs = set()
     if os.name == "nt":
         # pip 安装的 nvidia-* 包、以及 GPU 组件目录里的 DLL
         roots = [p for p in sys.path if p.endswith("site-packages")]
-        dirs = set()
         for sp in roots:
             dirs |= {os.path.dirname(p) for p in glob.glob(os.path.join(sp, "nvidia", "**", "*.dll"), recursive=True)}
         comp = home() / "components"
@@ -38,7 +42,8 @@ def setup():
         import onnxruntime as ort
 
         ort.set_default_logger_severity(3)
-        if hasattr(ort, "preload_dlls"):
+        # 只有找到了 CUDA 运行库才预加载，否则 onnxruntime 会刷一屏“加载失败”
+        if hasattr(ort, "preload_dlls") and os.name == "nt" and dirs:
             ort.preload_dlls(directory="")
     except Exception:
         pass
@@ -76,5 +81,8 @@ def emit(event: dict):
 
 def log(*args):
     msg = " ".join(str(a) for a in args)
-    print("[nyasub]", msg, flush=True)
+    try:
+        print("[nyasub]", msg, flush=True)
+    except (OSError, ValueError):
+        pass  # 标准输出已经关了（比如桌面壳退出了），不影响运行
     emit({"type": "log", "msg": msg})

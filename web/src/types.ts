@@ -75,3 +75,15 @@ export interface Profile {
 export type Cfg = Record<string, any>;
 
 export interface LiveEvent { type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null }
+
+export interface ComponentStatus {
+  gpu: { cuda_devices: number; name: string | null; ort_cuda: boolean };
+  components: { name: string; label: string; detail: string; installed: boolean; files: number; size_mb: number | null }[];
+  job: Job | null;
+}
+
+// 桌面壳（Tauri）注入的全局对象；在浏览器里运行时不存在
+export interface TauriGlobal {
+  dialog: { open: (o: { multiple?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string | string[] | null> };
+  event: { listen: (name: string, cb: (e: { payload: { paths?: string[] } }) => void) => Promise<() => void> };
+}
