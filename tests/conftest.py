@@ -12,6 +12,10 @@ def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("NYASUB_HOME", str(home))
+    monkeypatch.setenv("NYASUB_KEYRING", "memory")  # 不碰系统凭据库
+    from nyasub import secrets
+
+    secrets._memory.clear()
     return home
 
 

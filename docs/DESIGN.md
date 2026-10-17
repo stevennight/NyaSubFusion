@@ -445,6 +445,12 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | GET | `/api/langs` | 已安装语言包，及其注音 / 转写选项的 JSON Schema |
 | GET/POST | `/api/components` | GPU 组件、模型的安装状态；开始 / 取消下载 |
 | POST | `/api/shutdown` | 桌面壳关闭时通知内核优雅退出 |
+| GET/PUT | `/api/settings` | 用户全局配置（接口列表、用途分配、镜像）；返回每个接口有没有 Key，不回显 Key |
+| PUT/DELETE | `/api/settings/keys/{接口名}` | API Key 存入 / 移出系统凭据库（keyring） |
+| POST | `/api/settings/test` | 测试接口连接（发一条很短的请求） |
+| POST | `/api/projects/{id}/cues/{cid}/split` · `/merge` · `/api/projects/{id}/cues` · `/edits/undo` · `/edits/redo` | 拆分、与下一条合并、插入、撤销、重做（只重做注音，不会触发重新识别或翻译） |
+| GET/PUT | `/api/projects/{id}/glossary` · `/readings` | 术语表（记录来源集数）、读音词典 |
+| POST | `/api/projects/{id}/setup` · GET `/api/presets` | 新建向导：按内容预设写 project.toml |
 | WS | `/ws/projects/{id}` | 进度、日志、步骤完成事件 |
 
 ## 9. 插件

@@ -111,12 +111,15 @@ class Run:
                     "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
+        if name == "ocr_refine":
+            return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None}
         if name == "translate":
             mode = self._llm_mode()
             jobs = None
             if mode == "export":  # 外部助手改了结果文件，就重新导入
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
-            return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs}
+            return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
+                    "model": self.cfg.endpoint()["model"] if mode == "api" else None}
         return None
 
     def input_fp(self, name):

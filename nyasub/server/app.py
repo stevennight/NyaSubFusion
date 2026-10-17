@@ -222,6 +222,78 @@ def create_app(token: str | None = None) -> FastAPI:
             server.should_exit = True
         return {"ok": True, "running": [pid for pid, j in hub.jobs.items() if j.status == "running"]}
 
+    # ---------- 全局设置（用户配置 + 凭据库） ----------
+    def _user_cfg_path():
+        return env.home() / "config.toml"
+
+    @app.get("/api/settings")
+    def get_settings():
+        from .. import secrets
+
+        path = _user_cfg_path()
+        raw = config_mod.read_toml(path) if path.exists() else {}
+        eff, _ = config_mod.load(None)
+        return {"user_config": raw, "effective": eff.model_dump(mode="json"), "path": str(path),
+                "keys": {p.name: bool(secrets.get(p.name)) for p in eff.llm.providers},
+                "env_keys": {p.name: bool(p.api_key_env and os.environ.get(p.api_key_env)) for p in eff.llm.providers},
+                "keyring": secrets.available(), "translate": {k: v for k, v in eff.endpoint().items() if k != "key"}}
+
+    @app.put("/api/settings")
+    def put_settings(body: dict = Body(...)):
+        raw = _clean(body.get("user_config") or {})
+        for p in raw.get("llm", {}).get("providers", []):
+            p.pop("api_key", None)  # Key 只进凭据库，不写进配置文件
+        try:
+            config_mod.Config.model_validate(raw)
+        except Exception as e:
+            raise HTTPException(400, f"设置不合法：{e}")
+        path = _user_cfg_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(tomli_w.dumps(raw), encoding="utf-8")
+        return get_settings()
+
+    @app.put("/api/settings/keys/{name}")
+    def put_key(name: str, body: dict = Body(...)):
+        from .. import secrets
+
+        key = (body.get("key") or "").strip()
+        if not key:
+            raise HTTPException(400, "Key 是空的")
+        secrets.set(name, key)
+        return {"ok": True}
+
+    @app.delete("/api/settings/keys/{name}")
+    def delete_key(name: str):
+        from .. import secrets
+
+        secrets.delete(name)
+        return {"ok": True}
+
+    @app.post("/api/settings/test")
+    def test_provider(body: dict = Body(...)):
+        """测试接口：{"name"} 用已保存的接口，或直接给 {"base_url", "model", "key"?, "name"?}。"""
+        import time as _t
+
+        from openai import OpenAI
+
+        from .. import secrets
+
+        eff, _ = config_mod.load(None)
+        p = next((x for x in eff.llm.providers if x.name == body.get("name")), None)
+        base_url = body.get("base_url") or (p.base_url if p else "")
+        model = body.get("model") or (p.model if p else "")
+        key = body.get("key") or (secrets.get(p.name) if p else "") or             (os.environ.get(p.api_key_env, "") if p and p.api_key_env else "")
+        if not (base_url and model and key):
+            return {"ok": False, "error": "缺少接口地址、模型或 API Key"}
+        t0 = _t.time()
+        try:
+            client = OpenAI(base_url=base_url, api_key=key, timeout=30, max_retries=0)
+            r = client.chat.completions.create(model=model, max_tokens=8,
+                                               messages=[{"role": "user", "content": "回复“好”一个字"}])
+            return {"ok": True, "ms": int((_t.time() - t0) * 1000), "reply": (r.choices[0].message.content or "")[:40]}
+        except Exception as e:
+            return {"ok": False, "ms": int((_t.time() - t0) * 1000), "error": str(e)[:300]}
+
     @app.get("/api/components")
     def get_components():
         from .. import components

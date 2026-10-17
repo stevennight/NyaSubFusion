@@ -31,7 +31,16 @@ regions = [
 ]
 
 [llm]
-mode = "auto"                 # auto：配了 api_key 和 model 就调接口，否则导出任务文件；api / export / off
+mode = "auto"                 # auto：配了接口和 Key 就调接口，否则导出任务文件；api / export / off
+# 推荐：在界面的「设置」里管理接口列表，API Key 存进系统凭据库（不写进任何配置文件）。
+# 对应的配置写法（用户全局配置）：
+#   translate = "deepseek"    # 翻译用哪个
+#   vision = "bailian"        # 视觉复核用哪个（空 = 和翻译一样）
+#   providers = [
+#     { name = "deepseek", base_url = "https://api.deepseek.com/v1", model = "deepseek-chat" },
+#     { name = "bailian", base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1", model = "qwen-max", vision_model = "qwen-vl-max" },
+#   ]
+# 下面是旧的单接口写法，没设置 translate 时使用：
 # 任何 OpenAI 兼容接口都行：
 #   DeepSeek    base_url = "https://api.deepseek.com/v1"   model = "deepseek-chat"
 #   阿里百炼    base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  model = "qwen-max"  vision_model = "qwen-vl-max"

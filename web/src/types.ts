@@ -100,3 +100,10 @@ export interface TauriGlobal {
 export interface Term { src: string; reading?: string; tr?: string; type?: string; note?: string; from?: string }
 export interface Glossary { series: string; context: string; summary: string; path: string; episode: string; terms: Term[] }
 export interface Reading { lang: string; src: string; reading: string; proper?: boolean }
+
+export interface Provider { name: string; base_url: string; model: string; vision_model?: string; api_key_env?: string }
+export interface Settings {
+  user_config: Cfg; effective: Cfg; path: string; keyring: string;
+  keys: Record<string, boolean>; env_keys: Record<string, boolean>;
+  translate: { name: string; base_url: string; model: string };
+}

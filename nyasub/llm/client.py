@@ -23,11 +23,11 @@ class LLM:
 
         c = cfg.llm
         self.c = c
-        self.model = (c.vision_model or c.model) if vision else c.model
-        key = cfg.api_key()
-        if not key or not self.model:
-            raise RuntimeError("没有配置大模型接口：请在配置的 [llm] 里填 base_url / api_key / model")
-        self.client = OpenAI(base_url=c.base_url, api_key=key, timeout=c.timeout)
+        ep = cfg.endpoint("vision" if vision else "translate")
+        self.model = ep["model"]
+        if not ep["key"] or not self.model:
+            raise RuntimeError("没有配置大模型接口：请在「设置」里添加接口并设置 API Key（或在配置的 [llm] 里填 base_url / model）")
+        self.client = OpenAI(base_url=ep["base_url"], api_key=ep["key"], timeout=c.timeout)
         self.cache_dir = Path(cache_dir) if cache_dir else None
 
     def chat_json(self, system, user, images=None):

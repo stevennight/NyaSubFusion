@@ -76,8 +76,21 @@ class FusionCfg(_M):
     snap_seconds: float = 0.7
 
 
+class ProviderCfg(_M):
+    """一个 OpenAI 兼容接口。API Key 存在系统凭据库（按 name），配置里不写。"""
+    name: str
+    base_url: str
+    model: str = ""
+    vision_model: str = ""                   # 这个接口用于视觉复核时的模型；空 = 用 model
+    api_key_env: str = ""                    # 凭据库里没有时，从这个环境变量取
+    api_key: str = ""                        # 不推荐：明文写在配置里
+
+
 class LlmCfg(_M):
     mode: Literal["auto", "api", "export", "off"] = "auto"  # auto：配了接口就调接口，否则导出任务文件
+    providers: list[ProviderCfg] = []        # 接口列表（设置页管理，存在用户全局配置里）
+    translate: str = ""                      # 翻译用哪个接口（providers 里的 name）；空 = 用下面的旧写法
+    vision: str = ""                         # 视觉复核用哪个接口；空 = 和翻译用同一个
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     api_key_env: str = "OPENAI_API_KEY"
@@ -197,13 +210,29 @@ class Config(_M):
             out[k] = cur
         return out
 
+    def endpoint(self, purpose="translate") -> dict:
+        """某个用途实际用的接口：{"name", "base_url", "model", "key"}。key 只在内存里，不落盘。"""
+        from .. import secrets
+
+        c = self.llm
+        name = (c.vision or c.translate) if purpose == "vision" else c.translate
+        p = next((x for x in c.providers if x.name == name), None) if name else None
+        if p:
+            model = (p.vision_model or p.model) if purpose == "vision" else p.model
+            key = secrets.get(p.name) or (os.environ.get(p.api_key_env, "") if p.api_key_env else "") or p.api_key
+            return {"name": p.name, "base_url": p.base_url, "model": model, "key": key}
+        model = (c.vision_model or c.model) if purpose == "vision" else c.model
+        key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")
+        return {"name": "", "base_url": c.base_url, "model": model, "key": key}
+
     def llm_mode(self) -> str:
         if self.llm.mode != "auto":
             return self.llm.mode
-        return "api" if (self.api_key() and self.llm.model) else "export"
+        ep = self.endpoint()
+        return "api" if (ep["key"] and ep["model"]) else "export"
 
     def api_key(self) -> str:
-        return self.llm.api_key or (os.environ.get(self.llm.api_key_env, "") if self.llm.api_key_env else "")
+        return self.endpoint()["key"]
 
 
 def deep_merge(base: dict, over: dict) -> dict:

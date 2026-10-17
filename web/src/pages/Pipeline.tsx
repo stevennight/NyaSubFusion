@@ -112,13 +112,13 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
           <div className="field"><label>方式</label>
             <div className="seg">{[["auto", "自动"], ["api", "调接口"], ["export", "导出任务"], ["off", "不翻译"]].map(([v, l]) =>
               <button key={v} className={val("llm.mode") === v ? "on" : ""} onClick={() => set("llm.mode", v)}>{l}</button>)}</div></div>
-          <div className="field"><label>接口地址（OpenAI 兼容）</label>
-            <input className="inp" value={String(val("llm.base_url") ?? "")} onChange={(e) => set("llm.base_url", e.target.value)} /></div>
-          <div className="field"><label>模型</label>
-            <input className="inp" placeholder="例如 deepseek-chat" value={String(val("llm.model") ?? "")} onChange={(e) => set("llm.model", e.target.value)} /></div>
-          <div className="field"><label>API Key 环境变量名</label>
-            <input className="inp" value={String(val("llm.api_key_env") ?? "")} onChange={(e) => set("llm.api_key_env", e.target.value)} /></div>
-          <div className="dim" style={{ fontSize: 12 }}>API Key 不写进项目文件：放在环境变量，或用户全局配置里。</div>
+          <div className="field"><label>这个项目用的接口（接口在「设置」里管理）</label>
+            <select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
+              <option value="">（跟随全局设置）</option>
+              {((deepGet(s.config?.effective, "llm.providers") as { name: string; model: string }[]) ?? []).map((p) =>
+                <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
+            </select></div>
+          <div className="dim" style={{ fontSize: 12 }}>API Key 存在系统凭据库，不写进项目文件。</div>
         </div>
       </div>
       <div className="gap" />

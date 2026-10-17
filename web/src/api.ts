@@ -1,5 +1,5 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
-import type { Cfg, ComponentStatus, EditResult, Glossary, Reading, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ComponentStatus, EditResult, Glossary, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -46,6 +46,12 @@ export const api = {
     call<{ alts: string[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
   langs: () => call<LangInfo[]>("/api/langs"),
+  settings: () => call<Settings>("/api/settings"),
+  putSettings: (user_config: Cfg) => call<Settings>("/api/settings", json("PUT", { user_config })),
+  putKey: (name: string, key: string) => call<{ ok: boolean }>(`/api/settings/keys/${encodeURIComponent(name)}`, json("PUT", { key })),
+  deleteKey: (name: string) => call<{ ok: boolean }>(`/api/settings/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  testProvider: (body: { name?: string; base_url?: string; model?: string; key?: string }) =>
+    call<{ ok: boolean; ms?: number; reply?: string; error?: string }>("/api/settings/test", json("POST", body)),
   presets: () => call<{ id: string; name: string; desc: string }[]>("/api/presets"),
   setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string }) =>
     call<unknown>(`/api/projects/${pid}/setup`, json("POST", body)),
