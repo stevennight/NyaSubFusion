@@ -141,6 +141,7 @@ def cmd_serve(args):
         with socket.socket() as sk:
             sk.bind((args.host, 0))
             port = sk.getsockname()[1]
+    env.kill_children_on_exit()  # 内核退出时，正在跑的 ffmpeg 也结束
     app = create_app(args.token)
     # 关闭时最多等 1 秒：界面的 WebSocket 不会自己断开，不设超时会一直等
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=port, log_level="warning", timeout_graceful_shutdown=1))

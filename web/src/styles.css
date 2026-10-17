@@ -175,3 +175,4 @@ table.tb { width: 100%; border-collapse: collapse }
 .pbar { height: 6px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line2); overflow: hidden }
 .pbar > div { height: 100%; background: var(--acc2); transition: width .4s }
 .node.cancelled .st { background: var(--tx3, #777) }
+.frame .wait > div { text-align: center }

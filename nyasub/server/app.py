@@ -151,7 +151,7 @@ class Hub:
 def create_app(token: str | None = None) -> FastAPI:
     projects = Projects()
     hub = Hub()
-    proxy_jobs: dict[str, str] = {}  # 项目 → building / failed
+    proxy_jobs: dict[str, dict] = {}  # 项目 → {"status": building / failed, "done", "total", "error"}
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -208,7 +208,8 @@ def create_app(token: str | None = None) -> FastAPI:
             "meta": meta, "src": run.src, "plan": run.plan(), "job": hub.status(pid),
             "config_files": run.config_files, "outputs": run.output_names(),
             "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
-            "proxy": "direct" if playable else ("ready" if proj.media("proxy.mp4").exists() else proxy_jobs.get(pid, "none")),
+            "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
+                                                else proxy_jobs.get(pid, {}).get("status", "none")),
         }
 
     # ---------- 基本 ----------
@@ -687,23 +688,34 @@ def create_app(token: str | None = None) -> FastAPI:
             info = media.probe(p["video"])
         if media.browser_playable(p["video"], info):
             return FileResponse(p["video"])
-        proxy = proj.media("proxy.mp4")
+        proxy = proj.media(media.PROXY_NAME)
         if proxy.exists():
             return FileResponse(proxy, media_type="video/mp4")
-        if proxy_jobs.get(pid) != "building":
-            proxy_jobs[pid] = "building"
+        job = proxy_jobs.get(pid)
+        if job and job["status"] == "failed":
+            proxy_jobs.pop(pid, None)  # 报一次错；下次打开再试
+            return JSONResponse({"detail": job["error"], "proxy": "failed"}, status_code=500)
+        if not job:
+            job = proxy_jobs[pid] = {"status": "building", "done": 0.0, "total": float(info.get("duration") or 0), "error": None}
 
             def build():
+                for old in ("proxy.mp4", "proxy.tmp.mp4"):  # 旧版生成的（可能是 10 位，放不了）
+                    proj.media(old).unlink(missing_ok=True)
                 try:
-                    tmp = proj.media("proxy.tmp.mp4")
-                    media.make_proxy(p["video"], tmp)
+                    tmp = proj.media("proxy2.tmp.mp4")
+
+                    def prog(done, total):
+                        job["done"] = round(done, 1)
+                    how = media.make_proxy(p["video"], tmp, info.get("video"), job["total"], prog, log=env.log)
                     os.replace(tmp, proxy)
+                    env.log(f"预览视频已生成（{how}）")
                     proxy_jobs.pop(pid, None)
                 except Exception as e:
-                    proxy_jobs[pid] = "failed"
+                    job.update(status="failed", error=str(e)[-400:])
                     env.log(f"生成预览视频失败：{e}")
-            threading.Thread(target=build, daemon=True).start()
-        return JSONResponse({"detail": "正在生成预览视频", "proxy": proxy_jobs[pid]}, status_code=202)
+            threading.Thread(target=build, daemon=True, name=f"nyasub-proxy-{pid}").start()
+        return JSONResponse({"detail": "正在生成预览视频", "proxy": "building", "done": job["done"], "total": job["total"]},
+                            status_code=202)
 
     @app.get("/api/projects/{pid}/media/frame")
     def frame(pid: str, t: float = 0.0, h: int = 360):

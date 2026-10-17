@@ -169,16 +169,112 @@ def browser_playable(path, info):
     return bool(v) and v.get("codec") in BROWSER_CODECS and str(path).lower().endswith((".mp4", ".m4v", ".webm", ".mov"))
 
 
-def make_proxy(path, out_path, height=540):
-    """转一个 H.264 预览文件给界面播放：先试显卡编码，失败再用 CPU。"""
+PROXY_NAME = "proxy2.mp4"  # v2：一律 8 位 H.264、最高约 30 帧（v1 遇到 10 位视频会转出浏览器放不了的 High 10）
+
+
+class Stopped(Exception):
+    """取消了：ffmpeg 已结束，半成品已删除。"""
+
+
+def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None):
+    """运行 ffmpeg，用 -progress 读进度：on_progress(处理到的秒数, 总秒数)，大约每半秒一次。
+    cancel（threading.Event）设置后结束 ffmpeg、删掉半成品 part，抛 Stopped。返回 (返回码, 错误输出末尾, 处理到的秒数)。"""
+    import threading
+    import time
+    from pathlib import Path
+
+    cmd = cmd[:1] + ["-nostdin", "-nostats", "-progress", "pipe:1"] + cmd[1:]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    err = []
+    threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()
+    done, last = 0.0, 0.0
+    try:
+        for raw in proc.stdout:
+            if cancel is not None and cancel.is_set():
+                proc.kill()
+                proc.wait()
+                if part:
+                    Path(part).unlink(missing_ok=True)
+                raise Stopped()
+            k, _, v = raw.decode("utf-8", "replace").strip().partition("=")
+            if k == "out_time_us" and v.strip().lstrip("-").isdigit():
+                done = max(done, int(v) / 1e6)
+            if on_progress and (time.time() - last > 0.5 or (k == "progress" and v == "end")):
+                last = time.time()
+                on_progress(done, duration)
+        proc.wait()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    tail = b"".join(err).decode("utf-8", "replace").strip()[-600:]
+    return proc.returncode, tail, done
+
+
+def stream_fps(path, index):
+    """视频流帧率（浮点）和原始写法（如 60000/1001）。"""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", str(index), "-show_entries",
+                          "stream=index,avg_frame_rate,r_frame_rate", "-print_format", "json", str(path)],
+                         capture_output=True).stdout
+    try:
+        st = next(x for x in json.loads(out.decode("utf-8", "replace"))["streams"] if x["index"] == index)
+    except Exception:
+        return 0.0, ""
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        raw = st.get(key) or ""
+        try:
+            f = float(Fraction(raw))
+            if f > 0:
+                return f, raw
+        except (ValueError, ZeroDivisionError):
+            pass
+    return 0.0, ""
+
+
+def proxy_attempts(path, vinfo, height=540):
+    """预览视频的几种做法，按顺序试：显卡解码 + 显卡缩放 + NVENC → CPU 解码 + NVENC → CPU 解码 + x264。
+    都输出 8 位 4:2:0（浏览器 / WebView2 不支持 10 位 H.264）、方形像素；帧率高于 30 的减半（4K 60p 也能很快转完）。"""
+    w, h = frame_size(vinfo, height)
+    f, raw = stream_fps(path, vinfo["index"])
+    fps = []
+    if f > 31:
+        try:
+            fps = [f"fps={Fraction(raw) / 2}"]
+        except (ValueError, ZeroDivisionError):
+            fps = ["fps=30"]
+    inter = vinfo.get("interlaced")
+    nvenc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "28", "-b:v", "0"]
+    x264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]
+    cpu_vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + [f"scale={w}:{h}:flags=bicubic", "format=yuv420p", "setsar=1"] + fps
+    gpu_vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format=yuv420p"] + fps + ["setsar=1"]
+    return [
+        ("显卡解码 + NVENC", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], gpu_vf, nvenc),
+        ("CPU 解码 + NVENC", [], cpu_vf, nvenc),
+        ("CPU 解码 + x264", [], cpu_vf, x264),
+    ]
+
+
+def make_proxy(path, out_path, vinfo, duration=0.0, on_progress=None, cancel=None, log=None):
+    """转一个 H.264 预览文件给界面播放。前面的做法一开始就失败（没有 N 卡、显卡不支持这种编码）时换下一种。"""
     _need("ffmpeg")
-    base = ["ffmpeg", "-y", "-v", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", f"scale=-2:{height}", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
-    for venc in (["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28"], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]):
-        r = subprocess.run(base + venc + [str(out_path)], capture_output=True)
-        if r.returncode == 0:
-            return True
-    raise RuntimeError(f"生成预览视频失败：{r.stderr.decode('utf-8', 'replace')[-300:]}")
+    if not vinfo:
+        raise RuntimeError("没有视频画面")
+    attempts = proxy_attempts(path, vinfo)
+    tail = ""
+    for i, (name, pre, vf, venc) in enumerate(attempts):
+        cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(path), "-map", f"0:{vinfo['index']}", "-map", "0:a:0?",
+               "-vf", ",".join(vf), *venc, "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart",
+               str(out_path)]
+        if log:
+            log(f"生成预览视频：{name}")
+        rc, tail, done = run_ffmpeg(cmd, duration, on_progress, cancel, part=out_path)
+        if rc == 0:
+            return name
+        if done >= 1 or i + 1 == len(attempts):  # 做到一半才失败：不是编码器的问题，换做法也没用
+            break
+        if log:
+            log(f"{name} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
+    raise RuntimeError(f"生成预览视频失败：{tail[-300:]}")
 
 
 def waveform_peaks(wav_path, per_second=50):

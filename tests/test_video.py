@@ -178,3 +178,42 @@ def test_queue_video_option(monkeypatch, sample):
         st = _wait(c, lambda s: s["items"][0]["status"] == "done")
         assert st["items"][0]["status"] == "done" and "queue_progress" in kinds
         assert sample.with_name("sample.sub.mkv").exists()
+
+
+def test_proxy_chains_are_8bit_and_halve_high_fps(monkeypatch):
+    from nyasub.sources import media
+
+    monkeypatch.setattr(media, "stream_fps", lambda path, index: (59.94, "60000/1001"))
+    v = {"index": 0, "width": 3840, "height": 2160, "aspect": 16 / 9, "interlaced": True}
+    names = []
+    for name, pre, vf, venc in media.proxy_attempts("x.ts", v):
+        names.append(name)
+        assert any("format=yuv420p" in f for f in vf)  # 10 位源也转成 8 位，浏览器才能放
+        assert "fps=30000/1001" in vf and ("yadif_cuda" in vf[0] or "bwdif" in vf[0])
+    assert names[0].startswith("显卡") and "x264" in names[-1]
+
+
+def test_server_builds_playable_proxy(monkeypatch, sample):
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from nyasub.server.app import create_app
+
+    mkv = sample.with_suffix(".mkv")
+    sample.rename(mkv)  # MKV 浏览器不能直接放 → 要转预览视频
+    with TestClient(create_app()) as c:
+        pid = c.post("/api/projects", json={"path": str(mkv)}).json()["id"]
+        old = mkv.with_name("sample.nyasub") / "media" / "proxy.mp4"
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_bytes(b"old")
+        r = c.get(f"/api/projects/{pid}/media/video")
+        assert r.status_code == 202 and r.json()["total"] == pytest.approx(40, abs=1)
+        t0 = time.time()
+        while r.status_code == 202 and time.time() - t0 < 60:
+            time.sleep(0.3)
+            r = c.get(f"/api/projects/{pid}/media/video")
+        assert r.status_code == 200 and not old.exists()
+        assert c.get(f"/api/projects/{pid}").json()["proxy"] == "ready"
+    v = [s for s in probe_streams(mkv.with_name("sample.nyasub") / "media" / "proxy2.mp4") if s["codec_type"] == "video"][0]
+    assert (v["codec_name"], v["pix_fmt"], v["height"]) == ("h264", "yuv420p", 540)

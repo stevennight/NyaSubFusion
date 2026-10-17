@@ -86,3 +86,45 @@ def log(*args):
     except (OSError, ValueError):
         pass  # 标准输出已经关了（比如桌面壳退出了），不影响运行
     emit({"type": "log", "msg": msg})
+
+
+_job = None
+
+
+def kill_children_on_exit():
+    """Windows：把自己放进一个“关闭即结束”的作业对象。内核退出（包括被桌面壳强行结束、崩溃）时，
+    它启动的 ffmpeg 之类的子进程也一起结束，不会留在后台继续转码。"""
+    global _job
+    if os.name != "nt" or _job is not None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+    class Io(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_ulonglong) for n in ("Read", "Write", "Other", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("Basic", Basic), ("Io", Io), ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        job = k32.CreateJobObjectW(None, None)
+        info = Extended()
+        info.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if job and k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)) \
+                and k32.AssignProcessToJobObject(job, k32.GetCurrentProcess()):
+            _job = job  # 句柄一直开着；进程结束时系统关闭它，作业里的进程随之结束
+    except Exception:
+        pass

@@ -12,11 +12,10 @@ import os
 import re
 import shutil
 import subprocess
-import threading
-import time
 from pathlib import Path
 
 from .. import env
+from ..sources.media import Stopped  # noqa: F401（取消时抛出，pipeline 里按 video.Stopped 捕获）
 from . import fonts
 
 MUX_SUFFIX = ".sub.mkv"
@@ -28,6 +27,7 @@ LANG3 = {"ja": "jpn", "zh": "chi", "en": "eng", "ko": "kor", "fr": "fre", "de": 
 MKV_COPY_SUBS = {"subrip", "ass", "ssa", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "webvtt"}
 MKV_CONVERT_SUBS = {"mov_text": "srt", "text": "srt"}
 MP4_COPY_AUDIO = {"aac", "mp3", "ac3", "eac3"}
+MKV_CONVERT_AUDIO = {"aac_latm"}  # 日本广播的 LATM 封装 AAC：放进 MKV 很多播放器不认，转成普通 AAC
 ENCODERS = {
     "h264_nvenc": lambda q: ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(q), "-b:v", "0"],
     "hevc_nvenc": lambda q: ["-c:v", "hevc_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(q), "-b:v", "0",
@@ -35,10 +35,6 @@ ENCODERS = {
     "libx264": lambda q: ["-c:v", "libx264", "-preset", "medium", "-crf", str(q)],
     "libx265": lambda q: ["-c:v", "libx265", "-preset", "medium", "-crf", str(q), "-tag:v", "hvc1"],
 }
-
-
-class Stopped(Exception):
-    """取消了：ffmpeg 已结束，半成品已删除。"""
 
 
 def lang3(code):
@@ -166,33 +162,12 @@ def streams(path):
 
 
 def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None):
-    """运行 ffmpeg，推进度事件。返回 (返回码, 错误输出末尾, 处理到的秒数)。取消时删掉半成品 part。"""
-    cmd = cmd[:1] + ["-nostdin", "-nostats", "-progress", "pipe:1"] + cmd[1:]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-    err = []
-    threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()
-    done, last = 0.0, 0.0
-    try:
-        for raw in proc.stdout:
-            if cancel is not None and cancel.is_set():
-                proc.kill()
-                proc.wait()
-                if part:
-                    Path(part).unlink(missing_ok=True)
-                raise Stopped()
-            k, _, v = raw.decode("utf-8", "replace").strip().partition("=")
-            if k == "out_time_us" and v.strip().lstrip("-").isdigit():
-                done = max(done, int(v) / 1e6)
-            if time.time() - last > 0.5 or k == "progress" and v == "end":
-                last = time.time()
-                env.emit({"type": "progress", "stage": label, "done": round(done, 1), "total": round(duration, 1)})
-        proc.wait()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    tail = b"".join(err).decode("utf-8", "replace").strip()[-600:]
-    return proc.returncode, tail, done
+    """运行 ffmpeg，推 {"type": "progress"} 事件。返回 (返回码, 错误输出末尾, 处理到的秒数)。"""
+    from ..sources import media
+
+    def progress(done, total):
+        env.emit({"type": "progress", "stage": label, "done": round(done, 1), "total": round(total, 1)})
+    return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part)
 
 
 def _finish(rc, tail, part, out):
@@ -233,6 +208,9 @@ def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=
     for i in range(len(tracks)):
         cmd += ["-map", f"{i + 1}:0"]
     cmd += ["-c", "copy"]
+    for k, s in enumerate(x for x in src if x.get("codec_type") == "audio"):
+        if s.get("codec_name") in MKV_CONVERT_AUDIO:
+            cmd += [f"-c:a:{k}", "aac", f"-b:a:{k}", "192k"]
     for k, c in enumerate(codecs):
         if c != "copy":
             cmd += [f"-c:s:{k}", c]
@@ -265,23 +243,29 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
     shutil.copyfile(ass_path, work / "sub.ass")
     for f in font_files:
         shutil.copyfile(f, work / "fonts" / Path(f).name)
-    vf = ["bwdif=mode=send_frame:deint=all"] if vinfo.get("interlaced") else []
     w, h = media.frame_size(vinfo, height)
-    if (w, h) != (vinfo["width"], vinfo["height"]):
-        vf.append(f"scale={w}:{h}:flags=lanczos,setsar=1")
-    vf.append("subtitles=sub.ass:fontsdir=fonts")
+    inter = vinfo.get("interlaced")
+    subs = ["setsar=1", "subtitles=sub.ass:fontsdir=fonts"]
+    # 显卡解码：反交错、缩放、转 8 位都在显卡上做，只把成品帧传回内存画字幕（4K HEVC 用 CPU 解码很慢）
+    gpu = (["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+           (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format=yuv420p", "hwdownload",
+                                                                          "format=yuv420p"] + subs)
+    cpu = ([], (["bwdif=mode=send_frame:deint=all"] if inter else [])
+           + ([f"scale={w}:{h}:flags=lanczos"] if (w, h) != (vinfo["width"], vinfo["height"]) else []) + subs)
     audio = [s.get("codec_name") for s in streams(video) if s.get("codec_type") == "audio"]
     acodec = ["-c:a", "copy"] if all(c in MP4_COPY_AUDIO for c in audio) else ["-c:a", "aac", "-b:a", "192k"]
     part = _part(Path(out).resolve())
-    tried = ["h264_nvenc", "libx264"] if encoder == "auto" else [encoder]
-    for i, enc in enumerate(tried):
-        cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}", "-map", "0:a?",
-               "-vf", ",".join(vf), *ENCODERS[enc](quality), "-pix_fmt", "yuv420p", *acodec,
+    encs = ["h264_nvenc", "libx264"] if encoder == "auto" else [encoder]
+    tried = [(e, d) for e in encs for d in ((gpu, cpu) if e.endswith("_nvenc") else (cpu,))]
+    for i, (enc, (pre, vf)) in enumerate(tried):
+        how = f"{enc}{'，显卡解码' if pre else ''}"
+        cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}",
+               "-map", "0:a?", "-vf", ",".join(vf), *ENCODERS[enc](quality), "-pix_fmt", "yuv420p", *acodec,
                "-movflags", "+faststart", str(part)]
-        env.log(f"压制硬字幕：{enc}，画质 {quality}，{w}×{h}")
+        env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}")
         rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part)
-        if rc != 0 and done < 1 and i + 1 < len(tried):  # 显卡编码用不了：一开始就失败，换 CPU
-            env.log(f"{enc} 不可用（{tail.splitlines()[-1] if tail else rc}），改用 {tried[i + 1]}")
+        if rc != 0 and done < 1 and i + 1 < len(tried):  # 一开始就失败（没有 N 卡、显卡不支持这种编码）：换下一种
+            env.log(f"{how} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
             continue
         _finish(rc, tail, part, out)
         return out, enc

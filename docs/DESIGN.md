@@ -97,7 +97,7 @@ plugins/             # 第三方插件示例
 ```
 视频名.nyasub/
   project.json        # 项目元数据、语言对、所属作品、配置覆盖
-  media/              # meta.json、audio.wav、proxy.mp4、peaks.json、shots.json（镜头切换点）
+  media/              # meta.json、audio.wav、proxy2.mp4、peaks.json、shots.json（镜头切换点）
   stages/             # 每步结果 + 指纹：subs.json asr.json ocr.json fused.json translated.<lang>.json
   crops/              # 画面字截图
   llm_cache/          # 大模型分段结果（按请求内容哈希）
@@ -437,6 +437,19 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 - **进度与取消**：`ffmpeg -progress pipe:1` 读出处理到的时间，推 `{"type": "progress", "stage", "done", "total"}`；
   取消时结束 ffmpeg 并删掉 `.part` 半成品，步骤状态记为 cancelled。
 - 加文件夹时跳过 `.sub.mkv` / `.hardsub.mp4`，不会把输出当成新视频再处理一遍。
+- 4K HEVC 之类 CPU 解码很慢的源：压制时先用显卡解码（`-hwaccel cuda`），反交错、缩放、转 8 位都在显卡上做
+  （`yadif_cuda`、`scale_cuda=…:format=yuv420p`），`hwdownload` 后再画字幕；不行再走 CPU 解码。
+  封装时日本广播的 `aac_latm` 音频转成普通 AAC（很多播放器不认 MKV 里的 LATM），其他照旧复制。
+
+### 7.4 界面里的预览视频
+
+浏览器 / WebView2 不能直接放的格式（TS / M2TS / MKV、HEVC、MPEG-2…）先转一个 `media/proxy2.mp4`：540p、8 位 H.264、
+帧率高于 30 的减半。按顺序试：显卡解码 + 显卡缩放 + NVENC → CPU 解码 + NVENC → CPU 解码 + x264，前一种一开始就失败才换下一种。
+4K HEVC 10 位 60p 的一小时节目约 9 分钟转完。转换进度在 202 响应里返回（`done` / `total` 秒），界面显示百分比；失败时返回 500 和原因。
+旧版的 `proxy.mp4`（遇到 10 位源会转出浏览器放不了的 High 10）打开时删掉重转。
+
+内核启动时把自己放进 Windows 作业对象（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）：内核退出（包括被桌面壳强行结束）时，
+正在跑的 ffmpeg 一起结束，不会留在后台。
 
 其他格式：
 
