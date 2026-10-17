@@ -4,14 +4,16 @@ import { GlossaryPage } from "./pages/Glossary";
 import { LayersPage } from "./pages/Layers";
 import { PipelinePage } from "./pages/Pipeline";
 import { ProjectsPage } from "./pages/Projects";
+import { QueuePage } from "./pages/Queue";
 import { SettingsPage } from "./pages/Settings";
 import { useStore } from "./store";
 import { langName } from "./util";
 
-type View = "projects" | "pipeline" | "editor" | "layers" | "glossary" | "settings";
+type View = "projects" | "queue" | "pipeline" | "editor" | "layers" | "glossary" | "settings";
 
 const NAV: { v: View; label: string; icon: ReactNode; needProject?: boolean }[] = [
   { v: "projects", label: "项目", icon: <path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /> },
+  { v: "queue", label: "队列", icon: <><path d="M4 6h16M4 12h16M4 18h10" /><path d="M17 16l3 2-3 2z" /></> },
   { v: "pipeline", label: "流程", needProject: true, icon: <><circle cx="5" cy="12" r="2.5" /><circle cx="19" cy="5" r="2.5" /><circle cx="19" cy="19" r="2.5" /><path d="M7.5 12h4M11.5 12l5-6M11.5 12l5 6" /></> },
   { v: "editor", label: "审校", needProject: true, icon: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M7 12h6M15 12h2M3 20h18" /></> },
   { v: "layers", label: "图层样式", needProject: true, icon: <><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13l9 5 9-5" /></> },
@@ -23,7 +25,7 @@ export default function App() {
   const s = useStore();
   const [view, setView] = useState<View>(() => (localStorage.getItem("nyasub.view") as View) || "projects");
   useEffect(() => { localStorage.setItem("nyasub.view", view); }, [view]);
-  useEffect(() => { if (!s.pid && !["projects", "settings"].includes(view)) setView("projects"); }, [s.pid, view]);
+  useEffect(() => { if (!s.pid && !["projects", "settings", "queue"].includes(view)) setView("projects"); }, [s.pid, view]);
 
   const todo = s.data?.cues.filter((c) => c.review === "todo").length ?? 0;
   const stale = s.summary?.plan.filter((p) => p.status !== "done").length ?? 0;
@@ -61,6 +63,7 @@ export default function App() {
         {view === "layers" && s.pid && <LayersPage />}
         {view === "glossary" && s.pid && <GlossaryPage />}
         {view === "settings" && <SettingsPage />}
+        {view === "queue" && <QueuePage onOpenProject={() => setView("pipeline")} />}
       </main>
       {s.toastMsg && <div className="toast">{s.toastMsg}</div>}
     </div>

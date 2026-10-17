@@ -35,6 +35,10 @@ class Waiting(Exception):
     """翻译任务已导出，等外部助手完成。"""
 
 
+class Cancelled(Exception):
+    """用户取消：在两个步骤之间停下（正在跑的步骤会先做完）。"""
+
+
 @dataclass
 class StageDef:
     deps: list
@@ -83,6 +87,7 @@ class Run:
         self.ran = []           # 本次实际重跑的步骤
         self.src = None         # 解析后的源语言
         self.waiting = False    # 翻译任务已导出、等外部助手完成
+        self.cancel = None      # threading.Event：设置后在下一个步骤开始前停下
         self.config_files = list(config_files)
 
     # ---------- 指纹 ----------
@@ -143,6 +148,9 @@ class Run:
             self.fps[name] = rec
             emit({"type": "stage", "name": name, "status": "cached", "seconds": rec.get("seconds")})
             return self.results[name]
+        if self.cancel is not None and self.cancel.is_set():
+            emit({"type": "stage", "name": name, "status": "cancelled"})
+            raise Cancelled()
         emit({"type": "stage", "name": name, "status": "running"})
         t = time.time()
         try:

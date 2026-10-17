@@ -93,7 +93,7 @@ export interface ComponentStatus {
 
 // 桌面壳（Tauri）注入的全局对象；在浏览器里运行时不存在
 export interface TauriGlobal {
-  dialog: { open: (o: { multiple?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string | string[] | null> };
+  dialog: { open: (o: { multiple?: boolean; directory?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string | string[] | null> };
   event: { listen: (name: string, cb: (e: { payload: { paths?: string[] } }) => void) => Promise<() => void> };
 }
 
@@ -107,3 +107,11 @@ export interface Settings {
   keys: Record<string, boolean>; env_keys: Record<string, boolean>;
   translate: { name: string; base_url: string; model: string };
 }
+
+export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; until?: string }
+export interface QueueItem {
+  id: string; pid: string; video: string; name: string; options: QueueOptions;
+  status: "pending" | "running" | "done" | "failed" | "waiting" | "cancelled";
+  stage: string | null; error: string | null; note: string | null; added: number; started: number | null; finished: number | null;
+}
+export interface QueueState { paused: boolean; items: QueueItem[]; running: string | null }

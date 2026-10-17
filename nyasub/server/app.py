@@ -713,6 +713,62 @@ def create_app(token: str | None = None) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(path)
 
+    # ---------- 批量队列 ----------
+    from .queue import Queue
+
+    def _setup_from_options(pid, opts):
+        from .. import presets
+
+        cfg = presets.build(opts.get("preset") or "documentary", opts.get("source") or "auto", opts.get("targets"),
+                            opts.get("series") or "", opts.get("context") or "")
+        put_config(pid, {"project": cfg})
+
+    queue = Queue(hub, projects, make_run, _setup_from_options,
+                  lambda pid: (project_paths(pid)[1] / "project.toml").exists())
+    app.state.queue = queue
+
+    @app.get("/api/queue")
+    def get_queue():
+        return queue.state()
+
+    @app.post("/api/queue")
+    def add_to_queue(body: dict = Body(...)):
+        """{"paths": [文件或文件夹], "options": {"preset", "source", "targets", "series", "until", "translate"}}"""
+        videos = pipeline.collect_inputs(body.get("paths") or [])
+        if not videos:
+            raise HTTPException(400, "没有找到视频 / 音频文件")
+        added = queue.add(videos, body.get("options") or {})
+        return {"added": len(added), "skipped": len(videos) - len(added), **queue.state()}
+
+    @app.post("/api/queue/pause")
+    def pause_queue(body: dict = Body(...)):
+        queue.set_paused(body.get("paused", True))
+        return queue.state()
+
+    @app.post("/api/queue/clear")
+    def clear_queue():
+        queue.clear_finished()
+        return queue.state()
+
+    @app.post("/api/queue/{item_id}/{action}")
+    def queue_item(item_id: str, action: str):
+        try:
+            if action == "remove":
+                queue.remove(item_id)
+            elif action in ("up", "down"):
+                queue.move(item_id, -1 if action == "up" else 1)
+            elif action == "retry":
+                queue.retry(item_id)
+            elif action == "cancel":
+                queue.cancel(item_id)
+            else:
+                raise HTTPException(404)
+        except KeyError:
+            raise HTTPException(404, "队列里没有这一项")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return queue.state()
+
     # ---------- 界面 ----------
     if WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

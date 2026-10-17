@@ -451,6 +451,8 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | POST | `/api/projects/{id}/cues/{cid}/split` · `/merge` · `/api/projects/{id}/cues` · `/edits/undo` · `/edits/redo` | 拆分、与下一条合并、插入、撤销、重做（只重做注音，不会触发重新识别或翻译） |
 | GET/PUT | `/api/projects/{id}/glossary` · `/readings` | 术语表（记录来源集数）、读音词典 |
 | POST | `/api/projects/{id}/setup` · GET `/api/presets` | 新建向导：按内容预设写 project.toml |
+| GET/POST | `/api/queue` | 批量队列状态 / 加入（文件或文件夹 + 未配置视频用的预设、语言、作品、做到哪一步） |
+| POST | `/api/queue/{项}/up·down·remove·retry·cancel` · `/api/queue/pause` · `/api/queue/clear` | 调整顺序、移除、重试、取消（步骤之间停下）、暂停 / 继续、清除已完成；进度推送到 `/ws/projects/_queue` |
 | WS | `/ws/projects/{id}` | 进度、日志、步骤完成事件 |
 
 ## 9. 插件
