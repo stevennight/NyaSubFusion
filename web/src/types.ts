@@ -120,3 +120,10 @@ export interface QueueItem {
   stage: string | null; error: string | null; note: string | null; added: number; started: number | null; finished: number | null;
 }
 export interface QueueState { paused: boolean; items: QueueItem[]; running: string | null }
+
+/** 界面怎么播放这个视频：direct 原视频 / mp4 旧版预览文件 / hls 边转边看 */
+export interface MediaInfo {
+  kind: "direct" | "mp4" | "hls" | "none";
+  status?: "building" | "ready" | "failed"; error?: string;
+  segments?: number; seconds?: number; complete?: boolean; done?: number; total?: number;
+}

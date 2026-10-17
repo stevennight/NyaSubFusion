@@ -242,7 +242,7 @@ def proxy_attempts(path, vinfo, height=540):
         except (ValueError, ZeroDivisionError):
             fps = ["fps=30"]
     inter = vinfo.get("interlaced")
-    nvenc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "28", "-b:v", "0"]
+    nvenc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "28", "-b:v", "0", "-forced-idr", "1"]
     x264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]
     cpu_vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + [f"scale={w}:{h}:flags=bicubic", "format=yuv420p", "setsar=1"] + fps
     gpu_vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format=yuv420p"] + fps + ["setsar=1"]
@@ -253,20 +253,45 @@ def proxy_attempts(path, vinfo, height=540):
     ]
 
 
-def make_proxy(path, out_path, vinfo, duration=0.0, on_progress=None, cancel=None, log=None):
-    """转一个 H.264 预览文件给界面播放。前面的做法一开始就失败（没有 N 卡、显卡不支持这种编码）时换下一种。"""
+HLS_DIR = "preview"   # media/preview/index.m3u8 + seg_00000.ts …：边转边看
+HLS_SECONDS = 4
+
+
+def hls_state(out_dir):
+    """预览分段的情况：{"segments": 已转好的段数, "seconds": 已转好的时长, "complete": 是否转完}。"""
+    from pathlib import Path
+
+    pl = Path(out_dir) / "index.m3u8"
+    if not pl.exists():
+        return {"segments": 0, "seconds": 0.0, "complete": False}
+    text = pl.read_text(encoding="utf-8", errors="replace")
+    secs = [float(x.split(":", 1)[1].rstrip(",")) for x in text.splitlines() if x.startswith("#EXTINF:")]
+    return {"segments": len(secs), "seconds": round(sum(secs), 1), "complete": "#EXT-X-ENDLIST" in text}
+
+
+def make_hls(path, out_dir, vinfo, duration=0.0, on_progress=None, cancel=None, log=None):
+    """转成 540p 的 HLS 分段（每段约 4 秒）。播放列表是 event 类型：转出第一段就能开始播，边转边看；
+    转完写上 #EXT-X-ENDLIST。前面的做法一开始就失败（没有 N 卡、显卡不支持这种编码）时清空重来、换下一种。"""
+    import shutil
+    from pathlib import Path
+
     _need("ffmpeg")
     if not vinfo:
         raise RuntimeError("没有视频画面")
-    attempts = proxy_attempts(path, vinfo)
+    out_dir = Path(out_dir)
     tail = ""
+    attempts = proxy_attempts(path, vinfo)
     for i, (name, pre, vf, venc) in enumerate(attempts):
+        shutil.rmtree(out_dir, ignore_errors=True)
+        out_dir.mkdir(parents=True)
         cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(path), "-map", f"0:{vinfo['index']}", "-map", "0:a:0?",
-               "-vf", ",".join(vf), *venc, "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart",
-               str(out_path)]
+               "-vf", ",".join(vf), *venc, "-force_key_frames", f"expr:gte(t,n_forced*{HLS_SECONDS})",
+               "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+               "-f", "hls", "-hls_time", str(HLS_SECONDS), "-hls_playlist_type", "event",
+               "-hls_flags", "independent_segments+temp_file", "-hls_segment_filename", "seg_%05d.ts", "index.m3u8"]
         if log:
-            log(f"生成预览视频：{name}")
-        rc, tail, done = run_ffmpeg(cmd, duration, on_progress, cancel, part=out_path)
+            log(f"生成预览视频：{name}（转好一段就能开始播放）")
+        rc, tail, done = run_ffmpeg(cmd, duration, on_progress, cancel, cwd=str(out_dir))
         if rc == 0:
             return name
         if done >= 1 or i + 1 == len(attempts):  # 做到一半才失败：不是编码器的问题，换做法也没用

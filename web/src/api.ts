@@ -1,9 +1,10 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
+import type { MediaInfo } from "./types";
 import type { Cfg, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
-const TOKEN: string = (window as unknown as { __NYASUB_TOKEN__?: string }).__NYASUB_TOKEN__ ?? params.get("token") ?? "";
+export const TOKEN: string = (window as unknown as { __NYASUB_TOKEN__?: string }).__NYASUB_TOKEN__ ?? params.get("token") ?? "";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -72,6 +73,8 @@ export const api = {
   installComponent: (name: string, remove = false) => call<unknown>(`/api/components/${name}`, json("POST", { remove })),
   peaks: (pid: string) => call<{ per_second: number; peaks: number[] }>(`/api/projects/${pid}/media/peaks`),
   videoUrl: (pid: string) => q(`/api/projects/${pid}/media/video`),
+  mediaSource: (pid: string) => call<MediaInfo>(`/api/projects/${pid}/media/source`),
+  hlsUrl: (pid: string) => q(`/api/projects/${pid}/media/hls/index.m3u8`),
   cropUrl: (pid: string, crop: string) => q(`/api/projects/${pid}/${crop}`),
   frameUrl: (pid: string, t: number, h = 360) => q(`/api/projects/${pid}/media/frame?t=${t}&h=${h}`),
 };

@@ -4,13 +4,16 @@ import { RegionEditor, type Region } from "../components/RegionEditor";
 import type { Cfg, StageStatus } from "../types";
 import { deepGet, pct, setIn, STAGE_LBL } from "../util";
 
-// 步骤图：列 / 行位置与连线
+// 步骤图：从左到右大致按实际运行顺序排（节点上的数字就是运行顺序），连线是“用到了谁的结果”。
+// 画面字识别要等语音识别：源语言是“自动判断”时，要靠语音识别检测出语言，才知道用哪种文字的识别模型。
 const NODES: { id: string; c: number; r: number }[] = [
-  { id: "probe", c: 1, r: 2 }, { id: "audio", c: 2, r: 1 }, { id: "subs", c: 2, r: 2 }, { id: "ocr", c: 2, r: 3 },
-  { id: "asr", c: 3, r: 1 }, { id: "align", c: 3, r: 2 }, { id: "ocr_refine", c: 3, r: 3 }, { id: "fuse", c: 4, r: 2 },
-  { id: "translate", c: 5, r: 2 }, { id: "annotate", c: 6, r: 2 }, { id: "render", c: 7, r: 2 },
+  { id: "probe", c: 1, r: 2 }, { id: "audio", c: 2, r: 1 }, { id: "subs", c: 2, r: 2 }, { id: "asr", c: 3, r: 1 },
+  { id: "ocr", c: 4, r: 3 }, { id: "ocr_refine", c: 5, r: 3 }, { id: "align", c: 5, r: 2 }, { id: "fuse", c: 6, r: 2 },
+  { id: "translate", c: 7, r: 2 }, { id: "annotate", c: 8, r: 2 }, { id: "render", c: 9, r: 2 },
 ];
-const EDGES = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"], ["subs", "align"], ["asr", "align"],
+const ORDER = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate", "render", "mux", "burn"];
+const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"],
+  ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
 const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消" };
 const ENCODERS: [string, string][] = [["auto", "自动（先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
@@ -69,7 +72,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
         <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
       </div>
-      <div className="grid3">
+      <div className="cfg-grid">
         <div className="card">
           <h3>项目</h3>
           <div className="field"><label>源语言</label>
@@ -106,7 +109,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
           </div>
           {s.pid && s.summary?.meta?.video && (
             <div style={{ marginTop: 10 }}>
-              <RegionEditor pid={s.pid} duration={s.summary.meta.duration} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
+              <RegionEditor pid={s.pid} duration={s.summary.meta.duration} aspect={s.summary.meta.video.aspect} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
                             boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} />
             </div>
           )}
@@ -198,20 +201,20 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
 
 function StageGraph({ status, seconds, video }: { status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; video: string | null }) {
   const box = useRef<HTMLDivElement>(null);
-  const [paths, setPaths] = useState<string[]>([]);
-  const nodes = video ? [...NODES, { id: video, c: 8, r: 2 }] : NODES;
-  const edges = video ? [...EDGES, ["render", video]] : EDGES;
+  const [paths, setPaths] = useState<{ d: string; label?: string; x: number; y: number }[]>([]);
+  const nodes = video ? [...NODES, { id: video, c: 10, r: 2 }] : NODES;
+  const edges: [string, string, string?][] = video ? [...EDGES, ["render", video]] : EDGES;
   useLayoutEffect(() => {
     const draw = () => {
       const el = box.current;
       if (!el) return;
       const R = el.getBoundingClientRect();
-      setPaths(edges.map(([a, b]) => {
+      setPaths(edges.map(([a, b, label]) => {
         const A = el.querySelector(`[data-n="${a}"]`)!.getBoundingClientRect();
         const B = el.querySelector(`[data-n="${b}"]`)!.getBoundingClientRect();
         const x1 = A.right - R.left, y1 = A.top + A.height / 2 - R.top, x2 = B.left - R.left - 2, y2 = B.top + B.height / 2 - R.top;
         const mx = (x1 + x2) / 2;
-        return `M${x1} ${y1} C${mx} ${y1},${mx} ${y2},${x2} ${y2}`;
+        return { d: `M${x1} ${y1} C${mx} ${y1},${mx} ${y2},${x2} ${y2}`, label, x: mx, y: (y1 + y2) / 2 };
       }));
     };
     draw();
@@ -219,14 +222,17 @@ function StageGraph({ status, seconds, video }: { status: Record<string, StageSt
     return () => window.removeEventListener("resize", draw);
   }, [video]);
   return (
-    <div className="dag" ref={box} style={{ gridTemplateColumns: `repeat(${nodes.length > NODES.length ? 8 : 7}, minmax(0, 1fr))` }}>
+    <div className="dag" ref={box} style={{ gridTemplateColumns: `repeat(${nodes.length > NODES.length ? 10 : 9}, minmax(0, 1fr))` }}>
       <svg><defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#5a5a6c" /></marker></defs>
-        {paths.map((d, i) => <path key={i} d={d} stroke="#4a4a5a" strokeWidth="1.5" fill="none" markerEnd="url(#ar)" />)}</svg>
+        {paths.map((p, i) => <g key={i}>
+          <path d={p.d} stroke={p.label ? "#8a7bd0" : "#4a4a5a"} strokeWidth="1.5" strokeDasharray={p.label ? "4 3" : undefined} fill="none" markerEnd="url(#ar)" />
+          {p.label && <text x={p.x + 6} y={p.y - 4} fill="#a99be6" fontSize="11">{p.label}</text>}
+        </g>)}</svg>
       {nodes.map((n) => {
         const st = status[n.id] ?? "missing";
         return (
           <div key={n.id} data-n={n.id} className={`node ${st}`} style={{ gridColumn: n.c, gridRow: n.r }}>
-            <span className="st" /><b>{STAGE_LBL[n.id]}</b>
+            <span className="st" /><b><span className="ord">{ORDER.indexOf(n.id) + 1}</span>{STAGE_LBL[n.id]}</b>
             <small>{STATUS_LBL[st] ?? st}{seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}</small>
           </div>
         );

@@ -193,7 +193,8 @@ def test_proxy_chains_are_8bit_and_halve_high_fps(monkeypatch):
     assert names[0].startswith("显卡") and "x264" in names[-1]
 
 
-def test_server_builds_playable_proxy(monkeypatch, sample):
+def test_server_builds_hls_preview(monkeypatch, sample):
+    """浏览器不能直接放的格式：转成 HLS 分段，转出第一段就能播；转完播放列表写上结束标记。"""
     import time
 
     from fastapi.testclient import TestClient
@@ -207,13 +208,32 @@ def test_server_builds_playable_proxy(monkeypatch, sample):
         old = mkv.with_name("sample.nyasub") / "media" / "proxy.mp4"
         old.parent.mkdir(parents=True, exist_ok=True)
         old.write_bytes(b"old")
-        r = c.get(f"/api/projects/{pid}/media/video")
-        assert r.status_code == 202 and r.json()["total"] == pytest.approx(40, abs=1)
+        r = c.get(f"/api/projects/{pid}/media/source").json()
+        assert r["kind"] == "hls" and r["status"] == "building" and r["total"] == pytest.approx(40, abs=1)
+        assert c.get(f"/api/projects/{pid}/media/video").status_code == 404
         t0 = time.time()
-        while r.status_code == 202 and time.time() - t0 < 60:
+        while r["status"] == "building" and time.time() - t0 < 60:
             time.sleep(0.3)
-            r = c.get(f"/api/projects/{pid}/media/video")
-        assert r.status_code == 200 and not old.exists()
+            r = c.get(f"/api/projects/{pid}/media/source").json()
+        assert r["status"] == "ready" and r["complete"] and r["segments"] >= 9 and not old.exists()
         assert c.get(f"/api/projects/{pid}").json()["proxy"] == "ready"
-    v = [s for s in probe_streams(mkv.with_name("sample.nyasub") / "media" / "proxy2.mp4") if s["codec_type"] == "video"][0]
+        pl = c.get(f"/api/projects/{pid}/media/hls/index.m3u8")
+        assert pl.headers["cache-control"] == "no-store" and "#EXT-X-ENDLIST" in pl.text
+        seg = c.get(f"/api/projects/{pid}/media/hls/seg_00000.ts")
+        assert seg.status_code == 200 and seg.headers["content-type"] == "video/mp2t"
+        assert c.get(f"/api/projects/{pid}/media/hls/..%2Fproject.toml").status_code == 404
+        assert c.get(f"/api/projects/{pid}/media/hls/other.txt").status_code == 404
+    segs = mkv.with_name("sample.nyasub") / "media" / "preview"
+    v = [s for s in probe_streams(segs / "seg_00000.ts") if s["codec_type"] == "video"][0]
     assert (v["codec_name"], v["pix_fmt"], v["height"]) == ("h264", "yuv420p", 540)
+
+
+def test_direct_playable_needs_no_preview(sample):
+    from fastapi.testclient import TestClient
+
+    from nyasub.server.app import create_app
+
+    with TestClient(create_app()) as c:
+        pid = c.post("/api/projects", json={"path": str(sample)}).json()["id"]
+        assert c.get(f"/api/projects/{pid}/media/source").json() == {"kind": "direct"}
+        assert c.get(f"/api/projects/{pid}/media/video").status_code == 200

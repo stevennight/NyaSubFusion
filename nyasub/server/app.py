@@ -209,6 +209,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "config_files": run.config_files, "outputs": run.output_names(),
             "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
+                                                or media.hls_state(proj.media(media.HLS_DIR))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),
         }
 
@@ -678,44 +679,81 @@ def create_app(token: str | None = None) -> FastAPI:
         return {"started": True, "file": run.video_names()[mode]}
 
     # ---------- 媒体 ----------
-    @app.get("/api/projects/{pid}/media/video")
-    def video(pid: str):
+    def _media_info(pid):
         from ..sources import media
 
         p, proj = project_paths(pid)
         info = load_json(proj.stage("probe.json"))
         if info is None:
             info = media.probe(p["video"])
+        return p, proj, info
+
+    @app.get("/api/projects/{pid}/media/video")
+    def video(pid: str):
+        """能直接播放的原视频，或者旧版生成的 proxy2.mp4。其他情况走 /media/source + HLS。"""
+        from ..sources import media
+
+        p, proj, info = _media_info(pid)
         if media.browser_playable(p["video"], info):
             return FileResponse(p["video"])
-        proxy = proj.media(media.PROXY_NAME)
-        if proxy.exists():
-            return FileResponse(proxy, media_type="video/mp4")
+        if proj.media(media.PROXY_NAME).exists():
+            return FileResponse(proj.media(media.PROXY_NAME), media_type="video/mp4")
+        raise HTTPException(404, "这个视频要先转预览：见 /media/source")
+
+    @app.get("/api/projects/{pid}/media/source")
+    def media_source(pid: str):
+        """界面怎么播放：direct 原视频 / mp4 旧版预览文件 / hls 边转边看的分段（没转过就开始转）。"""
+        from ..sources import media
+
+        p, proj, info = _media_info(pid)
+        if media.browser_playable(p["video"], info):
+            return {"kind": "direct"}
+        if proj.media(media.PROXY_NAME).exists():
+            return {"kind": "mp4"}
+        if not info.get("video"):
+            return {"kind": "none", "status": "failed", "error": "没有视频画面"}
+        out = proj.media(media.HLS_DIR)
+        st = media.hls_state(out)
+        total = float(info.get("duration") or 0)
+        if st["complete"]:
+            return {"kind": "hls", "status": "ready", **st, "done": total, "total": total}
         job = proxy_jobs.get(pid)
         if job and job["status"] == "failed":
             proxy_jobs.pop(pid, None)  # 报一次错；下次打开再试
-            return JSONResponse({"detail": job["error"], "proxy": "failed"}, status_code=500)
-        if not job:
-            job = proxy_jobs[pid] = {"status": "building", "done": 0.0, "total": float(info.get("duration") or 0), "error": None}
+            return {"kind": "hls", "status": "failed", "error": job["error"], **st}
+        if not job:  # 没在转（第一次打开，或者上次没转完程序就关了）：从头转
+            job = proxy_jobs[pid] = {"status": "building", "done": 0.0, "total": total, "error": None}
 
             def build():
-                for old in ("proxy.mp4", "proxy.tmp.mp4"):  # 旧版生成的（可能是 10 位，放不了）
+                for old in ("proxy.mp4", "proxy.tmp.mp4", "proxy2.tmp.mp4"):  # 旧版留下的
                     proj.media(old).unlink(missing_ok=True)
                 try:
-                    tmp = proj.media("proxy2.tmp.mp4")
-
                     def prog(done, total):
                         job["done"] = round(done, 1)
-                    how = media.make_proxy(p["video"], tmp, info.get("video"), job["total"], prog, log=env.log)
-                    os.replace(tmp, proxy)
+                    how = media.make_hls(p["video"], out, info.get("video"), total, prog, log=env.log)
                     env.log(f"预览视频已生成（{how}）")
                     proxy_jobs.pop(pid, None)
                 except Exception as e:
                     job.update(status="failed", error=str(e)[-400:])
                     env.log(f"生成预览视频失败：{e}")
             threading.Thread(target=build, daemon=True, name=f"nyasub-proxy-{pid}").start()
-        return JSONResponse({"detail": "正在生成预览视频", "proxy": "building", "done": job["done"], "total": job["total"]},
-                            status_code=202)
+            st = {"segments": 0, "seconds": 0.0, "complete": False}
+        return {"kind": "hls", "status": "building", **st, "done": job["done"], "total": job["total"]}
+
+    @app.get("/api/projects/{pid}/media/hls/{name}")
+    def media_hls(pid: str, name: str):
+        import re
+
+        from ..sources import media
+
+        if not re.fullmatch(r"index\.m3u8|seg_\d{5}\.ts", name):
+            raise HTTPException(404)
+        f = project_paths(pid)[1].media(media.HLS_DIR) / name
+        if not f.exists():
+            raise HTTPException(404)
+        if name.endswith(".m3u8"):  # 转换中会一直变：不缓存
+            return FileResponse(f, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+        return FileResponse(f, media_type="video/mp2t")
 
     @app.get("/api/projects/{pid}/media/frame")
     def frame(pid: str, t: float = 0.0, h: int = 360):

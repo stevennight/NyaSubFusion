@@ -97,7 +97,7 @@ plugins/             # 第三方插件示例
 ```
 视频名.nyasub/
   project.json        # 项目元数据、语言对、所属作品、配置覆盖
-  media/              # meta.json、audio.wav、proxy2.mp4、peaks.json、shots.json（镜头切换点）
+  media/              # meta.json、audio.wav、preview/（HLS 预览）、peaks.json、shots.json（镜头切换点）
   stages/             # 每步结果 + 指纹：subs.json asr.json ocr.json fused.json translated.<lang>.json
   crops/              # 画面字截图
   llm_cache/          # 大模型分段结果（按请求内容哈希）
@@ -443,10 +443,18 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 
 ### 7.4 界面里的预览视频
 
-浏览器 / WebView2 不能直接放的格式（TS / M2TS / MKV、HEVC、MPEG-2…）先转一个 `media/proxy2.mp4`：540p、8 位 H.264、
-帧率高于 30 的减半。按顺序试：显卡解码 + 显卡缩放 + NVENC → CPU 解码 + NVENC → CPU 解码 + x264，前一种一开始就失败才换下一种。
-4K HEVC 10 位 60p 的一小时节目约 9 分钟转完。转换进度在 202 响应里返回（`done` / `total` 秒），界面显示百分比；失败时返回 500 和原因。
-旧版的 `proxy.mp4`（遇到 10 位源会转出浏览器放不了的 High 10）打开时删掉重转。
+浏览器 / WebView2 能直接放的（MP4 / WebM 里的 H.264、VP9、AV1）直接放原文件。其他格式（TS / M2TS / MKV、HEVC、MPEG-2…）
+转成 `media/preview/` 下的 HLS 分段：540p、8 位 H.264、每段 4 秒，帧率高于 30 的减半。播放列表是 event 类型，
+**转出第一段（约 1 秒）就能开始播放**，界面用 hls.js 播放、自动刷新播放列表，可以看、可以拖动到已转好的位置；
+转完写上 `#EXT-X-ENDLIST`，变成可以随意拖动的普通视频。
+
+- 做法按顺序试：显卡解码 + `scale_cuda` + NVENC → CPU 解码 + NVENC → CPU 解码 + x264，前一种一开始就失败才换下一种。
+  4K HEVC 10 位 60p 大约 7 倍速（一小时的节目约 9 分钟转完）。NVENC 要加 `-forced-idr 1`，否则不按 4 秒切段。
+- `GET /media/source` 告诉界面怎么播放（direct / mp4 / hls）和转换进度；没转过、或上次没转完程序就关了，就从头转。
+  失败时返回原因，界面上显示。
+- 为什么不“直接播放原文件”：WebView2 不支持 M2TS / TS 容器；4K 10 位 HEVC 要看显卡和系统的 HEVC 解码支持；
+  只换容器不转码又要多占一份原文件大小的磁盘（这一集 11 GB）。540p 预览只有几百 MB，拖动也快。
+- 旧版的 `proxy.mp4`（遇到 10 位源会转出浏览器放不了的 High 10）打开时删掉；v2 的 `proxy2.mp4` 已经能放，继续用。
 
 内核启动时把自己放进 Windows 作业对象（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）：内核退出（包括被桌面壳强行结束）时，
 正在跑的 ffmpeg 一起结束，不会留在后台。
@@ -474,6 +482,7 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | GET | `/api/projects/{id}/layout?profile=&t=` | 某时刻的排版结果（精确预览） |
 | POST | `/api/projects/{id}/export` | `{profiles[]}` |
 | POST | `/api/projects/{id}/export_video` | `{mode: "mux" \| "burn", profiles[]}`：后台封装 / 压制，进度事件推到项目频道 |
+| GET | `/api/projects/{id}/media/source` · `/media/hls/{index.m3u8 \| seg_NNNNN.ts}` | 界面怎么播放：直接放原视频，或边转边看的 HLS 预览（返回转换进度） |
 | POST | `/api/projects/{id}/cancel` | 取消正在运行的任务：语音识别每段、画面字每帧、大模型每次请求前、ffmpeg 运行中都会检查（`env.check_cancel`），几秒内停下 |
 | GET/PUT | `/api/series/{name}` | 作品设置、术语表、读音词典 |
 | GET | `/api/schema/config` | 配置 JSON Schema（前端自动生成表单） |

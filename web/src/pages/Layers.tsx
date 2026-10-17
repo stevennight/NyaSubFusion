@@ -73,7 +73,14 @@ export function LayersPage() {
   };
   const st = styles[layer?.style] ?? styles.main;
   const updStyle = (patch: Partial<Style>) => setStyles((ss) => ({ ...ss, [layer.style]: { ...st, ...patch } }));
-  const samples = d.cues.filter((_, i) => i % Math.max(1, Math.floor(d.cues.length / 8)) === 0).slice(0, 8);
+  // “跳到”：有字幕就挑几条字幕；还没运行过就用识别到的来源（自带字幕 / 画面字），都没有就均匀取几个时间点
+  const pick = <T,>(xs: T[]) => xs.filter((_, i) => i % Math.max(1, Math.floor(xs.length / 8)) === 0).slice(0, 8);
+  const dur = s.summary?.meta?.duration ?? 0;
+  const samples: { t: number; label: string }[] = d.cues.length
+    ? pick(d.cues).map((c) => ({ t: c.start + 0.3, label: c.orig.text.slice(0, 8) }))
+    : (d.subs.length || d.ocr.length)
+      ? pick(d.subs.length ? d.subs : d.ocr).map((c) => ({ t: c.start + 0.3, label: c.text.slice(0, 8) }))
+      : dur > 0 ? Array.from({ length: 8 }, (_, i) => ({ t: (dur * (i + 0.5)) / 8, label: "" })) : [];
 
   return (
     <div className="layers">
@@ -200,11 +207,15 @@ export function LayersPage() {
       </div>
 
       <div className="lyprev">
-        <Player ref={player} preview={preview} onTime={onTime} style={{ width: "100%" }} />
-        <div className="row wrap">
-          <span className="dim">跳到：</span>
-          {samples.map((c) => <button key={c.id} className="btn sm" onClick={() => player.current?.seek(c.start + 0.3)}>{fmt(c.start)} {c.orig.text.slice(0, 8)}</button>)}
+        <div className="lyplayer">
+          <Player ref={player} preview={preview} onTime={onTime} controls />
         </div>
+        {samples.length > 0 && (
+          <div className="row wrap">
+            <span className="dim">跳到：</span>
+            {samples.map((c, i) => <button key={i} className="btn sm" onClick={() => player.current?.seek(c.t)}>{fmt(c.t).slice(0, 5)}{c.label ? ` ${c.label}` : ""}</button>)}
+          </div>
+        )}
         <div className="row">
           <button className="btn pri" onClick={async () => {
             if (!s.pid) return;
