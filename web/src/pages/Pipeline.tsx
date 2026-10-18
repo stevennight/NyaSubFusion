@@ -26,14 +26,24 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const [until, setUntil] = useState("render");
   const [redoAll, setRedoAll] = useState(false);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (s.config) setDraft(s.config.project); }, [s.config]);
+  // 服务器上的配置变了（保存、运行结束后刷新）：只有没在改的时候才跟着换；正在改、还没保存的不能被冲掉
+  const synced = useRef<{ pid: string | null; cfg: string }>({ pid: null, cfg: "" });
+  useEffect(() => {
+    if (!s.config) return;
+    const fresh = JSON.stringify(s.config.project);
+    const other = synced.current.pid !== s.pid;  // 换了项目：一定换
+    setDraft((d) => (other || JSON.stringify(d) === synced.current.cfg ? s.config!.project : d));
+    synced.current = { pid: s.pid, cfg: fresh };
+  }, [s.config, s.pid]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(s.config?.project ?? {});
 
   const status = useMemo(() => {
     const m: Record<string, StageStatus> = {};
     for (const p of s.summary?.plan ?? []) m[p.stage] = p.status;
     m.render = s.summary?.render?.status ?? "missing";
-    return { ...m, ...s.live };
+    // 关着的 / 没内容的步骤：运行时它们也会一闪而过（什么都不做），不显示成“运行中”，免得以为又开始了
+    const live = Object.fromEntries(Object.entries(s.live).filter(([k, v]) => !((m[k] === "off" || m[k] === "empty") && v !== "failed")));
+    return { ...m, ...live };
   }, [s.summary, s.live]);
   const seconds = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.seconds]));
   const stale = (s.summary?.plan ?? []).filter((p) => !["done", "off", "empty"].includes(p.status));
@@ -76,6 +86,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <span className="dim" style={{ fontSize: 12 }}>保存在项目的 project.toml；没写的项用全局 / 作品配置</span>
             <span className="sp" />
             {dirty && <span className="chip warn">未保存</span>}
+            {s.running && <span className="chip warn" title="运行开始时就读好了配置：现在保存的改动，要等这次停下或跑完、再运行一次才生效">正在运行：改动下次运行才生效</span>}
             <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
             <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
           </div>
