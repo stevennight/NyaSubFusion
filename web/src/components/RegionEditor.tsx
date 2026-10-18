@@ -67,6 +67,22 @@ function RegionDialog({ pid, duration, aspect, regions, boxes, onChange, onClose
   pid: string; duration: number; aspect: number; regions: Region[]; boxes: Candidate[]; onChange: (r: Region[]) => void; onClose: () => void;
 }) {
   const [t, setT] = useState(() => Math.round(Math.min(duration, Math.max(1, duration * 0.1)) * 10) / 10);
+  // 样帧：拖动进度条时每次都去取画面会排起长队（每张都要 ffmpeg 解码），停下 250 毫秒再取；
+  // 新的一张加载好之前继续显示上一张
+  const [img, setImg] = useState(() => api.frameUrl(pid, t, 720));
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    const url = api.frameUrl(pid, t, 720);
+    if (url === img) return;
+    let stop = false;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      const pre = new Image();
+      pre.onload = pre.onerror = () => { if (!stop) { setImg(url); setLoading(false); } };
+      pre.src = url;
+    }, 250);
+    return () => { stop = true; clearTimeout(timer); };
+  }, [t, pid]);
   const [mode, setMode] = useState<"in" | "ex">("in");
   const [sel, setSel] = useState<number | null>(null);
   const [, setDrag] = useState<Drag | null>(null);
@@ -164,7 +180,8 @@ function RegionDialog({ pid, duration, aspect, regions, boxes, onChange, onClose
             <div ref={box} className="frame" style={{ aspectRatio: String(aspect), cursor: "crosshair", ["--ar" as string]: aspect } as React.CSSProperties}
                  onMouseDown={(e) => { const [x, y] = pos(e); setSel(null); begin({ kind: "new", x, y, exclude: mode === "ex" }); e.preventDefault(); }}
                  onMouseMove={(e) => setHover(pos(e))} onMouseLeave={() => setHover(null)}>
-              <img src={api.frameUrl(pid, t, 720)} alt="" draggable={false} className="fimg" />
+              <img src={img} alt="" draggable={false} className="fimg" />
+              {loading && <span className="chip" style={{ position: "absolute", left: 8, bottom: 8, background: "#000a" }}>加载中…</span>}
               {active.map((b) => {
                 const [x0, y0, x1, y1] = b.rect!;
                 return <div key={b.id} title={b.text} className="ocrbox"

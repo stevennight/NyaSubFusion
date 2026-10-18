@@ -40,6 +40,7 @@ class AsrCfg(_M):
     beam_size: int = 5
     vad: bool = True
     vad_threshold: float = 0.25              # 默认 0.5 会漏掉小声说话（采访里很常见）
+    separate: Literal["auto", "on", "off"] = "auto"  # 人声分离（去掉背景音乐再识别）：auto = 没有字幕时才做
     download_root: str = ""
     hf_endpoint: str = ""                    # 模型下载镜像，例如 https://hf-mirror.com
 

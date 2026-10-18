@@ -55,7 +55,7 @@ DEFS = {
                                 "ocr.min_score", "ocr.min_duration", "ocr.max_gap", "ocr.persistent_seconds",
                                 "ocr.regions", "ocr.skip_static"]),
     "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"]),
-    "align": StageDef(["subs", "asr"], ["fusion.auto_sync"]),
+    "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
                                      "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=2),
@@ -125,6 +125,8 @@ class Run:
                     "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
+        if name == "asr":  # 人声分离开着时才有（关着时和以前的指纹一样，不会重新识别）
+            return {"vocals": self._separation_model()} if self._separate() else None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
             return {"video": file_stamp(self.proj.video), "tracks": [
                 {"lang": t["lang"], "title": t["title"],
@@ -297,7 +299,7 @@ class Run:
         if self._stop("subs"):
             return self._done(t_all)
 
-        asr = self.stage("asr", self._run_asr)
+        asr = self._asr_fixed(self.stage("asr", self._run_asr))
         self.src = self._resolve_source(asr, subs)
         log(f"源语言：{lang.get(self.src).name}（{self.src}）")
         if self._stop("asr"):
@@ -413,12 +415,56 @@ class Run:
                 return cues
         return []
 
+    def _asr_fixed(self, asr):
+        """语音段修好时间再用（音乐和台词连在一起时第一个字会停在音乐开头，见 sources/asr.repair）。"""
+        if not asr or not asr.get("segments"):
+            return asr
+        from ..sources.asr import repair
+
+        return dict(asr, segments=repair(asr["segments"]))
+
+    def _separate(self):
+        """这次语音识别要不要先做人声分离：on / off 照办；auto = 没有字幕时（这时语音是主要来源）。"""
+        c = self.cfg.asr
+        if not c.enabled or c.separate == "off":
+            return False
+        if c.separate == "on":
+            return True
+        subs = self.results["subs"] if "subs" in self.results else load_json(self._out_path("subs"), None)
+        return subs is not None and len(subs) == 0
+
+    def _separation_model(self):
+        from ..sources.vocals import MODEL
+
+        return MODEL["name"]
+
+    def _vocals(self, info):
+        """分离出的人声（media/vocals.wav），同一个视频只做一次。"""
+        from .. import gpu
+        from ..sources import vocals
+
+        out = self.proj.media("vocals.wav")
+        stamp = {"video": file_stamp(self.proj.video), "model": vocals.MODEL["name"]}
+        if out.exists() and load_json(self.proj.media("vocals.json")) == stamp:
+            log("人声分离：复用已分离的人声")
+            return out
+        on_gpu, sec = vocals.separate(self.proj.video, out, info.get("duration") or 0.0, gpu=gpu.ocr_ready())
+        save_json(self.proj.media("vocals.json"), stamp)
+        log(f"人声分离完成，用时 {sec:.0f}s")
+        return out
+
     def _run_asr(self):
         c = self.cfg.asr
         wav = (self.results.get("audio") or {}).get("wav")
         if not c.enabled or not wav:
             return {"segments": [], "language": None}
         from ..sources import asr
+
+        if self._separate():
+            wav = str(self._vocals(self.results["probe"]).relative_to(self.proj.root))
+            if c.vad_threshold > 0.15:  # 背景音乐去掉了，门槛放低也不会把音乐当成说话，能多找回小声的台词
+                log(f"人声已分离：人声门槛 {c.vad_threshold} → 0.15")
+                c = c.model_copy(update={"vad_threshold": 0.15})
 
         src = self.cfg.project.source
         whisper_lang = None if src == "auto" else lang.get(src).whisper

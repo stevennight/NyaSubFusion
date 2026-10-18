@@ -18,6 +18,7 @@ enabled = true
 model = "large-v3"            # 也可以 "kotoba-tech/kotoba-whisper-v2.0-faster"（日语）
 device = "cuda"
 vad_threshold = 0.25          # 人声检测门槛，调低能识别小声说话
+separate = "auto"             # 人声分离（先去掉背景音乐再识别）：auto = 没有字幕时才做 / on / off
 hf_endpoint = ""              # 模型下载慢可用镜像：https://hf-mirror.com
 
 [ocr]

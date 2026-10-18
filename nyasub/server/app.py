@@ -460,7 +460,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "meta": res.get("probe"), "src": run.src, "targets": [lang.canonical(t) for t in run.cfg.project.targets],
             "aspect": aspect, "hardsub": boxes,
             "subs": (res.get("align") or {}).get("subs", res.get("subs") or []),
-            "ocr": ocr, "asr": (res.get("asr") or {}).get("segments", []),
+            "ocr": ocr, "asr": (run._asr_fixed(res.get("asr")) or {}).get("segments", []),
             "fused": {"items": fused.get("items", []), "stats": fused.get("stats")},
             "cues": cues, "tokens": tokens, "glossary": (res.get("translate") or {}).get("glossary"),
             "edits": EditStore(run.proj).load(), "history": EditStore(run.proj).depth(),

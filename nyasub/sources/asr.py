@@ -40,6 +40,7 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
         word_timestamps=True,
         condition_on_previous_text=False,
         no_speech_threshold=0.6,
+        hallucination_silence_threshold=2.0,  # 有逐字时间时：长时间没声音的地方如果出了字，多半是幻觉，跳过
     )
     check_cancel()
     if not language:
@@ -68,3 +69,46 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
             log(f"  语音识别 {seg.end / duration * 100:5.1f}%  ({time.time() - t0:.0f}s)")
     del model
     return out, info.language
+
+
+GAP = 2.0       # 同一段里相邻两个字隔了这么久，就不是一口气说的
+FRAGMENT = 2    # 这么短（字数）的一小块挂在大空档另一边，多半是时间对错了的碎片（“気|……13 秒……|持ちいい”）
+
+
+def repair(segments):
+    """修语音段的时间：人声检测把一大段音乐和台词连在一起时，第一个字的时间会停在音乐开头，
+    整段跟着提前十几秒（“気”161.5 → “持ちいい”175.2）；中间隔了很久的，其实是两句话。
+
+    - 段内相邻两字间隔超过 GAP 秒就拆开；
+    - 拆出来很短的一小块（≤ FRAGMENT 个字）并到空档另一边那块上，时间用那块的；
+    - 没有逐字时间的段保持原样。返回新的段列表（id 不变，拆开的加 -2、-3）。"""
+    out = []
+    for seg in segments:
+        words = seg.get("words") or []
+        if len(words) < 2:
+            out.append(seg)
+            continue
+        groups = [[words[0]]]
+        for w in words[1:]:
+            if w["s"] - groups[-1][-1]["e"] > GAP:
+                groups.append([w])
+            else:
+                groups[-1].append(w)
+        if len(groups) == 1:
+            out.append(seg)
+            continue
+        size = lambda g: len("".join(x["w"] for x in g).strip())  # noqa: E731
+        merged = []
+        for g in groups:  # 开头 / 中间的碎片：并到后面那块
+            if merged and size(merged[-1]) <= FRAGMENT:
+                frag = merged.pop()
+                g = [dict(x, s=g[0]["s"], e=g[0]["s"]) for x in frag] + g
+            merged.append(g)
+        if len(merged) > 1 and size(merged[-1]) <= FRAGMENT:  # 结尾的碎片：并到前面那块
+            frag = merged.pop()
+            merged[-1] = merged[-1] + [dict(x, s=merged[-1][-1]["e"], e=merged[-1][-1]["e"]) for x in frag]
+        for k, g in enumerate(merged):
+            text = "".join(x["w"] for x in g).strip()
+            out.append(dict(seg, id=seg["id"] if k == 0 else f"{seg['id']}-{k + 1}", start=g[0]["s"], end=g[-1]["e"],
+                            text=text, words=g))
+    return out

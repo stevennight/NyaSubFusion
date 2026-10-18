@@ -97,6 +97,10 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
               {["large-v3", "large-v3-turbo", "medium", "small", "kotoba-tech/kotoba-whisper-v2.0-faster"].map((m) => <option key={m}>{m}</option>)}
             </select>
+            <span className="lbl">人声分离</span>
+            <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">
+              {[["auto", "自动（没有字幕时）"], ["on", "开"], ["off", "关"]].map(([v, l]) =>
+                <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
             <span className="lbl">人声门槛</span>
             <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span></div>
           </div>
