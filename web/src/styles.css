@@ -215,3 +215,34 @@ table.tb { width: 100%; border-collapse: collapse }
 /* 未启用 / 没有内容的步骤：灰掉，和“可复用”区分开 */
 .node.off, .node.empty { opacity: .55; border-style: dashed }
 .node.off .st, .node.empty .st { background: transparent; border: 1px solid var(--tx3, #777) }
+
+/* 最近项目 */
+.plist { display: flex; flex-direction: column; gap: 6px }
+.prow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2) }
+.prow:hover { border-color: #ffffff30 }
+.prow.cur { border-color: var(--acc2) }
+.prow.gone { opacity: .55 }
+.prow .pmain { flex: 1; min-width: 0; cursor: pointer }
+.prow.gone .pmain { cursor: default }
+.prow .pname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.prow .pmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; font-size: 12px; color: var(--tx3) }
+.prow .pside { display: flex; align-items: center; gap: 6px; flex: none }
+
+/* 流程页：左边配置，右边结果和日志（滚动时一直看得见） */
+.pl-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; align-items: start; margin-top: 12px }
+.pl-cfghead { margin-bottom: 8px }
+.pl-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 90px) }
+.pl-log { flex: 1; min-height: 260px; display: flex; flex-direction: column }
+.pl-log .log { flex: 1; height: auto; min-height: 200px }
+.src-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px }
+.src-col { padding: 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); min-width: 0 }
+.src-col.off > :not(.src-head) { opacity: .45; pointer-events: none }
+.src-head { margin-bottom: 8px; font-weight: 600 }
+.src-region { margin-top: 10px }
+.src-region .frame { width: min(100%, 380px) }
+@media (max-width: 1300px) {
+  .pl-body { grid-template-columns: minmax(0, 1fr) }
+  .pl-side { position: static; max-height: none }
+  .src-cols { grid-template-columns: minmax(0, 1fr) }
+}
+.pl-side .stats { grid-template-columns: 1fr 1fr }

@@ -1,6 +1,7 @@
 // 全局设置：大模型接口（Key 存系统凭据库）、用途分配、下载镜像。存在用户全局配置里，所有项目共用。
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { GpuComponents } from "../components/GpuComponents";
 import { useStore } from "../store";
 import type { Cfg, Provider, Settings } from "../types";
 import { deepGet, setIn } from "../util";
@@ -114,11 +115,13 @@ export function SettingsPage() {
         </div>
       </div>
       <div className="gap" />
+      <GpuComponents />
+      <div className="gap" />
       <div className="card">
         <h3>下载</h3>
         <div className="kv">
           <span className="lbl">模型镜像</span>
-          <input className="inp" style={{ maxWidth: 360 }} placeholder="语音模型下载慢时填，例如 https://hf-mirror.com" value={val("asr.hf_endpoint") ?? ""}
+          <input className="inp" style={{ maxWidth: 360 }} placeholder="可不填：Hugging Face 连不上时会自动改从 ModelScope 下载" value={val("asr.hf_endpoint") ?? ""}
                  onChange={(e) => setDraft(setIn(draft, "asr.hf_endpoint", e.target.value))} />
         </div>
       </div>

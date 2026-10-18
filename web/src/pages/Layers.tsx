@@ -53,6 +53,15 @@ export function LayersPage() {
 
   const prof = profiles[pi];
   const preview = usePreview(prof?.name);
+  // 一打开就跳到第一条有字幕的地方（开头常是黑场，看不出样式）
+  const firstT = d ? (d.cues[0]?.start ?? d.subs[0]?.start ?? d.ocr[0]?.start) : undefined;
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (jumped.current || firstT === undefined || !prof) return;
+    jumped.current = true;
+    const t = setTimeout(() => player.current?.seek(firstT + 0.5), 400);
+    return () => clearTimeout(t);
+  }, [firstT, prof]);
   if (!d || !eff || !prof) return <div className="empty">加载中…</div>;
   const layer = prof.layers[li] ?? prof.layers[0];
 

@@ -24,6 +24,8 @@ const q = (path: string) => (TOKEN ? `${path}${path.includes("?") ? "&" : "?"}to
 
 export const api = {
   projects: () => call<ProjectEntry[]>("/api/projects"),
+  forget: (pid: string) => call<ProjectEntry[]>(`/api/projects/${pid}`, { method: "DELETE" }),
+  reveal: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/reveal`, { method: "POST" }),
   open: (path: string) => call<ProjectSummary>("/api/projects", json("POST", { path })),
   project: (pid: string) => call<ProjectSummary>(`/api/projects/${pid}`),
   plan: (pid: string) => call<PlanItem[]>(`/api/projects/${pid}/plan`),

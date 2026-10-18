@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from glob import escape as glob_escape
 from pathlib import Path
 
 import tomli_w
@@ -72,6 +73,12 @@ class Projects:
             items.insert(0, entry)
             save_json(_registry_path(), {"projects": items[:50]})
         return entry
+
+    def remove(self, pid):
+        """只从“最近项目”里去掉，不删任何文件。"""
+        with self.lock:
+            items = [x for x in self.all() if x["id"] != pid]
+            save_json(_registry_path(), {"projects": items})
 
 
 # ---------------- 后台任务与事件 ----------------
@@ -336,9 +343,49 @@ def create_app(token: str | None = None) -> FastAPI:
         return config_mod.Config.model_json_schema()
 
     # ---------- 项目 ----------
+    def _brief(p):
+        """最近项目列表里一行要显示的：所在文件夹、时长、语言、做到哪一步、输出了几个字幕文件。只读小文件，很快。"""
+        import tomllib
+
+        video = Path(p["video"])
+        proj_root = Path(p["workdir"]) if p.get("workdir") else video.with_name(video.stem + ".nyasub")
+        info = load_json(proj_root / "stages" / "probe.json") or {}
+        cfg = {}
+        try:
+            cfg = tomllib.loads((proj_root / "project.toml").read_text(encoding="utf-8")).get("project", {})
+        except Exception:
+            pass
+        reached = next((n for n in reversed(pipeline.STAGES) if (proj_root / "stages" / f"{n}.json").exists()), None)
+        outs = [f.name for f in video.parent.glob(glob_escape(video.stem) + ".*") if f.suffix.lower() in (".ass", ".srt")
+                and "-merged." not in f.name] if video.parent.is_dir() else []
+        job = hub.status(p["id"])
+        return dict(p, name=video.name, folder=video.parent.name, exists=video.is_file(),
+                    duration=info.get("duration"), source=cfg.get("source"), targets=cfg.get("targets"),
+                    series=cfg.get("series") or "", reached=reached, outputs=outs,
+                    running=bool(job and job["status"] == "running"), configured=(proj_root / "project.toml").exists())
+
     @app.get("/api/projects")
     def list_projects():
-        return [dict(p, name=Path(p["video"]).name, exists=os.path.isfile(p["video"])) for p in projects.all()]
+        return [_brief(p) for p in projects.all()]
+
+    @app.delete("/api/projects/{pid}")
+    def forget_project(pid: str):
+        projects.remove(pid)
+        return list_projects()
+
+    @app.post("/api/projects/{pid}/reveal")
+    def reveal_project(pid: str):
+        """在资源管理器里打开视频所在的文件夹（选中这个视频）。"""
+        import subprocess
+
+        video = Path(projects.get(pid)["video"])
+        if os.name == "nt":
+            subprocess.Popen(["explorer", "/select,", str(video)] if video.exists() else ["explorer", str(video.parent)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(video)])
+        else:
+            subprocess.Popen(["xdg-open", str(video.parent)])
+        return {"ok": True}
 
     @app.post("/api/projects")
     def open_project(body: dict = Body(...)):

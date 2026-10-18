@@ -21,7 +21,11 @@ export interface ProjectSummary {
   };
 }
 
-export interface ProjectEntry { id: string; video: string; name: string; exists: boolean; opened: number }
+export interface ProjectEntry {
+  id: string; video: string; name: string; exists: boolean; opened: number;
+  folder?: string; duration?: number | null; source?: string | null; targets?: string[] | null; series?: string;
+  reached?: string | null; outputs?: string[]; running?: boolean; configured?: boolean;
+}
 
 export interface Candidate {
   id: string; start: number; end: number; text: string;

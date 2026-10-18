@@ -69,83 +69,121 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
       <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} notes={notes} video={vmode === "off" ? null : vmode} /></div>
       <div className="gap" />
 
-      <div className="row" style={{ marginBottom: 8 }}>
-        <h3 style={{ margin: 0 }}>配置</h3>
-        <span className="dim" style={{ fontSize: 12 }}>保存在项目的 project.toml；没写的项用全局 / 作品配置</span>
-        <span className="sp" />
-        {dirty && <span className="chip warn">未保存</span>}
-        <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
-        <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
-      </div>
-      <div className="cfg-grid">
-        <div className="card">
-          <h3>项目</h3>
-          <div className="field"><label>源语言</label>
-            <select className="inp" value={String(val("project.source"))} onChange={(e) => set("project.source", e.target.value)}>
-              <option value="auto">自动判断</option>{s.langs.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
-            </select></div>
-          <div className="field"><label>目标语言（逗号分隔）</label>
-            <input className="inp" value={((val("project.targets") as string[]) ?? []).join(",")}
-                   onChange={(e) => set("project.targets", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))} /></div>
-          <div className="field"><label>所属作品</label>
-            <input className="inp" value={String(val("project.series") ?? "")} onChange={(e) => set("project.series", e.target.value)} /></div>
-          <div className="field"><label>节目说明（会告诉大模型）</label>
-            <textarea className="inp" rows={3} value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} /></div>
-        </div>
-        <div className="card">
-          <h3>识别来源</h3>
-          <label className="row" style={{ marginBottom: 6 }}><input type="checkbox" checked={!!val("subs.enabled")} onChange={(e) => set("subs.enabled", e.target.checked)} /><span className="badge b-c">字幕</span>使用自带字幕</label>
-          <div className="field"><input className="inp" placeholder="指定字幕文件（空 = 自动找同名 / 内封字幕）" value={String(val("subs.path") ?? "")} onChange={(e) => set("subs.path", e.target.value)} /></div>
-          <label className="row" style={{ marginBottom: 6 }}><input type="checkbox" checked={!!val("asr.enabled")} onChange={(e) => set("asr.enabled", e.target.checked)} /><span className="badge b-a">语音</span>语音识别</label>
-          <div className="kv" style={{ marginBottom: 10 }}>
-            <span className="lbl">模型</span>
-            <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
-              {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
-                <option key={m.id} value={m.id} title={m.desc}>{m.label}{m.desc ? ` — ${m.desc}` : ""}</option>)}
-              {models.length > 0 && !models.some((m) => m.id === val("asr.model")) && <option value={String(val("asr.model"))}>{String(val("asr.model"))}（自定义）</option>}
-            </select>
-            <span className="lbl">人声分离</span>
-            <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">
-              {[["auto", "自动（没有字幕时）"], ["on", "开"], ["off", "关"]].map(([v, l]) =>
-                <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
-            <span className="lbl">人声门槛</span>
-            <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span></div>
+      <div className="pl-body">
+        <div className="pl-main">
+          <div className="row pl-cfghead">
+            <h3 style={{ margin: 0 }}>配置</h3>
+            <span className="dim" style={{ fontSize: 12 }}>保存在项目的 project.toml；没写的项用全局 / 作品配置</span>
+            <span className="sp" />
+            {dirty && <span className="chip warn">未保存</span>}
+            <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
+            <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
           </div>
-          <label className="row" style={{ marginBottom: 6 }}><input type="checkbox" checked={!!val("ocr.enabled")} onChange={(e) => set("ocr.enabled", e.target.checked)} /><span className="badge b-o">画面字</span>画面字识别</label>
-          <div className="kv">
-            <span className="lbl">扫描帧率</span>
-            <div className="row"><input type="range" min={1} max={6} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} /><span className="dim">{String(val("ocr.fps"))} fps</span></div>
-            <span className="lbl">视觉复核</span>
-            <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
-          </div>
-          {s.pid && s.summary?.meta?.video && (
-            <div style={{ marginTop: 10 }}>
-              <RegionEditor pid={s.pid} duration={s.summary.meta.duration} aspect={s.summary.meta.video.aspect} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
-                            boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} />
+
+          <div className="grid2" style={{ gridTemplateColumns: "1.25fr 1fr", alignItems: "stretch" }}>
+            <div className="card">
+              <h3>项目与语言</h3>
+              <div className="kv">
+                <span className="lbl">源语言</span>
+                <select className="inp" style={{ maxWidth: 220 }} value={String(val("project.source"))} onChange={(e) => set("project.source", e.target.value)}>
+                  <option value="auto">自动判断</option>{s.langs.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
+                </select>
+                <span className="lbl">翻译成</span>
+                <LangChips value={(val("project.targets") as string[]) ?? []} onChange={(v) => set("project.targets", v)} />
+                <span className="lbl">所属作品</span>
+                <input className="inp" placeholder="可不填：同一作品的各集共用节目说明和术语表" value={String(val("project.series") ?? "")} onChange={(e) => set("project.series", e.target.value)} />
+                <span className="lbl">节目说明</span>
+                <textarea className="inp" rows={3} placeholder="会告诉大模型，例如：北海道渔村纪录片，有大量方言采访" value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} />
+              </div>
             </div>
-          )}
+            <div className="card">
+              <h3>大模型</h3>
+              <div className="kv">
+                <span className="lbl">方式</span>
+                <div className="seg">{[["auto", "自动"], ["api", "调接口"], ["export", "导出任务"], ["off", "不翻译"]].map(([v, l]) =>
+                  <button key={v} className={val("llm.mode") === v ? "on" : ""} onClick={() => set("llm.mode", v)}>{l}</button>)}</div>
+                <span className="lbl">接口</span>
+                <select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
+                  <option value="">（跟随全局设置）</option>
+                  {((deepGet(s.config?.effective, "llm.providers") as { name: string; model: string }[]) ?? []).map((p) =>
+                    <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
+                </select>
+              </div>
+              <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
+                {val("llm.mode") === "export" ? "导出任务：把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次。"
+                  : val("llm.mode") === "off" ? "不翻译：只做识别和融合，不输出译文字幕。"
+                  : "接口在「设置」里管理；API Key 存在系统凭据库，不写进项目文件。"}
+              </div>
+            </div>
+          </div>
+          <div className="gap" />
+
+          <div className="card">
+            <h3>识别来源</h3>
+            <div className="src-cols">
+              <div className={`src-col ${val("subs.enabled") ? "" : "off"}`}>
+                <label className="row src-head"><input type="checkbox" checked={!!val("subs.enabled")} onChange={(e) => set("subs.enabled", e.target.checked)} /><span className="badge b-c">字幕</span>自带字幕</label>
+                <input className="inp" placeholder="指定字幕文件（空 = 自动找同名 / 内封字幕）" value={String(val("subs.path") ?? "")} onChange={(e) => set("subs.path", e.target.value)} />
+                <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>最可信的来源：有字幕时以它为准，语音和画面字用来补漏、对时间。</div>
+              </div>
+              <div className={`src-col ${val("asr.enabled") ? "" : "off"}`}>
+                <label className="row src-head"><input type="checkbox" checked={!!val("asr.enabled")} onChange={(e) => set("asr.enabled", e.target.checked)} /><span className="badge b-a">语音</span>语音识别</label>
+                <div className="kv">
+                  <span className="lbl">模型</span>
+                  <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
+                    {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
+                      <option key={m.id} value={m.id}>{m.label}</option>)}
+                    {models.length > 0 && !models.some((m) => m.id === val("asr.model")) && <option value={String(val("asr.model"))}>{String(val("asr.model"))}（自定义）</option>}
+                  </select>
+                  <span />
+                  <span className="dim" style={{ fontSize: 11.5 }}>{models.find((m) => m.id === val("asr.model"))?.desc ?? ""}</span>
+                  <span className="lbl">人声分离</span>
+                  <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">
+                    {[["auto", "自动"], ["on", "开"], ["off", "关"]].map(([v, l]) =>
+                      <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
+                  <span />
+                  <span className="dim" style={{ fontSize: 11.5 }}>自动：没有字幕时才做（这时语音是主要来源）</span>
+                  <span className="lbl">人声门槛</span>
+                  <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span></div>
+                </div>
+              </div>
+              <div className={`src-col ${val("ocr.enabled") ? "" : "off"}`}>
+                <label className="row src-head"><input type="checkbox" checked={!!val("ocr.enabled")} onChange={(e) => set("ocr.enabled", e.target.checked)} /><span className="badge b-o">画面字</span>画面字识别</label>
+                <div className="kv">
+                  <span className="lbl">扫描帧率</span>
+                  <div className="row"><input type="range" min={1} max={6} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} /><span className="dim">{String(val("ocr.fps"))} fps</span></div>
+                  <span className="lbl">视觉复核</span>
+                  <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
+                </div>
+                {val("ocr.enabled") && s.pid && s.summary?.meta?.video ? (
+                  <div className="src-region">
+                    <RegionEditor pid={s.pid} duration={s.summary.meta.duration} aspect={s.summary.meta.video.aspect} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
+                                  boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} />
+                  </div>
+                ) : <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>识别画面上的字幕、人名条、地名；开启后可以框选识别区域。</div>}
+              </div>
+            </div>
+          </div>
+          <div className="gap" />
+          <VideoCard val={val} set={set} dirty={dirty} />
         </div>
-        <div className="card">
-          <h3>大模型</h3>
-          <div className="field"><label>方式</label>
-            <div className="seg">{[["auto", "自动"], ["api", "调接口"], ["export", "导出任务"], ["off", "不翻译"]].map(([v, l]) =>
-              <button key={v} className={val("llm.mode") === v ? "on" : ""} onClick={() => set("llm.mode", v)}>{l}</button>)}</div></div>
-          <div className="field"><label>这个项目用的接口（接口在「设置」里管理）</label>
-            <select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
-              <option value="">（跟随全局设置）</option>
-              {((deepGet(s.config?.effective, "llm.providers") as { name: string; model: string }[]) ?? []).map((p) =>
-                <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
-            </select></div>
-          <div className="dim" style={{ fontSize: 12 }}>API Key 存在系统凭据库，不写进项目文件。</div>
-        </div>
-      </div>
-      <div className="gap" />
-      <div className="gap" />
-      <VideoCard val={val} set={set} dirty={dirty} />
-      <div className="gap" />
-      <div className="grid2" style={{ gridTemplateColumns: "1.1fr .9fr" }}>
-        <div className="card"><h3>融合结果</h3><Stats /><div className="gap" /><button className="btn" disabled={!s.data?.cues.length} onClick={onReview}>去审校 →</button></div>
-        <div className="card"><h3>日志</h3><LogView lines={s.logs} /></div>
+
+        <aside className="pl-side">
+          <div className="card">
+            <div className="row" style={{ marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>融合结果</h3><span className="sp" />
+              <button className="btn sm" disabled={!s.data?.cues.length} onClick={onReview}>去审校 →</button>
+            </div>
+            <Stats />
+          </div>
+          <div className="card pl-log">
+            <div className="row" style={{ marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>日志</h3>
+              {s.running && <span className="chip acc">● 运行中</span>}
+            </div>
+            <LogView lines={s.logs} />
+          </div>
+        </aside>
       </div>
     </div></div>
   );
@@ -206,6 +244,21 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
         </>)}
         {!s.running && (videos.mux || videos.burn) && <span className="dim">已输出：{[videos.mux, videos.burn].filter(Boolean).join("、")}</span>}
       </div>
+    </div>
+  );
+}
+
+function LangChips({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const s = useStore();
+  return (
+    <div className="row wrap">
+      {s.langs.map((l) => {
+        const on = value.includes(l.code);
+        return <span key={l.code} className={`chip ${on ? "acc" : ""}`} style={{ cursor: "pointer" }}
+                     title={on && value[0] === l.code ? "第一个目标语言：融合和翻译以它为准" : ""}
+                     onClick={() => onChange(on ? value.filter((t) => t !== l.code) : [...value, l.code])}>
+          {on && value.length > 1 ? `${value.indexOf(l.code) + 1}. ` : ""}{l.name}</span>;
+      })}
     </div>
   );
 }

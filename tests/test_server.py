@@ -218,3 +218,15 @@ def test_edit_never_reruns_translation(client, sample):
     assert r.status_code == 200 and r.json()["cue"]["tr"]["zh-Hans"]["text"] == "改字"
     assert client.post(f"/api/projects/{pid}/cues/q2/split", json={"at": 14.0}).status_code == 200
     assert len(fakellm.CALLS) == calls
+
+
+def test_project_list_details_and_forget(client, sample):
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    assert wait_job(client, pid)["status"] == "done"
+    p = next(x for x in client.get("/api/projects").json() if x["id"] == pid)
+    assert p["folder"] == sample.parent.name and p["duration"] == pytest.approx(40, abs=1)
+    assert p["configured"] and p["reached"] and "sample.zh-Hans.ass" in p["outputs"] and not p["running"]
+    assert all("-merged." not in f for f in p["outputs"])
+    left = client.delete(f"/api/projects/{pid}").json()
+    assert all(x["id"] != pid for x in left) and sample.exists()  # 只从列表去掉，文件还在
