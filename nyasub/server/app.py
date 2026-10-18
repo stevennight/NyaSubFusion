@@ -390,7 +390,7 @@ def create_app(token: str | None = None) -> FastAPI:
     @app.post("/api/projects")
     def open_project(body: dict = Body(...)):
         """打开项目。还没配置过（没有 project.toml）时额外返回探测结果，界面据此显示新建向导。"""
-        from ..sources import media, subtitle
+        from ..sources import media
 
         entry = projects.add(body["path"], body.get("workdir"))
         out = summary(entry["id"])
@@ -401,7 +401,7 @@ def create_app(token: str | None = None) -> FastAPI:
                 info = media.probe(entry["video"])
                 out["probe"] = {"duration": info["duration"], "video": info.get("video"), "has_audio": info.get("has_audio"),
                                 "subtitles": info.get("subtitles"), "arib_ttml": bool(info.get("data_streams")),
-                                "external_subs": subtitle.find_external(entry["video"])}
+                                "external_subs": make_run(entry["id"]).external_subs()}  # 跳过本工具以前的输出
             except Exception as e:
                 out["probe"] = {"error": str(e)}
         return out

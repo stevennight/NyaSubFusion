@@ -377,6 +377,7 @@ class Run:
 
             path = f"{p.out_base}.{self.src}-merged.ass"
             ass.write_merged(path, fused["cues"], cfg.render.styles, aspect, boxes)
+            self._remember_outputs([os.path.basename(path)])
             log(f"已输出原文合并字幕：{os.path.basename(path)}")
         if self._stop("fuse"):
             return self._done(t_all)
@@ -413,9 +414,25 @@ class Run:
             return None
         if arg:
             return arg
+        return self.external_subs()
+
+    def written_names(self):
+        """本工具在这个视频旁边写出过的文件（每次输出都记下来；改了配置以后，旧的输出也认得出来）。"""
+        return load_json(self.proj / "outputs.json", {"files": []})["files"]
+
+    def _remember_outputs(self, names):
+        known = self.written_names()
+        merged = known + [n for n in names if n not in known]
+        if merged != known:
+            save_json(self.proj / "outputs.json", {"files": merged})
+
+    def external_subs(self):
+        """同名的外挂字幕（跳过本工具自己写出的）。"""
         from ..sources import subtitle
 
-        return subtitle.find_external(str(self.proj.video), skip_names=self.output_names())
+        legacy = not (self.proj / "outputs.json").exists()  # 旧项目没有输出记录：SRT 靠旁边同名的 ASS 认
+        return subtitle.find_external(str(self.proj.video), skip_names=self.output_names() + self.written_names(),
+                                      legacy_srt=legacy)
 
     def _load_subs(self, info):
         from ..sources import media, subtitle
@@ -776,6 +793,7 @@ class Run:
             log(f"已输出「{prof.name}」：{name}")
             written.append(name)
             self.written.append((prof, name))
+        self._remember_outputs(written)
         return written
 
     # ---------- 输出视频 ----------

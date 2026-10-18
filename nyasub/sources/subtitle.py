@@ -11,16 +11,48 @@ _FS = re.compile(r"\\fs(\d+(?:\.\d+)?)")
 _POS = re.compile(r"\\pos\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)")
 
 
-def find_external(video, skip_names=()):
-    """找与视频同名的字幕：xxx.srt / xxx.ja.srt / xxx.jpn.ass ...；skip_names 是本工具自己的输出文件名。"""
+OWN_MARK = "由 NyaSubFusion 生成"  # 本工具写出的 ASS 文件头里有这一行（render/ass.py header）
+
+
+def _own_ass(path):
+    try:
+        with open(path, "rb") as f:
+            return OWN_MARK.encode("utf-8") in f.read(4096)
+    except OSError:
+        return False
+
+
+def is_own_output(path, legacy_srt=True):
+    """是不是本工具自己写出的字幕（不能当成“自带字幕”再读进来，否则译文会被当成原文）。
+    ASS 看文件头的标记；SRT 没地方写标记：旧项目（还没有输出记录）里，旁边有同名的、我们写的 ASS 就算。"""
+    low = path.lower()
+    if "-merged." in low:
+        return True
+    if low.endswith((".ass", ".ssa")):
+        return _own_ass(path)
+    if legacy_srt and low.endswith(".srt"):
+        base = path[: -len(".srt")]
+        return any(os.path.exists(base + e) and _own_ass(base + e) for e in (".ass", ".ASS"))
+    return False
+
+
+def find_external(video, skip_names=(), legacy_srt=True):
+    """找与视频同名的字幕：xxx.srt / xxx.ja.srt / xxx.jpn.ass ...
+    skip_names：本工具写出过的文件名（现在的配置会写的 + 以前写过的）；另外按内容认出本工具的输出，一起跳过。"""
     folder = os.path.dirname(os.path.abspath(video))
     stem = os.path.splitext(os.path.basename(video))[0]
     skip = {n.lower() for n in skip_names}
     hits = []
     for name in os.listdir(folder):
         low = name.lower()
-        if low.endswith(SUB_EXTS) and name.startswith(stem) and low not in skip and "-merged." not in low:
-            hits.append(os.path.join(folder, name))
+        if not low.endswith(SUB_EXTS) or low in skip:
+            continue
+        # 文件名要么就是“视频名.扩展名”，要么是“视频名.xxx.扩展名”：ep1 不能匹配到 ep10.srt
+        if not (os.path.splitext(name)[0] == stem or name.startswith(stem + ".")):
+            continue
+        path = os.path.join(folder, name)
+        if not is_own_output(path, legacy_srt):
+            hits.append(path)
     # 文件名越短越像“原始”那份
     hits.sort(key=len)
     return hits[0] if hits else None
