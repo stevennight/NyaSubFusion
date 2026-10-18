@@ -15,7 +15,8 @@ ruby_size_ratio = 0.7         # 字号小于正文 70% 的行视为振假名小�
 
 [asr]
 enabled = true
-model = "large-v3"            # 也可以 "kotoba-tech/kotoba-whisper-v2.0-faster"（日语）
+model = "large-v3"            # large-v3-turbo（快 3 倍，动画实测更好）/ kotoba-tech/kotoba-whisper-v2.0-faster / medium / small，
+                              # 也可以写本地模型目录；Hugging Face 连不上时自动改从 ModelScope 下载
 device = "cuda"
 vad_threshold = 0.25          # 人声检测门槛，调低能识别小声说话
 separate = "auto"             # 人声分离（先去掉背景音乐再识别）：auto = 没有字幕时才做 / on / off

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
 import type { Cfg, StageStatus } from "../types";
@@ -39,6 +40,8 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const notes: Record<string, string | undefined> = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.note]));
   notes.render = s.summary?.render?.note ?? (s.summary?.render?.files.length ? s.summary.render.files.join("、") : undefined);
   const vmode = String(s.config ? deepGet(s.config.effective, "render.video.mode") ?? "off" : "off");
+  const [models, setModels] = useState<{ id: string; label: string; desc: string }[]>([]);
+  useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
   const set = (path: string, v: unknown) => setDraft((d) => setIn(d, path, v));
@@ -97,7 +100,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
           <div className="kv" style={{ marginBottom: 10 }}>
             <span className="lbl">模型</span>
             <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
-              {["large-v3", "large-v3-turbo", "medium", "small", "kotoba-tech/kotoba-whisper-v2.0-faster"].map((m) => <option key={m}>{m}</option>)}
+              {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
+                <option key={m.id} value={m.id} title={m.desc}>{m.label}{m.desc ? ` — ${m.desc}` : ""}</option>)}
+              {models.length > 0 && !models.some((m) => m.id === val("asr.model")) && <option value={String(val("asr.model"))}>{String(val("asr.model"))}（自定义）</option>}
             </select>
             <span className="lbl">人声分离</span>
             <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">

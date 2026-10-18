@@ -20,7 +20,7 @@ PRESETS = {
     },
     "anime": {
         "name": "动画", "desc": "台词以字幕和语音为主；画面字少扫一些，说明文字放顶部",
-        "config": {"ocr": {"enabled": True, "fps": 2.0}, "asr": {"enabled": True, "separate": "on"},
+        "config": {"ocr": {"enabled": True, "fps": 2.0}, "asr": {"enabled": True, "separate": "on", "model": "large-v3-turbo"},
                    "render": {"profiles": [dict(_BILINGUAL, info_mode="top"), _SRT]}},
     },
     "variety": {

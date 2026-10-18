@@ -50,6 +50,7 @@ export const api = {
     call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_video`, json("POST", { mode, profiles })),
   cancel: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/cancel`, { method: "POST" }),
   langs: () => call<LangInfo[]>("/api/langs"),
+  asrModels: () => call<{ id: string; label: string; desc: string }[]>("/api/asr_models"),
   queue: () => call<QueueState>("/api/queue"),
   enqueue: (paths: string[], options: QueueOptions) => call<QueueState & { added: number; skipped: number }>("/api/queue", json("POST", { paths, options })),
   queueAction: (id: string, action: "remove" | "up" | "down" | "retry" | "cancel") => call<QueueState>(`/api/queue/${id}/${action}`, { method: "POST" }),

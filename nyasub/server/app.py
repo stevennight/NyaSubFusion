@@ -320,6 +320,12 @@ def create_app(token: str | None = None) -> FastAPI:
         hub.start("_components", lambda: components.install(name, body.get("index")))
         return {"started": True}
 
+    @app.get("/api/asr_models")
+    def asr_models():
+        from ..sources.asr_models import catalog
+
+        return catalog()
+
     @app.get("/api/langs")
     def langs():
         return [{"code": p.code, "name": p.name, "annotations": list(p.annotations), "translit": p.translit_name,

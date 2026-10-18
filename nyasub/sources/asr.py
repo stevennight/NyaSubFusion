@@ -13,26 +13,22 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
         os.environ["HF_ENDPOINT"] = c["hf_endpoint"]
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # 镜像站不支持 xet 协议
     from faster_whisper import WhisperModel
-    from faster_whisper.utils import download_model
+
+    from .. import gpu
+    from .asr_models import resolve
 
     root = c.get("download_root") or None
-    from .. import gpu
-
     if c["device"] == "cuda" and not gpu.asr_ready():
         log("没有可用的 CUDA（缺显卡或“语音识别 GPU 加速”组件），语音识别用 CPU，会慢一些")
         c = dict(c, device="cpu", compute_type="int8")
+    path = resolve(c["model"], root)
     try:
-        download_model(c["model"], local_files_only=True, cache_dir=root)
-        log(f"加载语音模型 {c['model']}（已在本地缓存）")
-    except Exception:
-        log(f"首次使用，正在下载语音模型 {c['model']}（large 模型约 3GB，只需下载一次）")
-    try:
-        model = WhisperModel(c["model"], device=c["device"], compute_type=c["compute_type"], download_root=root)
+        model = WhisperModel(path, device=c["device"], compute_type=c["compute_type"], download_root=root)
     except Exception as e:
         if c["device"] != "cuda":
             raise
         log(f"GPU 加载失败（{e}），改用 CPU，会慢很多")
-        model = WhisperModel(c["model"], device="cpu", compute_type="int8", download_root=root)
+        model = WhisperModel(path, device="cpu", compute_type="int8", download_root=root)
     segments, info = model.transcribe(
         wav,
         language=language or None,
@@ -120,6 +116,38 @@ def repair(segments):
             text = "".join(x["w"] for x in g).strip()
             out.append(dict(seg, id=seg["id"] if k == 0 else f"{seg['id']}-{k + 1}", start=g[0]["s"], end=g[-1]["e"],
                             text=text, words=g))
+    return _split_sentences(out)
+
+
+LONG = 6.0      # 超过这么长的段，按句末标点再拆（有的模型不分段，一大段十几秒，字幕时间就不准了）
+SENT_END = set("。！？!?…")
+
+
+def _split_sentences(segments):
+    out = []
+    for seg in segments:
+        words = seg.get("words") or []
+        if seg["end"] - seg["start"] <= LONG or len(words) < 2:
+            out.append(seg)
+            continue
+        parts, cur = [], []
+        for w in words:
+            cur.append(w)
+            if w["w"].strip() and w["w"].strip()[-1] in SENT_END and cur[-1]["e"] - cur[0]["s"] >= 0.8:
+                parts.append(cur)
+                cur = []
+        if cur:
+            if parts and len("".join(x["w"] for x in cur).strip()) <= 2:
+                parts[-1] += cur  # 句末剩下一两个字（“…ッ”），并到前一句
+            else:
+                parts.append(cur)
+        if len(parts) == 1:
+            out.append(seg)
+            continue
+        base = seg["id"]
+        for k, g in enumerate(parts):
+            out.append(dict(seg, id=base if k == 0 else f"{base}.{k + 1}", start=g[0]["s"], end=g[-1]["e"],
+                            text="".join(x["w"] for x in g).strip(), words=g))
     return out
 
 
