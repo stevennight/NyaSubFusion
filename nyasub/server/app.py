@@ -205,7 +205,7 @@ def create_app(token: str | None = None) -> FastAPI:
         playable = media.browser_playable(p["video"], meta) if meta else None
         return {
             "id": pid, "video": p["video"], "name": Path(p["video"]).name, "workdir": str(proj.root),
-            "meta": meta, "src": run.src, "plan": run.plan(), "job": hub.status(pid),
+            "meta": meta, "src": run.src, "plan": (plan := run.plan()), "render": run.render_status(plan), "job": hub.status(pid),
             "config_files": run.config_files, "outputs": run.output_names(),
             "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()

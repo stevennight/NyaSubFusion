@@ -141,7 +141,7 @@ def test_server_export_video_plan_and_cancel(monkeypatch, sample):
         c.post(f"/api/projects/{pid}/run", json={})
         assert wait_job(c, pid)["status"] == "done"
         s = c.get(f"/api/projects/{pid}").json()
-        assert s["videos"] == {"mux": "sample.sub.mkv"} and all(p["status"] == "done" for p in s["plan"])
+        assert s["videos"] == {"mux": "sample.sub.mkv"} and all(p["status"] in ("done", "off", "empty") for p in s["plan"])
         subs = [x for x in probe_streams(sample.with_name("sample.sub.mkv")) if x["codec_type"] == "subtitle"]
         assert len(subs) == 2  # 两个启用的方案
 

@@ -212,3 +212,6 @@ table.tb { width: 100%; border-collapse: collapse }
 .node b .ord { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 5px; border-radius: 50%; background: var(--panel2); border: 1px solid var(--line2); font-size: 10px; font-weight: 500; color: var(--tx2); vertical-align: 1px }
 /* 流程页的配置卡片：宽屏三列，窄了自动换行 */
 .cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; align-items: start }
+/* 未启用 / 没有内容的步骤：灰掉，和“可复用”区分开 */
+.node.off, .node.empty { opacity: .55; border-style: dashed }
+.node.off .st, .node.empty .st { background: transparent; border: 1px solid var(--tx3, #777) }

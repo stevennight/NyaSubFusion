@@ -1,8 +1,8 @@
 // 与内核接口对应的数据类型（只写界面用到的字段）
 
-export type StageStatus = "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting" | "cancelled";
+export type StageStatus = "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting" | "cancelled" | "off" | "empty";
 
-export interface PlanItem { stage: string; status: StageStatus; seconds?: number | null }
+export interface PlanItem { stage: string; status: StageStatus; seconds?: number | null; note?: string }
 
 export interface Job { status: "running" | "done" | "failed" | "waiting" | "cancelled"; error?: string | null; started: number }
 
@@ -11,6 +11,7 @@ export interface ProjectSummary {
   meta: { duration: number; video?: { width: number; height: number; aspect: number; codec?: string } | null } | null;
   src: string | null; plan: PlanItem[]; job: Job | null; config_files: string[]; outputs: string[];
   videos?: { mux?: string; burn?: string };
+  render?: { status: StageStatus; note?: string; files: string[] };   // 输出字幕文件这一步
   proxy: "direct" | "ready" | "building" | "failed" | "none";
   configured?: boolean;
   probe?: {

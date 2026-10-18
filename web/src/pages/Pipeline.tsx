@@ -15,7 +15,7 @@ const ORDER = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "f
 const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"],
   ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
-const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消" };
+const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
 const ENCODERS: [string, string][] = [["auto", "自动（先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
   ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
@@ -31,11 +31,13 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const status = useMemo(() => {
     const m: Record<string, StageStatus> = {};
     for (const p of s.summary?.plan ?? []) m[p.stage] = p.status;
-    m.render = s.summary?.outputs.length && m.annotate === "done" ? "done" : "missing";
+    m.render = s.summary?.render?.status ?? "missing";
     return { ...m, ...s.live };
   }, [s.summary, s.live]);
   const seconds = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.seconds]));
-  const stale = (s.summary?.plan ?? []).filter((p) => p.status !== "done");
+  const stale = (s.summary?.plan ?? []).filter((p) => !["done", "off", "empty"].includes(p.status));
+  const notes: Record<string, string | undefined> = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.note]));
+  notes.render = s.summary?.render?.note ?? (s.summary?.render?.files.length ? s.summary.render.files.join("、") : undefined);
   const vmode = String(s.config ? deepGet(s.config.effective, "render.video.mode") ?? "off" : "off");
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
@@ -61,7 +63,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
       {stale.length > 0 && !s.running && (
         <div className="banner">⚠ 以下 {stale.length} 个步骤需要运行：{stale.map((p) => STAGE_LBL[p.stage]).join(" → ")}</div>
       )}
-      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} video={vmode === "off" ? null : vmode} /></div>
+      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} notes={notes} video={vmode === "off" ? null : vmode} /></div>
       <div className="gap" />
 
       <div className="row" style={{ marginBottom: 8 }}>
@@ -203,7 +205,9 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
   );
 }
 
-function StageGraph({ status, seconds, video }: { status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; video: string | null }) {
+function StageGraph({ status, seconds, notes, video }: {
+  status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; notes: Record<string, string | undefined>; video: string | null;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; label?: string; x: number; y: number }[]>([]);
   const nodes = video ? [...NODES, { id: video, c: 10, r: 2 }] : NODES;
@@ -235,9 +239,11 @@ function StageGraph({ status, seconds, video }: { status: Record<string, StageSt
       {nodes.map((n) => {
         const st = status[n.id] ?? "missing";
         return (
-          <div key={n.id} data-n={n.id} className={`node ${st}`} style={{ gridColumn: n.c, gridRow: n.r }}>
+          <div key={n.id} data-n={n.id} className={`node ${st}`} style={{ gridColumn: n.c, gridRow: n.r }} title={notes[n.id]}>
             <span className="st" /><b><span className="ord">{ORDER.indexOf(n.id) + 1}</span>{STAGE_LBL[n.id]}</b>
-            <small>{STATUS_LBL[st] ?? st}{seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}</small>
+            <small>{(st === "off" || st === "empty") && notes[n.id] ? notes[n.id] : STATUS_LBL[st] ?? st}
+              {st !== "off" && seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}
+              {n.id === "render" && st === "done" && notes.render ? ` · ${notes.render.split("、").length} 个文件` : ""}</small>
           </div>
         );
       })}

@@ -206,8 +206,65 @@ class Run:
             for d in DEFS[name].deps:
                 self.fps[d] = load_json(self._fp_path(d))
             status[name] = "done" if rec.get("in") == self.input_fp(name) else "stale"
-        return [{"stage": n, "status": status[n], "seconds": (load_json(self._fp_path(n)) or {}).get("seconds")}
-                for n in self._stage_names()]
+        out = []
+        for n in self._stage_names():
+            item = {"stage": n, "status": status[n], "seconds": (load_json(self._fp_path(n)) or {}).get("seconds")}
+            off = self._off_reason(n)
+            if off:  # 配置里关着：运行时这一步什么也不做（下游的“要不要重做”仍按真实状态算）
+                item.update(status="off", note=off)
+            elif status[n] == "done" and (empty := self._empty_note(n)):
+                item.update(status="empty", note=empty)
+            out.append(item)
+        return out
+
+    def _off_reason(self, name):
+        """这一步在当前配置下不会做任何事：返回说明，否则 None。"""
+        c = self.cfg
+        info = load_json(self._out_path("probe")) or {}
+        if name == "audio" and info and not info.get("has_audio"):
+            return "没有音轨"
+        if name == "subs" and (not c.subs.enabled or (self.opts.subs_path or "").lower() == "none"):
+            return "未启用"
+        if name == "asr" and not c.asr.enabled:
+            return "未启用"
+        if name == "ocr" and (not c.ocr.enabled or (info and not info.get("video"))):
+            return "未启用"
+        if name == "ocr_refine" and (not c.ocr.enabled or c.ocr.refine != "vlm"):
+            return "未启用"
+        if name == "align" and not c.fusion.auto_sync:
+            return "未启用"
+        if name in ("translate", "annotate") and self._llm_mode() == "off":
+            return "不翻译"
+        return None
+
+    def _empty_note(self, name):
+        """做过了，但什么也没找到（自带字幕、画面字、语音）。"""
+        r = load_json(self._out_path(name))
+        if name == "subs" and r == []:
+            return "没有找到字幕"
+        if name == "ocr" and r == []:
+            return "没有画面字"
+        if name == "asr" and isinstance(r, dict) and not r.get("segments"):
+            return "没有语音"
+        if name == "align" and isinstance(r, dict) and not r.get("subs"):
+            return "没有字幕，不用对时"
+        return None
+
+    def render_status(self, plan=None):
+        """输出字幕文件这一步：done 文件都在、而且比注音结果新 / stale 要重新输出 / missing 还没输出 / off 不翻译时不输出。"""
+        plan = plan or self.plan()
+        ann = next((p for p in plan if p["stage"] == "annotate"), None)
+        if ann and ann["status"] == "off":
+            return {"status": "off", "note": "不翻译", "files": []}
+        names = self.output_names()
+        files = [self.proj.video.with_name(n) for n in names]
+        exist = [f for f in files if f.exists()]
+        if not exist:
+            return {"status": "missing", "files": []}
+        ann_json = self._out_path("annotate")
+        fresh = ann_json.exists() and min(f.stat().st_mtime for f in exist) >= ann_json.stat().st_mtime - 1
+        done = ann and ann["status"] == "done" and len(exist) == len(files) and fresh
+        return {"status": "done" if done else "stale", "files": [f.name for f in exist]}
 
     def _stage_names(self):
         """要显示的步骤：输出视频只算配置里开着的那一种。"""

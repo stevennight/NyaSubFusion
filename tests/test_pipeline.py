@@ -142,3 +142,27 @@ def test_project_glossary_without_series(sample, api_config, fake):
     assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
     assert len(fake.CALLS) > calls
     assert any("青森県" in user and "青森县" in user for _, user in fake.CALLS[calls:])
+
+
+def test_plan_marks_disabled_steps_and_output_files(sample, api_config, fake):
+    """关着的步骤显示“未启用”（不是“可复用”）；输出字幕文件按文件在不在、新不新算。"""
+    import os
+    import time
+
+    from nyasub.core import config, pipeline
+
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    r = pipeline.Run(sample, cfg, pipeline.Options())
+    plan = {p["stage"]: p for p in r.plan()}
+    assert {k: plan[k]["status"] for k in ("asr", "ocr", "ocr_refine")} == {"asr": "off", "ocr": "off", "ocr_refine": "off"}
+    assert plan["asr"]["note"] == "未启用" and plan["subs"]["status"] == "done"
+    st = r.render_status()
+    assert st["status"] == "done" and "sample.zh-Hans.ass" in st["files"]
+    ann = sample.with_name("sample.nyasub") / "stages" / "annotate.json"
+    later = time.time() + 30
+    os.utime(ann, (later, later))  # 改过字幕（注音结果比输出文件新）→ 要重新输出
+    assert r.render_status()["status"] == "stale"
+    sample.with_name("sample.zh-Hans.ass").unlink()
+    sample.with_name("sample.zh-Hans.srt").unlink()
+    assert r.render_status()["status"] == "missing"

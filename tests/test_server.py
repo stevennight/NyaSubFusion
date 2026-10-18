@@ -50,7 +50,7 @@ def opened(client, sample):
 
 def test_open_run_and_data(client, sample):
     pid, put = opened(client, sample)
-    assert all(st["status"] == "missing" for st in put["plan"])
+    assert all(st["status"] in ("missing", "off") for st in put["plan"])  # 语音 / 画面字关着的显示“未启用”
     assert [p["id"] for p in client.get("/api/projects").json()] == [pid]
 
     with client.websocket_connect(f"/ws/projects/{pid}") as ws:
