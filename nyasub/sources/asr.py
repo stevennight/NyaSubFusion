@@ -5,8 +5,10 @@ import time
 from ..env import check_cancel, log
 
 
-def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
-    """c 是 AsrCfg 的 dict；language 为 None 时自动检测。返回 (语音段列表, 检测到的语言)。"""
+def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=False, junk=()):
+    """c 是 AsrCfg 的 dict；language 为 None 时自动检测。返回 (语音段列表, 检测到的语言)。
+    fill_gaps：wav 是分离出的人声时，再补识别一遍“有声音、但没识别出字”的地方（见 fill_gaps）。
+    junk：语言包的幻觉句（补识别时整段等于这些的丢掉）。"""
     if c.get("hf_endpoint"):
         os.environ["HF_ENDPOINT"] = c["hf_endpoint"]
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # 镜像站不支持 xet 协议
@@ -67,6 +69,13 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0):
         if duration and seg.end - last_report > 120:
             last_report = seg.end
             log(f"  语音识别 {seg.end / duration * 100:5.1f}%  ({time.time() - t0:.0f}s)")
+    if fill_gaps:
+        t1 = time.time()
+        extra = _fill_gaps(model, wav, out, language or info.language, offset, junk)
+        if extra:
+            log(f"补识别：人声轨上有声音、但没识别出字的地方，关掉人声检测再识别一遍，补出 {len(extra)} 段"
+                f"（哭喊、歌声等），用时 {time.time() - t1:.0f}s")
+            out = sorted(out + extra, key=lambda s: (s["start"], s["end"]))
     del model
     return out, info.language
 
@@ -111,4 +120,92 @@ def repair(segments):
             text = "".join(x["w"] for x in g).strip()
             out.append(dict(seg, id=seg["id"] if k == 0 else f"{seg['id']}-{k + 1}", start=g[0]["s"], end=g[-1]["e"],
                             text=text, words=g))
+    return out
+
+
+# ---------------- 补识别 ----------------
+# 人声检测（Silero VAD）不把哭喊、尖叫、歌声当成说话，这些地方整段被跳过；
+# 其实关掉人声检测、切成短片段单独识别，large-v3 是能听出来的（“いやー!…兄さま!”“もう、死なないでー!”）。
+# 只在分离出的人声上做：背景音乐去掉了，按音量就能找到“有人声”的地方。
+GAP_HOP = 0.05          # 音量按 50 毫秒一帧算
+GAP_MIN = 0.6           # 至少这么长的有声片段才补
+GAP_CLIP = 20.0         # 合并成不超过这么长的片段送去识别
+JUNK_EXACT = {"お疲れ様でした", "それではまた", "お待ちしております", "エンディング", "おわり", "次回もお楽しみに",
+              "ご視聴ありがとうございました", "おやすみなさい"}  # 关掉人声检测后常见的幻觉（整段只有这句才丢）
+
+
+def _voiced_gaps(x, sr, segments):
+    """人声轨上有声音、但没被任何语音段覆盖的片段：[(开始, 结束)]，已合并成 ≤ GAP_CLIP 秒。"""
+    import numpy as np
+
+    hop = int(sr * GAP_HOP)
+    n = len(x) // hop
+    if n == 0:
+        return []
+    rms = np.sqrt(np.mean(x[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-12)
+    db = 20 * np.log10(rms)
+    voiced = db > max(-45.0, float(np.percentile(db, 20)) + 18)  # 比底噪高 18 dB，且不低于 -45 dB
+    covered = np.zeros(n, bool)
+    for s in segments:
+        covered[max(0, int((s["start"] - 0.3) / GAP_HOP)): int((s["end"] + 0.3) / GAP_HOP)] = True
+    cand = voiced & ~covered
+    regions, i = [], 0
+    while i < n:
+        if not cand[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and (cand[j] or (j + 8 < n and cand[j: j + 8].any() and not covered[j])):  # 中间短暂停顿不断开
+            j += 1
+        if (j - i) * GAP_HOP >= GAP_MIN:
+            regions.append((i * GAP_HOP, j * GAP_HOP))
+        i = j
+    clips = []
+    for a, b in regions:
+        if clips and a - clips[-1][1] < 1.5 and b - clips[-1][0] <= GAP_CLIP:
+            clips[-1] = (clips[-1][0], b)
+        else:
+            clips.append((a, b))
+    return clips
+
+
+def _keep(seg, text, junk):
+    """补识别出的段：去掉幻觉句、极短的碎片、置信度很低的。剩下的交给大模型判断（它会丢掉没意义的）。"""
+    import re
+
+    core = re.sub(r"[\s。、！？!?…ー～〜・.,]", "", text)
+    if not core or core in JUNK_EXACT or any(h in text for h in junk):
+        return False
+    if seg.end - seg.start < 0.4 and len(core) <= 3:
+        return False
+    return seg.avg_logprob >= -0.8
+
+
+def _fill_gaps(model, wav, segments, language, offset, junk):
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(wav)) as w:
+        sr = w.getframerate()
+        x = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    # 用修好时间的段算覆盖：没修的话，停在音乐开头的那个字会把中间一大段都“覆盖”掉
+    base = [dict(s, start=s["start"] - offset, end=s["end"] - offset) for s in repair(segments)]
+    out = []
+    for a, b in _voiced_gaps(x, sr, base):
+        check_cancel()
+        a0, b0 = max(0.0, a - 0.4), min(len(x) / sr, b + 0.4)
+        res, _ = model.transcribe(x[int(a0 * sr): int(b0 * sr)], language=language, beam_size=5,
+                                  condition_on_previous_text=False, vad_filter=False, word_timestamps=True,
+                                  no_speech_threshold=0.6)
+        for seg in res:
+            text = seg.text.strip()
+            if not _keep(seg, text, junk):
+                continue
+            t = a0 + offset
+            out.append({
+                "id": f"b{len(out) + 1}", "start": round(seg.start + t, 3), "end": round(seg.end + t, 3), "text": text,
+                "no_speech": round(seg.no_speech_prob, 3), "logprob": round(seg.avg_logprob, 3), "second_pass": True,
+                "words": [{"s": round(w.start + t, 3), "e": round(w.end + t, 3), "w": w.word} for w in (seg.words or [])],
+            })
     return out

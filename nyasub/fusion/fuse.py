@@ -151,7 +151,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         cov = _coverage(intervals, a["start"], a["end"])
         if cov < m["asr_uncovered_ratio"]:
             asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
-                              "uncovered": True})
+                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
             continue
         target = max(hit, key=lambda x: overlap(x["start"], x["end"], a["start"], a["end"]))
         target["asr_hint"] = (target.get("asr_hint", "") + " " + a["text"]).strip()

@@ -126,7 +126,7 @@ class Run:
         if name == "fuse":
             return {"src": self.src}
         if name == "asr":  # 人声分离开着时才有（关着时和以前的指纹一样，不会重新识别）
-            return {"vocals": self._separation_model()} if self._separate() else None
+            return {"vocals": self._separation_model(), "fill_gaps": 1} if self._separate() else None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
             return {"video": file_stamp(self.proj.video), "tracks": [
                 {"lang": t["lang"], "title": t["title"],
@@ -460,7 +460,8 @@ class Run:
             return {"segments": [], "language": None}
         from ..sources import asr
 
-        if self._separate():
+        separated = self._separate()
+        if separated:
             wav = str(self._vocals(self.results["probe"]).relative_to(self.proj.root))
             if c.vad_threshold > 0.15:  # 背景音乐去掉了，门槛放低也不会把音乐当成说话，能多找回小声的台词
                 log(f"人声已分离：人声门槛 {c.vad_threshold} → 0.15")
@@ -471,7 +472,8 @@ class Run:
         info = self.results["probe"]
         t = time.time()
         segs, detected = asr.transcribe(str(self.proj / wav), c.model_dump(), whisper_lang,
-                                        offset=info.get("audio_offset", 0.0), duration=info["duration"])
+                                        offset=info.get("audio_offset", 0.0), duration=info["duration"],
+                                        fill_gaps=separated, junk=lang.get(src).hallucinations if src != "auto" else ())
         log(f"语音识别完成：{len(segs)} 段，用时 {time.time() - t:.0f}s")
         return {"segments": segs, "language": detected}
 

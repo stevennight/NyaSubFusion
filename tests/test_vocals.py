@@ -100,4 +100,30 @@ def test_separation_decision_and_fingerprint(sample):
     assert _run(sample, "off", [])._separate() is False
     # 不分离时语音识别的指纹和以前一样（已有项目不会因为升级重新识别）
     assert _run(sample, "auto", [{"text": "x"}])._extra("asr") is None
-    assert _run(sample, "auto", [])._extra("asr") == {"vocals": "Kim_Vocal_2"}
+    assert _run(sample, "auto", [])._extra("asr") == {"vocals": "Kim_Vocal_2", "fill_gaps": 1}
+
+
+# ---------------- 补识别：有声音但没识别出字的地方 ----------------
+def test_voiced_gaps_finds_uncovered_voice():
+    sr = 16000
+    x = np.zeros(sr * 20, np.float32)
+    t = np.arange(sr * 2) / sr
+    tone = 0.3 * np.sin(2 * np.pi * 300 * t).astype(np.float32)
+    x[sr * 2: sr * 4] = tone       # 2-4 秒：有声音，已经识别出来了
+    x[sr * 10: sr * 12] = tone     # 10-12 秒：有声音，没识别出来（哭喊）
+    gaps = asr._voiced_gaps(x, sr, [{"start": 2.0, "end": 4.0}])
+    assert len(gaps) == 1 and abs(gaps[0][0] - 10.0) < 0.1 and abs(gaps[0][1] - 12.0) < 0.1
+
+
+class _Seg:
+    def __init__(self, start, end, lp):
+        self.start, self.end, self.avg_logprob = start, end, lp
+
+
+def test_second_pass_filters_junk():
+    junk = ("ご視聴ありがとうございました",)
+    assert asr._keep(_Seg(0, 2, -0.6), "もう、死なないでー!", junk)
+    assert not asr._keep(_Seg(0, 2, -0.5), "お疲れ様でした。", junk)       # 关掉人声检测后的常见幻觉
+    assert not asr._keep(_Seg(0, 0.3, -0.5), "サクッ", junk)                # 极短的碎片
+    assert not asr._keep(_Seg(0, 2, -0.95), "ていた", junk)                 # 置信度太低
+    assert asr._keep(_Seg(0, 2, -0.5), "お疲れ様でした、先輩", junk)        # 只有整段等于幻觉句才丢

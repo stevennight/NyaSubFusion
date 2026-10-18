@@ -73,6 +73,8 @@ def item_line(it) -> str:
             extra.append("OCR 置信度低")
     if it["src"] == "asr":
         extra.append("无字幕覆盖")
+        if it.get("second_pass"):
+            extra.append("补识别：可能是哭喊、歌声，也可能是噪音或幻觉")
     extra = [e for e in extra if e]
     tag = label + (f"（{'，'.join(extra)}）" if extra else "")
     text = it["text"].replace("\n", " / ")
