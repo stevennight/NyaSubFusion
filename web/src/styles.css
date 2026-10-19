@@ -234,9 +234,10 @@ table.tb { width: 100%; border-collapse: collapse }
 /* 流程页：左边配置，右边结果和日志（滚动时一直看得见） */
 .pl-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; align-items: start; margin-top: 12px }
 .pl-cfghead { margin-bottom: 8px }
-.pl-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 90px) }
-.pl-log { flex: 1; min-height: 260px; display: flex; flex-direction: column }
-.pl-log .log { flex: 1; height: auto; min-height: 200px }
+/* 侧栏定高（窗口高度减去顶栏和页边距），日志填满剩下的空间、自己滚动；只给最大高度的话日志会跟着内容一直长 */
+.pl-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 48px - 32px); min-height: 420px }
+.pl-log { flex: 1; min-height: 0; display: flex; flex-direction: column }
+.pl-log .log { flex: 1; min-height: 0; height: 0 }
 .src-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px }
 .src-col { padding: 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); min-width: 0 }
 .src-col.off > :not(.src-head) { opacity: .45; pointer-events: none }
@@ -245,7 +246,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .src-region .rgn-thumb { width: min(100%, 380px) }
 @media (max-width: 1300px) {
   .pl-body { grid-template-columns: minmax(0, 1fr) }
-  .pl-side { position: static; max-height: none }
+  .pl-side { position: static; height: auto; min-height: 0 }
+  .pl-log .log { flex: none; height: 360px }
   .src-cols { grid-template-columns: minmax(0, 1fr) }
 }
 .pl-side .stats { grid-template-columns: 1fr 1fr }
