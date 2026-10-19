@@ -251,3 +251,9 @@ table.tb { width: 100%; border-collapse: collapse }
   .src-cols { grid-template-columns: minmax(0, 1fr) }
 }
 .pl-side .stats { grid-template-columns: 1fr 1fr }
+
+/* 时间轴：拖动是拖播放头 / 平移，不选中文字 */
+.timeline { user-select: none }
+.tl-inner { cursor: grab }
+.tl-inner:active { cursor: grabbing }
+.lane.wv { cursor: pointer }
