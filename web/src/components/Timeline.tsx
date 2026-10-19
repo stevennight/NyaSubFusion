@@ -8,6 +8,7 @@ interface Props {
   subs: Candidate[]; ocr: Candidate[]; asr: Candidate[]; fused: FusedItem[]; cues: Cue[]; target: string;
   peaks: { per_second: number; peaks: number[] } | null;
   selected: string | null;
+  hint?: string | null;   // 将被合并进来的那一条（高亮）
   onSeek: (t: number) => void; onSelect: (cueId: string) => void; onDropped: (c: Candidate) => void;
 }
 
@@ -135,10 +136,10 @@ export function Timeline(p: Props) {
           {lane("so", p.ocr)}
           {lane("sa", p.asr)}
           <div className="lane" style={{ width: W }}>
-            {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.orig.text}</div>)}
+            {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.orig.text}</div>)}
           </div>
           <div className="lane" style={{ width: W }}>
-            {p.cues.map((c) => <div key={c.id} className={`blk2 st ${c.id === p.selected ? "sel" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.tr[p.target]?.text ?? ""}</div>)}
+            {p.cues.map((c) => <div key={c.id} className={`blk2 st ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.tr[p.target]?.text ?? ""}</div>)}
           </div>
           <div className="playhead" style={{ left: p.time * p.pps }} />
         </div>

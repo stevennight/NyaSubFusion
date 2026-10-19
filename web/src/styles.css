@@ -268,3 +268,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .run-tail .ln .tag { color: var(--acc2); margin-right: 6px }
 .log-dialog { width: min(1100px, 92vw); height: min(760px, 88vh); display: flex; flex-direction: column }
 .log-dialog .log { flex: 1; height: auto; min-height: 0 }
+
+/* 合并：鼠标停在合并按钮上时，高亮将被合并进来的那一条 */
+.tb tr.hint td { background: #ffc35a1f }
+.tb tr.hint td:first-child { box-shadow: inset 3px 0 0 var(--warn) }
+.blk2.hint { outline: 2px dashed var(--warn); outline-offset: 1px; z-index: 2 }

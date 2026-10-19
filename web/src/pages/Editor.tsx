@@ -18,6 +18,7 @@ export function EditorPage() {
   const player = useRef<PlayerHandle>(null);
   const [time, setTime] = useState(0);
   const [sel, setSel] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);   // 鼠标停在合并按钮上时，高亮将被合并进来的那一条
   const [filter, setFilter] = useState<Filter>("all");
   const [showBoxes, setShowBoxes] = useState(false);
   const [pps, setPps] = useState(26);
@@ -93,7 +94,7 @@ export function EditorPage() {
         </div>
       </div>
       <Timeline duration={duration} time={time} pps={pps} subs={d.subs} ocr={d.ocr} asr={d.asr} fused={d.fused.items} cues={cues}
-                target={target} peaks={peaks} selected={sel} onSeek={(t) => player.current?.seek(t)} onSelect={(id) => select(id)}
+                target={target} peaks={peaks} selected={sel} hint={hint} onSeek={(t) => player.current?.seek(t)} onSelect={(id) => select(id)}
                 onDropped={(c: Candidate) => { s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`); player.current?.seek(c.start); }} />
       <div className="cuelist">
         <div className="hd">
@@ -112,7 +113,7 @@ export function EditorPage() {
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>
             <tbody>
               {cues.filter(matches).map((c) => (
-                <tr key={c.id} className={`${c.id === sel ? "sel" : ""} ${current.has(c.id) ? "cur" : ""}`} onClick={() => select(c.id)}>
+                <tr key={c.id} className={`${c.id === sel ? "sel" : ""} ${current.has(c.id) ? "cur" : ""} ${c.id === hint ? "hint" : ""}`} onClick={() => select(c.id)}>
                   <td><span className={`dot ${c.review}`} /></td><td className="dim">{cues.indexOf(c) + 1}</td>
                   <td className="t">{fmt(c.start)} → {fmt(c.end)}</td><td className="typ">{TYPE_LBL[c.type] ?? c.type}</td>
                   <td>{c.sources.map((x) => <span key={x} className={`badge b-${x[0]}`} style={{ marginRight: 3 }}>{SRC_LBL[x[0]]}</span>)}</td>
@@ -125,18 +126,25 @@ export function EditorPage() {
       </div>
       <aside className="inspector">
         {selected ? <Inspector key={selected.id + JSON.stringify(selected.tr) + selected.orig.text} cue={selected} index={cues.indexOf(selected)} onStep={step}
-                               time={time} isLast={cues.indexOf(selected) === cues.length - 1}
+                               time={time} prev={cues[cues.indexOf(selected) - 1]} next={cues[cues.indexOf(selected) + 1]} target={target} onHint={setHint}
                                onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
-                               onMerge={() => edit(() => api.mergeNext(s.pid!, selected.id), "已和下一条合并")} />
+                               onMergeUp={() => { const p = cues[cues.indexOf(selected) - 1]; setHint(null); edit(() => api.mergeNext(s.pid!, p.id), `已和上面的 #${cues.indexOf(selected)} 合并`); }}
+                               onMergeDown={() => { setHint(null); edit(() => api.mergeNext(s.pid!, selected.id), `已和下面的 #${cues.indexOf(selected) + 2} 合并`); }} />
           : <div className="isec dim">点时间轴或列表里的一条字幕，在这里对照来源、修改原文 / 译文 / 读音。</div>}
       </aside>
     </div>
   );
 }
 
-function Inspector({ cue, index, onStep, time, isLast, onSplit, onMerge }: {
-  cue: Cue; index: number; onStep: (d: number) => void; time: number; isLast: boolean; onSplit: () => void; onMerge: () => void;
+function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSplit, onMergeUp, onMergeDown }: {
+  cue: Cue; index: number; onStep: (d: number) => void; time: number; prev?: Cue; next?: Cue; target: string;
+  onHint: (id: string | null) => void; onSplit: () => void; onMergeUp: () => void; onMergeDown: () => void;
 }) {
+  // 合并按钮的提示：和哪一条合并、合并后的时间和文字
+  const mergeTip = (a: Cue, b: Cue) =>
+    `合并成一条：${fmt(a.start)} → ${fmt(b.end)}
+原文：${a.orig.text} ／ ${b.orig.text}
+译文：${a.tr[target]?.text ?? ""} ／ ${b.tr[target]?.text ?? ""}`;
   const canSplit = time > cue.start + 0.2 && time < cue.end - 0.2;
   const s = useStore();
   const d = s.data!;
@@ -253,7 +261,10 @@ function Inspector({ cue, index, onStep, time, isLast, onSplit, onMerge }: {
         <button className="btn pri" disabled={busy} onClick={() => patch({ review: cue.review === "ok" ? "todo" : "ok" }, cue.review === "ok" ? "已改回待审校" : "已标记为已审")}>
           {cue.review === "ok" ? "✓ 已审（点击撤销）" : "✓ 标记已审"}</button>
         <button className="btn" disabled={busy || !canSplit} title={canSplit ? `在 ${fmt(time)} 处拆开` : "把播放头移到这条字幕中间"} onClick={onSplit}>✂ 在播放头拆分</button>
-        <button className="btn" disabled={busy || isLast} onClick={onMerge}>与下一条合并</button>
+        <button className="btn" disabled={busy || !prev} title={prev ? mergeTip(prev, cue) : "上面没有字幕"} onClick={onMergeUp}
+                onMouseEnter={() => prev && onHint(prev.id)} onMouseLeave={() => onHint(null)}>↑ 与上一条 #{index} 合并</button>
+        <button className="btn" disabled={busy || !next} title={next ? mergeTip(cue, next) : "下面没有字幕"} onClick={onMergeDown}
+                onMouseEnter={() => next && onHint(next.id)} onMouseLeave={() => onHint(null)}>↓ 与下一条 #{index + 2} 合并</button>
         <button className="btn ghost" disabled={busy} onClick={() => patch({ delete: true }, "已删除（Ctrl+Z 可撤销）")}>删除</button>
       </div>
 
