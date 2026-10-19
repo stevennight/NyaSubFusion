@@ -2,6 +2,7 @@
 // 流程页上是一张小预览，点开是大的编辑窗口：拖动画新框、拖框内移动、拖四角改大小、直接输入坐标；
 // 样帧可以逐秒 / 逐条画面字翻看，虚线框是那一刻已经识别到的文字。
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import type { Candidate } from "../types";
 import { fmt } from "../util";
@@ -53,12 +54,13 @@ export function RegionEditor({ pid, duration, aspect, regions, boxes, onChange }
         <span className="sp" />
         <button className="btn sm" onClick={() => setOpen(true)}>编辑识别区域…</button>
       </div>
-      <div className="frame" style={{ aspectRatio: String(aspect || 16 / 9), cursor: "pointer" }} onClick={() => setOpen(true)} title="点击编辑">
+      <div className="frame rgn-thumb" style={{ aspectRatio: String(aspect || 16 / 9), cursor: "pointer" }} onClick={() => setOpen(true)} title="点击编辑">
         <img src={api.frameUrl(pid, t)} alt="" draggable={false} className="fimg" />
         <Boxes regions={regions} />
       </div>
-      {open && <RegionDialog pid={pid} duration={duration} aspect={aspect || 16 / 9} regions={regions} boxes={boxes}
-                             onChange={onChange} onClose={() => setOpen(false)} />}
+      {/* 挂到 body 上：不受所在卡片的样式影响，铺满整个窗口 */}
+      {open && createPortal(<RegionDialog pid={pid} duration={duration} aspect={aspect || 16 / 9} regions={regions} boxes={boxes}
+                             onChange={onChange} onClose={() => setOpen(false)} />, document.body)}
     </div>
   );
 }

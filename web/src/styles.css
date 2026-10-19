@@ -198,10 +198,13 @@ table.tb { width: 100%; border-collapse: collapse }
 .rgn .hd.h2 { right: -6px; bottom: -6px; cursor: nwse-resize } .rgn .hd.h3 { left: -6px; bottom: -6px; cursor: nesw-resize }
 .ocrbox { position: absolute; border: 1px dashed #ffffffbb; pointer-events: none }
 .rgn-xy { position: absolute; right: 6px; bottom: 6px; font-size: 11px; background: #000a; padding: 1px 6px; border-radius: 3px; pointer-events: none; font-variant-numeric: tabular-nums }
-.rgn-dialog { width: min(1500px, 96vw) }
-.rgn-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start }
-.rgn-stage .frame { width: min(100%, calc((96vh - 190px) * var(--ar, 1.78))) ; margin: 0 auto }
-.rgn-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(96vh - 120px); overflow: auto }
+/* 识别区域编辑：铺满窗口，画面按可用高度尽量大 */
+.modal:has(.rgn-dialog) { padding: 12px }
+.rgn-dialog { width: calc(100vw - 24px); height: calc(100vh - 24px); max-height: none; display: flex; flex-direction: column; overflow: hidden }
+.rgn-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px }
+.rgn-stage { min-height: 0; display: flex; flex-direction: column }
+.rgn-stage .frame { width: min(100%, calc((100vh - 190px) * var(--ar, 1.78))); margin: 0 auto; flex: none }
+.rgn-list { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto }
 .rgn-item { border: 1px solid var(--line2); border-radius: 8px; padding: 8px; background: var(--bg2); cursor: pointer }
 .rgn-item.sel { border-color: var(--acc2) }
 .rgn-coords { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 6px; font-size: 12px; color: var(--tx2) }
@@ -239,7 +242,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .src-col.off > :not(.src-head) { opacity: .45; pointer-events: none }
 .src-head { margin-bottom: 8px; font-weight: 600 }
 .src-region { margin-top: 10px }
-.src-region .frame { width: min(100%, 380px) }
+.src-region .rgn-thumb { width: min(100%, 380px) }
 @media (max-width: 1300px) {
   .pl-body { grid-template-columns: minmax(0, 1fr) }
   .pl-side { position: static; max-height: none }
