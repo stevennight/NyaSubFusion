@@ -166,7 +166,7 @@ def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None):
     from ..sources import media
 
     def progress(done, total):
-        env.emit({"type": "progress", "stage": label, "done": round(done, 1), "total": round(total, 1)})
+        env.progress(done, total, {"mux": "封装", "burn": "压制"}.get(label, label), stage=label, every=0.5)
     return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part)
 
 

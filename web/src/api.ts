@@ -35,6 +35,7 @@ export const api = {
   run: (pid: string, body: { until?: string; redo?: string[]; translate?: string }) =>
     call<{ started: boolean }>(`/api/projects/${pid}/run`, json("POST", body)),
   log: (pid: string) => call<LiveEvent[]>(`/api/projects/${pid}/log`),
+  stageLog: (pid: string, stage: string) => call<{ lines: string[] }>(`/api/projects/${pid}/stages/${stage}/log`),
   data: (pid: string) => call<ProjectData>(`/api/projects/${pid}/data`),
   preview: (pid: string, profile?: string) =>
     call<Preview>(`/api/projects/${pid}/preview${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),

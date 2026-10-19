@@ -1,7 +1,7 @@
 // 全局状态：当前项目、数据、配置、运行中的实时事件。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, subscribe } from "./api";
-import type { Cfg, LangInfo, LiveEvent, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
+import type { Cfg, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
 
 interface Store {
   pid: string | null;
@@ -9,7 +9,8 @@ interface Store {
   data: ProjectData | null;
   config: { project: Cfg; effective: Cfg } | null;
   langs: LangInfo[];
-  logs: string[];
+  logs: LogLine[];
+  stageProg: Record<string, Progress>;   // 正在跑的步骤的进度（步骤图上显示）
   live: Record<string, StageStatus>;
   running: boolean;
   progress: Progress | null;    // 输出视频的进度
@@ -36,7 +37,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<ProjectData | null>(null);
   const [config, setCfg] = useState<{ project: Cfg; effective: Cfg } | null>(null);
   const [langs, setLangs] = useState<LangInfo[]>([]);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [stageProg, setStageProg] = useState<Record<string, Progress>>({});
   const [live, setLive] = useState<Record<string, StageStatus>>({});
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -76,6 +78,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setData(null);
     setCfg(null);
     setLogs([]);
+    setStageProg({});
     setLive({});
   }, []);
 
@@ -85,16 +88,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // 实时事件
   useEffect(() => {
     if (!pid) return;
-    api.log(pid).then((evs) => setLogs(evs.filter((e) => e.type === "log").map((e) => e.msg ?? ""))).catch(() => {});
+    api.log(pid).then((evs) => setLogs(evs.filter((e) => e.type === "log").map((e) => ({ msg: e.msg ?? "", stage: e.stage })))).catch(() => {});
     return subscribe(pid, (e: LiveEvent) => {
-      if (e.type === "log" && e.msg) setLogs((l) => [...l.slice(-1500), e.msg!]);
+      if (e.type === "log" && e.msg) setLogs((l) => [...l.slice(-3000), { msg: e.msg!, stage: e.stage }]);
       if (e.type === "stage" && e.name) setLive((m) => ({ ...m, [e.name!]: e.status as StageStatus }));
-      if (e.type === "progress") setProgress({ stage: e.stage ?? "", done: e.done ?? 0, total: e.total ?? 0 });
+      if (e.type === "stage" && e.status === "running") setRunning(true);  // 别处启动的运行（队列、接口）也显示成运行中
+      if (e.type === "progress") {
+        const p = { stage: e.stage ?? "", done: e.done ?? 0, total: e.total ?? 0, label: e.label };
+        setProgress(p);
+        if (p.stage) setStageProg((m) => ({ ...m, [p.stage]: p }));
+      }
+      if (e.type === "stage" && e.name && e.status !== "running") {
+        const name = e.name;
+        setStageProg((m) => { const n = { ...m }; delete n[name]; return n; });
+      }
       if (e.type === "hello") setRunning(e.job?.status === "running");
       if (e.type === "job") {
         setRunning(false);
         setLive({});
         setProgress(null);
+        setStageProg({});
         reload();
         if (e.status === "failed") setError(e.error ?? "运行失败");
       }
@@ -112,6 +125,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const run = useCallback(async (body: { until?: string; redo?: string[]; translate?: string } = {}) => {
     if (!pid) return;
     setLogs([]);
+    setStageProg({});
     setLive({});
     setRunning(true);
     try {
@@ -125,6 +139,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const exportVideo = useCallback(async (mode: "mux" | "burn", profiles?: string[]) => {
     if (!pid) return;
     setLogs([]);
+    setStageProg({});
     setLive({});
     setProgress(null);
     setRunning(true);
@@ -143,9 +158,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [pid, toast]);
 
   const value = useMemo<Store>(() => ({
-    pid, summary, data, config, langs, logs, live, running, progress, version, error,
+    pid, summary, data, config, langs, logs, stageProg, live, running, progress, version, error,
     open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg,
-  }), [pid, summary, data, config, langs, logs, live, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
+  }), [pid, summary, data, config, langs, logs, stageProg, live, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

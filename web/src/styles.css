@@ -234,10 +234,8 @@ table.tb { width: 100%; border-collapse: collapse }
 /* 流程页：左边配置，右边结果和日志（滚动时一直看得见） */
 .pl-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; align-items: start; margin-top: 12px }
 .pl-cfghead { margin-bottom: 8px }
-/* 侧栏定高（窗口高度减去顶栏和页边距），日志填满剩下的空间、自己滚动；只给最大高度的话日志会跟着内容一直长 */
-.pl-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 48px - 32px); min-height: 420px }
-.pl-log { flex: 1; min-height: 0; display: flex; flex-direction: column }
-.pl-log .log { flex: 1; min-height: 0; height: 0 }
+/* 侧栏：运行状态 + 融合结果，滚动时一直看得见；完整日志在弹窗里 */
+.pl-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px }
 .src-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px }
 .src-col { padding: 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); min-width: 0 }
 .src-col.off > :not(.src-head) { opacity: .45; pointer-events: none }
@@ -246,8 +244,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .src-region .rgn-thumb { width: min(100%, 380px) }
 @media (max-width: 1300px) {
   .pl-body { grid-template-columns: minmax(0, 1fr) }
-  .pl-side { position: static; height: auto; min-height: 0 }
-  .pl-log .log { flex: none; height: 360px }
+  .pl-side { position: static }
   .src-cols { grid-template-columns: minmax(0, 1fr) }
 }
 .pl-side .stats { grid-template-columns: 1fr 1fr }
@@ -257,3 +254,17 @@ table.tb { width: 100%; border-collapse: collapse }
 .tl-inner { cursor: grab }
 .tl-inner:active { cursor: grabbing }
 .lane.wv { cursor: pointer }
+
+/* 步骤：可以点开看日志；运行中显示进度 */
+.node.clickable { cursor: pointer }
+.node.clickable:hover { border-color: #ffffff40 }
+.node .nbar { height: 3px; margin-top: 4px; border-radius: 2px; background: #ffffff18; overflow: hidden }
+.node .nbar i { display: block; height: 100%; background: var(--acc2); transition: width .5s }
+/* 侧栏的运行状态 */
+.run-card .run-now { padding: 8px 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); cursor: pointer; margin-bottom: 8px }
+.run-card .run-err { color: var(--bad); font-size: 12px; word-break: break-all; margin-bottom: 8px }
+.run-tail { font: 11.5px/1.6 Consolas, "Cascadia Mono", monospace; color: #b9b9c9; background: #0e0e13; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; max-height: 190px; overflow: hidden }
+.run-tail .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default }
+.run-tail .ln .tag { color: var(--acc2); margin-right: 6px }
+.log-dialog { width: min(1100px, 92vw); height: min(760px, 88vh); display: flex; flex-direction: column }
+.log-dialog .log { flex: 1; height: auto; min-height: 0 }

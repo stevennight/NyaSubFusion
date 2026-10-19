@@ -86,7 +86,41 @@ def log(*args):
         print("[nyasub]", msg, flush=True)
     except (OSError, ValueError):
         pass  # 标准输出已经关了（比如桌面壳退出了），不影响运行
-    emit({"type": "log", "msg": msg})
+    stage = current_stage()
+    lines = getattr(_local, "stage_lines", None)
+    if lines is not None:
+        lines.append(msg)
+    emit({"type": "log", "msg": msg, **({"stage": stage} if stage else {})})
+
+
+def set_stage(name):
+    """流水线开始 / 结束一个步骤时调用：之后的日志带上这个步骤名，并记下来（存成这一步的日志）。"""
+    _local.stage = name
+    _local.stage_lines = [] if name else None
+
+
+def current_stage():
+    return getattr(_local, "stage", None)
+
+
+def stage_lines():
+    return list(getattr(_local, "stage_lines", None) or [])
+
+
+_last_progress = {}
+
+
+def progress(done, total, label="", stage=None, every=1.0):
+    """长步骤的进度（界面的步骤图上显示百分比）。every 秒内只发一次，最后一次（done >= total）一定发。"""
+    import time
+
+    stage = stage or current_stage()
+    key = (stage, label)
+    now = time.time()
+    if total and done < total and now - _last_progress.get(key, 0) < every:
+        return
+    _last_progress[key] = now
+    emit({"type": "progress", "stage": stage, "label": label, "done": round(float(done), 1), "total": round(float(total), 1)})
 
 
 _job = None

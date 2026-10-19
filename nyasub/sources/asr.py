@@ -2,13 +2,14 @@
 import os
 import time
 
-from ..env import check_cancel, log
+from ..env import check_cancel, log, progress
 
 
-def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=False, junk=()):
+def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=False, junk=(), detect_wav=None):
     """c 是 AsrCfg 的 dict；language 为 None 时自动检测。返回 (语音段列表, 检测到的语言)。
     fill_gaps：wav 是分离出的人声时，再补识别一遍“有声音、但没识别出字”的地方（见 fill_gaps）。
-    junk：语言包的幻觉句（补识别时整段等于这些的丢掉）。"""
+    junk：语言包的幻觉句（补识别时整段等于这些的丢掉）。
+    detect_wav：自动判断语言时用这个文件来判断（分离出的人声里大段安静，会被判断成别的语言，要用原音频）。"""
     if c.get("hf_endpoint"):
         os.environ["HF_ENDPOINT"] = c["hf_endpoint"]
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # 镜像站不支持 xet 协议
@@ -29,6 +30,12 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
             raise
         log(f"GPU 加载失败（{e}），改用 CPU，会慢很多")
         model = WhisperModel(path, device="cpu", compute_type="int8", download_root=root)
+    if not language and detect_wav:
+        from faster_whisper.audio import decode_audio
+
+        language, prob, _ = model.detect_language(decode_audio(str(detect_wav)), vad_filter=True,
+                                                  language_detection_segments=4)
+        log(f"语音语言检测（按原音频）：{language}（{prob:.0%}）")
     segments, info = model.transcribe(
         wav,
         language=language or None,
@@ -43,6 +50,7 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
     check_cancel()
     if not language:
         log(f"语音语言检测：{info.language}（{info.language_probability:.0%}）")
+    language = language or info.language
     out = []
     t0 = time.time()
     last_report = 0
@@ -62,9 +70,11 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
             "logprob": round(seg.avg_logprob, 3),
             "words": words,
         })
-        if duration and seg.end - last_report > 120:
+        if duration:
+            progress(min(seg.end - offset, duration), duration, "识别")
+        if duration and seg.end - last_report > 600:  # 日志里每 10 分钟记一笔就够了，细的进度在步骤图上
             last_report = seg.end
-            log(f"  语音识别 {seg.end / duration * 100:5.1f}%  ({time.time() - t0:.0f}s)")
+            log(f"  语音识别到 {seg.end / 60:.0f} 分钟（{time.time() - t0:.0f}s）")
     if fill_gaps:
         t1 = time.time()
         extra = _fill_gaps(model, wav, out, language or info.language, offset, junk)
@@ -220,8 +230,10 @@ def _fill_gaps(model, wav, segments, language, offset, junk):
     # 用修好时间的段算覆盖：没修的话，停在音乐开头的那个字会把中间一大段都“覆盖”掉
     base = [dict(s, start=s["start"] - offset, end=s["end"] - offset) for s in repair(segments)]
     out = []
-    for a, b in _voiced_gaps(x, sr, base):
+    gaps = _voiced_gaps(x, sr, base)
+    for k, (a, b) in enumerate(gaps):
         check_cancel()
+        progress(k, len(gaps), "补识别")
         a0, b0 = max(0.0, a - 0.4), min(len(x) / sr, b + 0.4)
         res, _ = model.transcribe(x[int(a0 * sr): int(b0 * sr)], language=language, beam_size=5,
                                   condition_on_previous_text=False, vad_filter=False, word_timestamps=True,

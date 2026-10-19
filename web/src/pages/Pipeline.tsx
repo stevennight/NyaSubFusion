@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
-import type { Cfg, StageStatus } from "../types";
+import type { Cfg, Progress, StageStatus } from "../types";
 import { deepGet, pct, setIn, STAGE_LBL } from "../util";
 
 // 步骤图：从左到右大致按实际运行顺序排（节点上的数字就是运行顺序），连线是“用到了谁的结果”。
@@ -55,6 +56,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   notes.render = s.summary?.render?.note ?? (s.summary?.render?.files.length ? s.summary.render.files.join("、") : undefined);
   const vmode = String(s.config ? deepGet(s.config.effective, "render.video.mode") ?? "off" : "off");
   const [models, setModels] = useState<{ id: string; label: string; desc: string }[]>([]);
+  const [logStage, setLogStage] = useState<string | null>(null);   // 点开了哪一步的日志（"all" = 全部）
   useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
@@ -81,7 +83,8 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
       {stale.length > 0 && !s.running && (
         <div className="banner">⚠ 以下 {stale.length} 个步骤需要运行：{stale.map((p) => STAGE_LBL[p.stage]).join(" → ")}</div>
       )}
-      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} notes={notes} video={vmode === "off" ? null : vmode} /></div>
+      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} notes={notes} prog={s.stageProg} video={vmode === "off" ? null : vmode}
+                  onOpen={setLogStage} /></div>
       <div className="gap" />
 
       <div className="pl-body">
@@ -185,6 +188,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         </div>
 
         <aside className="pl-side">
+          <RunCard onAll={() => setLogStage("all")} onStage={setLogStage} status={status} />
           <div className="card">
             <div className="row" style={{ marginBottom: 8 }}>
               <h3 style={{ margin: 0 }}>融合结果</h3><span className="sp" />
@@ -192,17 +196,89 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             </div>
             <Stats />
           </div>
-          <div className="card pl-log">
-            <div className="row" style={{ marginBottom: 8 }}>
-              <h3 style={{ margin: 0 }}>日志</h3>
-              {s.running && <span className="chip acc">● 运行中</span>}
-            </div>
-            <LogView lines={s.logs} />
-          </div>
         </aside>
       </div>
+      {logStage && <StageLogDialog stage={logStage} status={status[logStage]} seconds={seconds[logStage]} note={notes[logStage]}
+                                   onClose={() => setLogStage(null)} onStage={setLogStage} />}
     </div></div>
   );
+}
+
+/** 侧栏：现在在跑哪一步、进度、最近几行日志；完整日志点“全部日志”或点步骤图上的某一步看 */
+function RunCard({ onAll, onStage, status }: { onAll: () => void; onStage: (s: string) => void; status: Record<string, StageStatus> }) {
+  const s = useStore();
+  const cur = Object.keys(s.live).find((k) => s.live[k] === "running");
+  const p = cur ? s.stageProg[cur] : undefined;
+  const job = s.summary?.job;
+  const tail = s.logs.slice(-6);
+  return (
+    <div className="card run-card">
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>运行</h3>
+        {s.running ? <span className="chip acc">● 运行中</span>
+          : job?.status === "failed" ? <span className="chip bad">失败</span>
+          : job?.status === "cancelled" ? <span className="chip">已取消</span>
+          : job?.status === "done" ? <span className="chip ok">完成</span>
+          : job?.status === "waiting" ? <span className="chip warn">等外部翻译</span> : <span className="chip">空闲</span>}
+        <span className="sp" />
+        <button className="btn sm" onClick={onAll}>全部日志</button>
+      </div>
+      {s.running && cur && (
+        <div className="run-now" onClick={() => onStage(cur)} title="点击看这一步的日志">
+          <div className="row"><b>{STAGE_LBL[cur] ?? cur}</b>{p?.label && <span className="dim">{p.label}</span>}<span className="sp" />
+            {p && p.total > 0 && <span className="dim">{pct(p)}%</span>}</div>
+          {p && p.total > 0 && <div className="pbar" style={{ marginTop: 6 }}><div style={{ width: `${pct(p)}%` }} /></div>}
+        </div>
+      )}
+      {!s.running && job?.status === "failed" && job.error && <div className="run-err">{job.error}</div>}
+      <div className="run-tail">
+        {tail.length ? tail.map((l, i) => (
+          <div key={i} className="ln" onClick={() => l.stage && onStage(l.stage)} title={l.stage ? `${STAGE_LBL[l.stage] ?? l.stage}：点击看这一步的日志` : ""}>
+            {l.stage && <span className="tag">{STAGE_LBL[l.stage] ?? l.stage}</span>}{l.msg}
+          </div>
+        )) : <div className="dim">（运行后显示日志；点步骤图上的步骤可以看那一步上次的日志）</div>}
+      </div>
+      {!s.running && Object.values(status).some((v) => v === "failed") && <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>失败的步骤在步骤图上标红，点开看原因。</div>}
+    </div>
+  );
+}
+
+/** 某一步的日志（这次运行的；没有就读上次存下的 stages/<步骤>.log），或全部日志 */
+function StageLogDialog({ stage, status, seconds, note, onClose, onStage }: {
+  stage: string; status?: StageStatus; seconds?: number | null; note?: string; onClose: () => void; onStage: (s: string) => void;
+}) {
+  const s = useStore();
+  const [saved, setSaved] = useState<string[] | null>(null);
+  const all = stage === "all";
+  const live = all ? s.logs : s.logs.filter((l) => l.stage === stage);
+  useEffect(() => {
+    setSaved(null);
+    if (all || !s.pid) return;
+    api.stageLog(s.pid, stage).then((r) => setSaved(r.lines)).catch(() => setSaved([]));
+  }, [stage, s.pid]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, []);
+  const p = s.stageProg[stage];
+  const lines = live.length ? live.map((l) => (all && l.stage ? `[${STAGE_LBL[l.stage] ?? l.stage}] ${l.msg}` : l.msg)) : saved ?? [];
+  return createPortal(
+    <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-body log-dialog">
+        <div className="row" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0 }}>{all ? "全部日志" : `${STAGE_LBL[stage] ?? stage} 的日志`}</h3>
+          {!all && status && <span className="chip">{STATUS_LBL[status] ?? status}{seconds ? ` · ${seconds}s` : ""}</span>}
+          {!all && note && <span className="dim">{note}</span>}
+          {p && p.total > 0 && <span className="dim">{p.label} {pct(p)}%</span>}
+          <span className="sp" />
+          {!all && <button className="btn sm ghost" onClick={() => onStage("all")}>全部日志</button>}
+          <button className="btn sm" onClick={onClose}>关闭</button>
+        </div>
+        {!all && !live.length && saved && saved.length > 0 && <div className="dim" style={{ fontSize: 12, marginBottom: 6 }}>上次运行这一步时的日志</div>}
+        <LogView lines={lines} empty={all ? "（还没有日志）" : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
+      </div>
+    </div>, document.body);
 }
 
 function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: string, v: unknown) => void; dirty: boolean }) {
@@ -279,8 +355,9 @@ function LangChips({ value, onChange }: { value: string[]; onChange: (v: string[
   );
 }
 
-function StageGraph({ status, seconds, notes, video }: {
-  status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; notes: Record<string, string | undefined>; video: string | null;
+function StageGraph({ status, seconds, notes, prog, video, onOpen }: {
+  status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; notes: Record<string, string | undefined>;
+  prog: Record<string, Progress>; video: string | null; onOpen: (stage: string) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; label?: string; x: number; y: number }[]>([]);
@@ -313,11 +390,15 @@ function StageGraph({ status, seconds, notes, video }: {
       {nodes.map((n) => {
         const st = status[n.id] ?? "missing";
         return (
-          <div key={n.id} data-n={n.id} className={`node ${st}`} style={{ gridColumn: n.c, gridRow: n.r }} title={notes[n.id]}>
+          <div key={n.id} data-n={n.id} className={`node ${st} clickable`} style={{ gridColumn: n.c, gridRow: n.r }}
+               title={(notes[n.id] ? notes[n.id] + "\n" : "") + "点击看这一步的日志"} onClick={() => onOpen(n.id)}>
             <span className="st" /><b><span className="ord">{ORDER.indexOf(n.id) + 1}</span>{STAGE_LBL[n.id]}</b>
-            <small>{(st === "off" || st === "empty") && notes[n.id] ? notes[n.id] : STATUS_LBL[st] ?? st}
-              {st !== "off" && seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}
-              {n.id === "render" && st === "done" && notes.render ? ` · ${notes.render.split("、").length} 个文件` : ""}</small>
+            {st === "running" && prog[n.id] && prog[n.id].total > 0 ? (<>
+              <small>{prog[n.id].label || "运行中"} {pct(prog[n.id])}%</small>
+              <div className="nbar"><i style={{ width: `${pct(prog[n.id])}%` }} /></div>
+            </>) : <small>{(st === "off" || st === "empty") && notes[n.id] ? notes[n.id] : STATUS_LBL[st] ?? st}
+              {st !== "off" && st !== "running" && seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}
+              {n.id === "render" && st === "done" && notes.render ? ` · ${notes.render.split("、").length} 个文件` : ""}</small>}
           </div>
         );
       })}
@@ -343,8 +424,8 @@ function Stats() {
   );
 }
 
-function LogView({ lines }: { lines: string[] }) {
+function LogView({ lines, empty = "（运行后显示日志）" }: { lines: string[]; empty?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
-  return <div className="log" ref={ref}>{lines.length ? lines.join("\n") : "（运行后显示日志）"}</div>;
+  return <div className="log" ref={ref}>{lines.length ? lines.join("\n") : empty}</div>;
 }

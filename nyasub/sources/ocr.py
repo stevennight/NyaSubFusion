@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from rapidfuzz import fuzz
 
-from ..env import check_cancel, log
+from ..env import check_cancel, log, progress
 from ..textutil import norm
 from . import media
 
@@ -221,10 +221,11 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
             (still if t - tr.last <= max_gap else closed).append(tr)
         active = still
 
-        if t - last_report >= 120:
+        progress(t, duration, "扫描")
+        if t - last_report >= 600:  # 日志里每 10 分钟记一笔，细的进度在步骤图上
             last_report = t
             el = time.time() - t0
-            log(f"  画面字 {t / duration * 100:5.1f}%  已用 {el:.0f}s，预计还要 {el / max(t, 1) * (duration - t):.0f}s")
+            log(f"  画面字扫描到 {t / 60:.0f} 分钟，已用 {el:.0f}s，预计还要 {el / max(t, 1) * (duration - t):.0f}s")
     closed += active
     log(f"  共 {n_frames} 帧，实际 OCR {n_ocr} 帧，跟踪到 {len(closed)} 条文字轨迹")
 

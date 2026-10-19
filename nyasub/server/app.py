@@ -475,6 +475,13 @@ def create_app(token: str | None = None) -> FastAPI:
         env.log("正在停止…")
         return {"ok": True}
 
+    @app.get("/api/projects/{pid}/stages/{name}/log")
+    def get_stage_log(pid: str, name: str):
+        """某一步上次运行的日志（存在 stages/<步骤>.log）。"""
+        if name not in pipeline.DEFS:
+            raise HTTPException(404, "没有这一步")
+        return {"lines": make_run(pid).stage_log(name)}
+
     @app.get("/api/projects/{pid}/log")
     def get_log(pid: str):
         return hub.backlog.get(pid, [])

@@ -1,7 +1,7 @@
 """视觉大模型复核画面字：纠正 OCR 错字，并判断是不是实物上本来就有的字（招牌、包装…）。"""
 import os
 
-from ..env import log
+from ..env import log, progress
 
 VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张截图（按顺序编号），每张是画面上一处文字及其周围一小圈背景。
 对每张图做两件事：
@@ -21,6 +21,7 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=6):
     todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
     log(f"视觉大模型复核画面字：{len(todo)} 条")
     for i in range(0, len(todo), batch):
+        progress(i, len(todo), "复核", every=0)
         group = todo[i:i + batch]
         paths = [os.path.join(workdir, e["crop"]) for e in group]
         hint = "\n".join(f"第{j + 1}张（本地 OCR 参考）：{e['text'].replace(chr(10), ' / ')}" for j, e in enumerate(group))

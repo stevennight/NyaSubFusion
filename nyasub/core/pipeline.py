@@ -6,6 +6,7 @@
 输入指纹没变就直接复用；上游重跑但结果内容没变时，下游也不用重跑。
 """
 import os
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -126,7 +127,7 @@ class Run:
         if name == "fuse":
             return {"src": self.src}
         if name == "asr":  # 人声分离开着时才有（关着时和以前的指纹一样，不会重新识别）
-            return {"vocals": self._separation_model(), "fill_gaps": 1} if self._separate() else None
+            return {"vocals": self._separation_model(), "fill_gaps": 1, "v": 2} if self._separate() else None  # v2：按原音频判断语言
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
             return {"video": file_stamp(self.proj.video), "tracks": [
                 {"lang": t["lang"], "title": t["title"],
@@ -169,6 +170,8 @@ class Run:
             raise Cancelled()
         emit({"type": "stage", "name": name, "status": "running"})
         t = time.time()
+        outer = env.current_stage()
+        env.set_stage(name)
         try:
             result = fn()
         except Waiting:
@@ -180,6 +183,9 @@ class Run:
         except Exception as e:
             emit({"type": "stage", "name": name, "status": "failed", "error": str(e)})
             raise
+        finally:
+            self._save_stage_log(name, t)
+            env.set_stage(outer)
         save_json(self._out_path(name), result)
         rec = {"in": fp_in, "out": digest(result), "seconds": round(time.time() - t, 1)}
         save_json(self._fp_path(name), rec)
@@ -188,6 +194,19 @@ class Run:
         self.ran.append(name)
         emit({"type": "stage", "name": name, "status": "done", "seconds": rec["seconds"]})
         return result
+
+    def _save_stage_log(self, name, t0):
+        """这一步的日志存成 stages/<步骤>.log（界面上点步骤能看；程序重启后也在）。"""
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0))
+        lines = [f"# {stamp}  用时 {time.time() - t0:.0f}s"] + env.stage_lines()
+        try:
+            self.proj.stage(name + ".log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def stage_log(self, name):
+        p = self.proj.stage(name + ".log")
+        return p.read_text(encoding="utf-8").splitlines() if p.exists() else []
 
     def plan(self):
         """不运行，算出每一步的状态：done 可复用 / stale 要重做 / missing 还没跑过。界面改配置前用来预演。"""
@@ -547,9 +566,17 @@ class Run:
         t = time.time()
         segs, detected = asr.transcribe(str(self.proj / wav), c.model_dump(), whisper_lang,
                                         offset=info.get("audio_offset", 0.0), duration=info["duration"],
-                                        fill_gaps=separated, junk=lang.get(src).hallucinations if src != "auto" else ())
-        log(f"语音识别完成：{len(segs)} 段，用时 {time.time() - t:.0f}s")
-        return {"segments": segs, "language": detected}
+                                        fill_gaps=separated, junk=lang.get(src).hallucinations if src != "auto" else (),
+                                        detect_wav=self.proj / self.results["audio"]["wav"] if separated else None)
+        # 只有别的（非拉丁）文字、完全没有这种语言文字的段丢掉：日语节目里冒出的“시청해주셔서 감사합니다”
+        # （韩语的“谢谢观看”）是幻觉；英文歌词之类的拉丁字母不算
+        pack = lang.get(lang.canonical(detected) if detected else src)
+        foreign = re.compile(r"[가-힣぀-ヿ一-鿿Ѐ-ӿ؀-ۿ฀-๿]")
+        kept = [x for x in segs if pack.meaningful.search(x["text"]) or not foreign.search(x["text"])]
+        if len(kept) < len(segs):
+            log(f"去掉 {len(segs) - len(kept)} 段不是{pack.name}的语音识别结果（多半是幻觉）")
+        log(f"语音识别完成：{len(kept)} 段，用时 {time.time() - t:.0f}s")
+        return {"segments": kept, "language": detected}
 
     def _resolve_source(self, asr, subs, quiet=False):
         src = self.cfg.project.source

@@ -100,7 +100,7 @@ def test_separation_decision_and_fingerprint(sample):
     assert _run(sample, "off", [])._separate() is False
     # 不分离时语音识别的指纹和以前一样（已有项目不会因为升级重新识别）
     assert _run(sample, "auto", [{"text": "x"}])._extra("asr") is None
-    assert _run(sample, "auto", [])._extra("asr") == {"vocals": "Kim_Vocal_2", "fill_gaps": 1}
+    assert _run(sample, "auto", [])._extra("asr") == {"vocals": "Kim_Vocal_2", "fill_gaps": 1, "v": 2}
 
 
 # ---------------- 补识别：有声音但没识别出字的地方 ----------------

@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import env
-from ..env import check_cancel, log
+from ..env import check_cancel, log, progress
 
 MODEL = {
     "name": "Kim_Vocal_2", "size": 66759214,
@@ -144,9 +144,8 @@ def separate(video, out_wav, duration=0.0, gpu=False):
             dst.stdin.write(np.ascontiguousarray(out[:, :n].T).astype(np.float32).tobytes())
             done += n
             buf = buf[:, mdx.gen:]
-            if total and time.time() - last > 10:
-                last = time.time()
-                log(f"  人声分离 {min(100, done / total * 100):5.1f}%")
+            if total:
+                progress(min(done, total), total, "人声分离")
             if eof and buf.shape[1] <= mdx.trim:
                 break
         dst.stdin.close()

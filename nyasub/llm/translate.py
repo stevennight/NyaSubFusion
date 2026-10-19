@@ -5,7 +5,7 @@
 - export：把任务写成文件，交给 Claude Code 之类的助手完成，再导回（见 jobs.py）。
 """
 from .. import lang
-from ..env import log
+from ..env import log, progress
 from ..textutil import fmt_time, full_sim, sim
 from . import prompts
 
@@ -160,6 +160,7 @@ def run_api(items, cfg, cache_dir, src_code, known_terms):
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
     for i, chunk in enumerate(chunks, 1):
+        progress(i - 1, len(chunks), f"翻译 {i}/{len(chunks)} 段", every=0)
         log(f"融合翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
         prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code)
         cues, missing = apply_result(chunk, llm.chat_json(system, prompt), tgt_code, src.code)
@@ -186,6 +187,7 @@ def translate_extra(llm, cues, src, tgt_code, ref_code, gl_text, cfg, batch=40):
     todo = [c for c in cues if c["orig"]["text"]]
     for i in range(0, len(todo), batch):
         group = todo[i:i + batch]
+        progress(i, len(todo), f"翻译成{tgt.name}", every=0)
         log(f"翻译成{tgt.name}：{i + 1}~{i + len(group)} / {len(todo)}")
         res = llm.chat_json(system, prompts.extra_target_prompt(group, gl_text, src.code, ref_code))
         got = {str(x.get("id")): (x.get("tr") or "").strip() for x in res.get("items", []) or []}

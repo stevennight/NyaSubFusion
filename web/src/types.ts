@@ -91,9 +91,10 @@ export type Cfg = Record<string, any>;
 
 export interface LiveEvent {
   type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null;
-  stage?: string; done?: number; total?: number;   // type = "progress"：输出视频的进度（秒）
+  stage?: string; done?: number; total?: number; label?: string;   // type = "progress"：某一步的进度；type = "log"：stage 是写日志的步骤
 }
-export interface Progress { stage: string; done: number; total: number }
+export interface Progress { stage: string; done: number; total: number; label?: string }
+export interface LogLine { msg: string; stage?: string }
 
 export interface ComponentStatus {
   gpu: { cuda_devices: number; name: string | null; ort_cuda: boolean };
