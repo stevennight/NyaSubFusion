@@ -27,12 +27,16 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const [redoAll, setRedoAll] = useState(false);
   const [saving, setSaving] = useState(false);
   // 服务器上的配置变了（保存、运行结束后刷新）：只有没在改的时候才跟着换；正在改、还没保存的不能被冲掉
+  // 刚保存完：一定换成服务器上的（服务器会整理一下再写：去掉空值、调整顺序，和草稿逐字比较会一直显示“未保存”）
   const synced = useRef<{ pid: string | null; cfg: string }>({ pid: null, cfg: "" });
+  const adopt = useRef(false);
   useEffect(() => {
     if (!s.config) return;
     const fresh = JSON.stringify(s.config.project);
     const other = synced.current.pid !== s.pid;  // 换了项目：一定换
-    setDraft((d) => (other || JSON.stringify(d) === synced.current.cfg ? s.config!.project : d));
+    const take = other || adopt.current;
+    adopt.current = false;
+    setDraft((d) => (take || JSON.stringify(d) === synced.current.cfg ? s.config!.project : d));
     synced.current = { pid: s.pid, cfg: fresh };
   }, [s.config, s.pid]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(s.config?.project ?? {});
@@ -58,7 +62,8 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
 
   const save = async () => {
     setSaving(true);
-    try { await s.setConfig(draft); s.toast("配置已保存"); } catch (e) { s.setError((e as Error).message); } finally { setSaving(false); }
+    adopt.current = true;
+    try { await s.setConfig(draft); s.toast("配置已保存"); } catch (e) { adopt.current = false; s.setError((e as Error).message); } finally { setSaving(false); }
   };
 
   return (
