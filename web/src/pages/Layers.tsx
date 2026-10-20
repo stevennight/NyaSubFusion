@@ -18,6 +18,7 @@ export function LayersPage() {
   const eff = s.config?.effective;
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [styles, setStyles] = useState<Record<string, Style>>({});
+  const [marks, setMarks] = useState("");  // 输出前去掉的符号，空格分隔
   const [pi, setPi] = useState(0);
   const [li, setLi] = useState(0);
   const [state, setState] = useState<"saved" | "pending" | "saving">("saved");
@@ -31,6 +32,7 @@ export function LayersPage() {
     loaded.current = true;
     setProfiles(eff.render.profiles);
     setStyles(eff.render.styles);
+    setMarks(((eff.render.strip_marks as string[] | undefined) ?? ["➡"]).join(" "));
   }, [eff]);
 
   // 改动 0.5 秒后自动保存：只影响注音 / 输出，预览随之刷新
@@ -44,12 +46,13 @@ export function LayersPage() {
       try {
         let project = setIn(s.config!.project, "render.profiles", profiles);
         project = setIn(project, "render.styles", styles);
+        project = setIn(project, "render.strip_marks", marks.split(/\s+/).filter(Boolean));
         await s.setConfig(project);
         setState("saved");
       } catch (e) { s.setError((e as Error).message); setState("pending"); }
     }, 500);
     return () => clearTimeout(t);
-  }, [profiles, styles]);
+  }, [profiles, styles, marks]);
 
   const prof = profiles[pi];
   const preview = usePreview(prof?.name);
@@ -115,6 +118,9 @@ export function LayersPage() {
             <span className="lbl">排版</span>
             <div className="row"><label className="row dim"><input type="checkbox" checked={prof.avoid_hardsub} onChange={(e) => updProf({ avoid_hardsub: e.target.checked })} />避开硬字幕</label>
               最多<div className="seg">{[1, 2, 3].map((n) => <button key={n} className={prof.max_lines === n ? "on" : ""} onClick={() => updProf({ max_lines: n })}>{n}</button>)}</div>行</div>
+            <span className="lbl">去掉的符号</span>
+            <input className="inp" value={marks} placeholder="例如 ➡" title="原文、译文里出现这些符号时去掉（所有方案通用，空格分隔）。默认去掉日文字幕行尾表示“接下一条”的 ➡"
+                   onChange={(e) => setMarks(e.target.value)} />
           </div>
         </div>
 

@@ -92,7 +92,7 @@ def _iou(a, b):
 
 
 class Track:
-    __slots__ = ("id", "first", "last", "rects", "obs", "vertical", "snapshot", "rect")
+    __slots__ = ("id", "first", "last", "rects", "obs", "vertical", "snapshot", "rect", "snap_len", "snap_rect", "snap_t")
 
     def __init__(self, tid, t, d):
         self.id = tid
@@ -102,6 +102,9 @@ class Track:
         self.obs = [(d["text"], d["score"])]
         self.vertical = d["vertical"]
         self.snapshot = None
+        self.snap_len = 0
+        self.snap_rect = None  # 截图那一帧里文字的框（逐字出现的字幕，最完整时的框比中位数的框宽）
+        self.snap_t = None
 
     def add(self, t, d):
         self.last = t
@@ -211,7 +214,11 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
                 active.append(tr)
             else:
                 tr.add(t, d)
-                if tr.snapshot is None:
+                # 截图用文字最完整的一帧：字幕常有逐字出现的渐入动画，最早的几帧只有半截
+                n = len(norm(d["text"]))
+                if tr.snapshot is None or (n > tr.snap_len and d["score"] >= 0.8):
+                    tr.snap_len, tr.snap_rect, tr.snap_t = n, d["rect"], t
+                    tr.snapshot = None
                     if snap_path is None:
                         snap_path = os.path.join(frames_dir, f"f{n_frames:06d}.jpg")
                         _imwrite(snap_path, frame)
@@ -236,18 +243,41 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
         snap = ev.pop("_snapshot")
         if not snap or not os.path.exists(snap):
             continue
-        img = _imread(snap)
-        x0, y0, x1, y1 = ev["rect"]
-        lh = (y1 - y0) * H / max(1, ev["lines"]) if not ev["vertical"] else (x1 - x0) * W / max(1, ev["lines"])
-        pad = max(10, int(lh * 0.8))  # 多留点背景，方便判断是叠加字幕还是实物上的字
-        X0, Y0 = max(0, int(x0 * W) - pad), max(0, int(y0 * H) - pad)
-        X1, Y1 = min(W, int(x1 * W) + pad), min(H, int(y1 * H) + pad)
         path = os.path.join(crops_dir, f"{ev['id']}.jpg")
-        _imwrite(path, img[Y0:Y1, X0:X1])
+        save_crop(_imread(snap), ev, path)
         ev["crop"] = os.path.relpath(path, workdir).replace("\\", "/")
     if not c.get("keep_frames"):
         shutil.rmtree(frames_dir, ignore_errors=True)
     return events
+
+
+def save_crop(img, ev, path):
+    """从整帧里截出这条画面字（四周多留点背景，方便判断是叠加字幕还是实物上的字）。"""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = ev.get("crop_rect") or ev["rect"]
+    lh = (y1 - y0) * H / max(1, ev["lines"]) if not ev["vertical"] else (x1 - x0) * W / max(1, ev["lines"])
+    pad = max(10, int(lh * 0.8))
+    X0, Y0 = max(0, int(x0 * W) - pad), max(0, int(y0 * H) - pad)
+    X1, Y1 = min(W, int(x1 * W) + pad), min(H, int(y1 * H) + pad)
+    return _imwrite(path, img[Y0:Y1, X0:X1])
+
+
+def crop_at(video, ev, t, path, height=720):
+    """从视频 t 秒处重新截一张这条画面字的图（复核时发现截图只有半截时用）。"""
+    import subprocess
+
+    full = path + ".frame.jpg"
+    try:
+        subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", str(video), "-frames:v", "1",
+                        "-vf", f"scale=-2:{height}", "-q:v", "2", full], check=True, stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=60)
+        img = _imread(full)
+        return img is not None and save_crop(img, ev, path)
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(full):
+            os.remove(full)
 
 
 def _zone(rect, vertical):
@@ -396,6 +426,9 @@ def _compose(members, W, H):
     y1 = max(m["rect"][3] for m in members) / H
     rect = [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
     latest = max(members, key=lambda m: m["start"])
+    snaps = [m["tr"].snap_rect for m in members if m["tr"].snap_rect] + [m["rect"] for m in members]
+    crop_rect = [round(min(r[0] for r in snaps) / W, 4), round(min(r[1] for r in snaps) / H, 4),
+                 round(max(r[2] for r in snaps) / W, 4), round(max(r[3] for r in snaps) / H, 4)]
     return {
         "start": round(min(m["start"] for m in members), 3),
         "end": round(max(m["end"] for m in members), 3),
@@ -406,4 +439,6 @@ def _compose(members, W, H):
         "zone": _zone(rect, vertical),
         "score": round(sum(m["tr"].score() for m in members) / len(members), 3),
         "_snapshot": latest["tr"].snapshot,
+        "crop_rect": crop_rect,
+        "snap_t": latest["tr"].snap_t,
     }

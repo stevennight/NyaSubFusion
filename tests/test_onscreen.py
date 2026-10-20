@@ -57,14 +57,32 @@ def test_split_keeps_real_merges():
                      "tr": "甲｜乙"}, {"src": ["c19"], "orig": "x", "tr": "y"}]}
     cues, _ = apply_result(_items(over_speech=False), res, "zh-Hans", "ja")
     assert any(c["sources"] == ["c18", "o32"] for c in cues)
-    # 2. 台词里本来就说到了这个词：那一段是字幕的内容，不能当成画面字拆走
+    # 2. 台词里本来就说到了这个词：那一段是字幕的内容，不能当成画面字拆走；
+    #    画面上的标签本身单独成一条说明（只显示译文），台词的文字和时间不受影响
     items = [{"id": "c224", "src": "subs", "start": 1530.4, "end": 1537.5,
               "text": "網の形にちなんで四手網漁。\n昔は「虫踏み」と呼ばれていました。"},
              {"id": "o489", "src": "telop", "start": 1532.4, "end": 1538.4, "text": "虫踏み\n四手網漁", "over_speech": True}]
     res = {"cues": [{"src": ["c224", "o489"], "type": "narration",
                      "orig": "網の形にちなんで四手網漁。｜昔は「虫踏み」と呼ばれていました。", "tr": "甲｜乙"}]}
     cues, _ = apply_result(items, res, "zh-Hans", "ja")
-    assert [c["sources"] for c in cues] == [["c224", "o489"]]
+    assert [c["sources"] for c in cues] == [["c224"], ["o489"]]
+    assert cues[0]["orig"]["text"] == "網の形にちなんで四手網漁。｜昔は「虫踏み」と呼ばれていました。"
+    assert (cues[0]["start"], cues[0]["end"]) == (1530.4, 1537.5)
+    assert cues[1]["type"] == "info" and cues[1]["tr"] == {}  # 译文之后补翻
+
+
+def test_orphan_caption_split_out():
+    # 采访时画面上打出的问题概括：大模型并进了台词，但台词里没用它的内容 → 单独成一条，不再把台词的结束时间拉长
+    items = [{"id": "c145", "src": "subs", "start": 1058.4, "end": 1062.467, "text": "（取材者）シンプルな疑問として\n収穫した時に出荷しても➡"},
+             {"id": "c146", "src": "subs", "start": 1062.467, "end": 1064.801, "text": "売れるわけですよね。"},
+             {"id": "o212", "src": "telop", "start": 1061.057, "end": 1065.057, "text": "収穫して出荷したらいいのでは？", "over_speech": True}]
+    res = {"cues": [{"src": ["c145", "c146", "o212"], "type": "dialogue",
+                     "orig": "（取材者）シンプルな疑問として｜収穫した時に出荷しても売れるわけですよね。", "tr": "甲｜乙"}]}
+    cues, missing = apply_result(items, res, "zh-Hans", "ja")
+    assert not missing
+    assert [c["sources"] for c in cues] == [["c145", "c146"], ["o212"]]
+    assert cues[0]["end"] == 1064.801
+    assert cues[1]["orig"]["text"] == "収穫して出荷したらいいのでは？" and cues[1]["type"] == "info"
 
 
 def test_split_label_partly_kept_and_multi_part():

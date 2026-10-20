@@ -13,6 +13,11 @@ def glossary_system(src, tgt) -> str:
 要求：
 - 只收专有名词、有地方特色的事物、反复出现的方言词或口头禅，最多 150 条，按重要程度排序。
 - 人名、地名按{tgt.name}的惯用译法；没有惯用译法的给出合适的音译。
+- 动物、植物、食物、器物、工艺、病名这类事物，tr 用{tgt.name}里最常用、观众一看就懂的叫法；
+  有通用名就用通用名（比如鱼、虫、野菜的{tgt.name}常用名），常用名不明确时用学名 / 正式名，不要泛泛地译成上位词（“某某幼虫”“一种鱼”）。
+  当地特有的叫法、方言名：tr 写成“{tgt.name}常用名（当地叫法的音译或直译）”，note 里写清楚是什么。
+  拿不准具体物种时，按节目里的描述（样子、产地、季节）判断，并在 note 里写出依据。
+- tr 就是字幕里直接要用的写法，要简短；不要在 tr 里写长篇解释。
 - OCR 错字明显时按正确写法收录。
 - 如果提供了“已有术语表”，其中的条目不要重复输出，只补充新的。"""
 
@@ -43,7 +48,8 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict) -> str:
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
    拿不准时宁可 drop。绝不能输出“地图文字”“画面文字”之类的占位译文。
 7. 音效、画外音、歌曲按{tgt.name}字幕习惯表达，例如音效写在括号里，歌曲前加 ♪。
-8. 人名、地名、专有名词按术语表统一。
+8. 人名、地名、专有名词、动植物和食物名称严格按术语表统一；术语表里没有的，用{tgt.name}观众最熟悉的常用叫法，
+   常用叫法不明确时用学名 / 正式名，不要含糊地译成上位词。当地特有叫法第一次出现时可以在括号里简短注明，之后不再重复注释。
 9. {tgt.prompt_target_rules(tgt_opts)}"""
 
 
@@ -121,6 +127,27 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code) -> str:
     parts.append("## 本段候选条目\n" + "\n".join(item_line(it) for it in chunk))
     parts.append("请按规则输出 JSON。")
     return "\n\n".join(parts)
+
+
+def missing_system(src, tgt, context: str, tgt_opts: dict) -> str:
+    return f"""你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{context or "（未提供）"}
+你会收到几条还没有翻译的{src.name}文本（画面上打出的说明、标签、问题概括，或者漏翻的台词），每条附前后已经翻好的字幕作参考。
+请把每条翻译成{tgt.name}，输出 JSON：{{"items": [{{"id": "q12", "tr": "译文"}}]}}，每个 id 都要有且只有一条。
+画面上的说明文字译得简洁；和前后台词意思重复也照样翻译，不要省略。
+人名、地名、专有名词、动植物和食物名称按术语表统一。{tgt.prompt_target_rules(tgt_opts)}"""
+
+
+def missing_prompt(cues, idx, gl_text, tgt_code) -> str:
+    def line(c, mark=""):
+        tr = c.get("tr", {}).get(tgt_code, {}).get("text", "")
+        return f"{mark}{c['orig']['text'].replace(chr(10), ' / ')}" + (f" → {tr}" if tr else "")
+
+    blocks = []
+    for i in idx:
+        c = cues[i]
+        ctx = [line(x, "　前后文：") for x in cues[max(0, i - 2): i] + cues[i + 1: i + 3] if x.get("tr")]
+        blocks.append(f"[{c['id']}] {fmt_time(c['start'])} {line(c)}" + ("\n" + "\n".join(ctx) if ctx else ""))
+    return f"## 术语表\n{gl_text}\n\n## 待翻译\n" + "\n\n".join(blocks) + "\n\n请按要求输出 JSON。"
 
 
 def extra_target_system(src, tgt, ref, context: str, tgt_opts: dict) -> str:

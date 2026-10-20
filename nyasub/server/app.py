@@ -597,6 +597,32 @@ def create_app(token: str | None = None) -> FastAPI:
         EditStore(run.proj).add_op(split_op(cue, at))
         return _edit_result(pid, cid + "a")
 
+    @app.post("/api/projects/{pid}/cues/{cid}/pieces")
+    def cue_pieces(pid: str, cid: str, body: dict = Body(...)):
+        """“｜”分段的操作：{"action": "split", "at": k 或 "all"} 在第 k 个分界处拆成单独的字幕；
+        {"action": "join", "at": k} 把第 k 个分界前后两段合成一段。"""
+        from ..core import segments
+        from ..core.edits import piece_join_fields, piece_split_ops
+
+        run, cues = _current_cues(pid)
+        cue = next((c for c in cues if c["id"] == cid), None)
+        if not cue:
+            raise HTTPException(404, "没有这条字幕")
+        n = len(segments.pieces(cue["orig"]["text"]))
+        at = body.get("at")
+        ks = list(range(1, n)) if at == "all" else [int(at)]
+        if n < 2 or any(not 0 < k < n for k in ks):
+            raise HTTPException(400, "这条字幕没有这个分段")
+        store = EditStore(run.proj)
+        if body.get("action") == "join":
+            store.set_fields(cid, piece_join_fields(cue, ks[0]))
+            return _edit_result(pid, cid)
+        ops, first = piece_split_ops(cue, ks)
+        e = store.load()
+        e["ops"] += ops
+        store.save(e)  # 几步拆分算一次修改，撤销一次就回来
+        return _edit_result(pid, first)
+
     @app.post("/api/projects/{pid}/cues/{cid}/merge")
     def merge_cue(pid: str, cid: str):
         """和下一条合并。"""

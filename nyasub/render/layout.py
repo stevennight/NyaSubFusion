@@ -5,6 +5,7 @@
 每一行是若干块 [(文字, 注音或 None)]；没有注音的行就是一块。
 """
 from .. import lang
+from ..core import segments
 from ..env import log
 from ..lang import ruby
 
@@ -96,7 +97,10 @@ def _info_item(cue, layers, cfg):
 
 
 def _expand(cue, layers, profile, cfg, tok, seen):
-    """一条字幕 → 一条或几条（按“｜”或按长度拆），时间按主图层字数分配。"""
+    """一条字幕 → 一条或几条（按“｜”或按长度拆）。
+    时间：有 parts（每段按来源字幕算好的时间）就按段用；段内再按长度拆的、或者没有 parts 的，按主图层字数分配。
+    原文和译文的“｜”段数对不上时（大模型拿它当换行用）不按“｜”分，当成一整句按长度断。"""
+    bars = segments.bars_ok(cue)
     hidden = lambda ly: ly.role == "original" and ly.show == "auto" and cue.get("onscreen")  # 画面上已有原文硬字幕
     has_orig_shown = any(ly.role == "original" and not hidden(ly) for ly, _ in layers)
     any_tr = any(_source_of(cue, ly, code)[0] for ly, code in layers if ly.role == "translation")
@@ -109,6 +113,8 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         if not t and ly.role == "translation" and not any_tr and not has_orig_shown and not fell_back:
             t, key, code = cue["orig"]["text"], "orig", cue["orig"]["lang"]  # 一条译文都没有时显示原文（只显示一次）
             fell_back = True
+        if t and not bars:
+            t = t.replace("｜", " " if lang.get(code).word_based else "")
         if t:
             texts.append((li, ly, code, t, key))
     if not texts or all(ly.role == "transliteration" for _, ly, _, _, _ in texts):
@@ -146,10 +152,16 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         else:
             per_layer.append([pack.wrap(p, _max_chars(ly, pack, opts))[: profile.max_lines] if p else [] for p in parts])
 
+    parts = cue.get("parts") if bars else None
+    if parts and len(parts) == len(p_pieces):
+        spans = []
+        for k, (a, b) in enumerate(parts):
+            ws = [w for (kk, _), w in zip(groups, weights) if kk == k]
+            spans += [(b - a) * w / sum(ws) for w in ws]
+    else:
+        spans = [(cue["end"] - cue["start"]) * w / sum(weights) for w in weights]
     out, t0 = [], cue["start"]
-    dur = cue["end"] - cue["start"]
-    for gi, w in enumerate(weights):
-        d = dur * w / sum(weights)
+    for gi, d in enumerate(spans):
         lys = []
         for i, (li, ly, code, _, key) in enumerate(texts):
             lines = per_layer[i][gi]

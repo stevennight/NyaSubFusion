@@ -200,6 +200,8 @@ class RenderCfg(_M):
     profiles: list[ProfileCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_PROFILES))
     video: VideoOutCfg = VideoOutCfg()
     merged_debug: bool = True                # 另外输出按来源上色的原文合并字幕，方便检查
+    # 输出前从原文、译文里去掉的符号。默认去掉日文字幕行尾的“➡”（表示这句话接到下一条字幕）
+    strip_marks: list[str] = Field(default_factory=lambda: ["➡"])
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包
 
 

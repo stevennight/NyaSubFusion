@@ -55,14 +55,16 @@ DEFS = {
     "ocr": StageDef(["probe"], ["ocr.enabled", "ocr.fps", "ocr.height", "ocr.det_model", "ocr.rec_model",
                                 "ocr.min_score", "ocr.min_duration", "ocr.max_gap", "ocr.persistent_seconds",
                                 "ocr.regions", "ocr.skip_static"]),
-    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"]),
+    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=2),
+    # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=2),
+                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=3),
+    # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], [], version=1),
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=2),  # v2：去掉 ➡ 之类的符号；“｜”分段按来源算时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -610,7 +612,7 @@ class Run:
         from ..llm.refine import refine_ocr
 
         prefilter(events, self.results["probe"]["duration"], lang.get(self.src))
-        return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache")
+        return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video)
 
     def _align(self, subs, asr):
         from ..fusion.align import apply_offset, estimate_offset
@@ -761,6 +763,7 @@ class Run:
         edits = load_json(self.proj / "edits.json", {})
         cues = apply_edits(translated["cues"], edits, self.src)
         edits = normalize_edits(edits)["cues"]
+        cues = self._tidy(cues, edits)
         readings = self._readings(translated.get("glossary"))
         warned = set()
 
@@ -793,6 +796,38 @@ class Run:
         if any(tokens.values()):
             log(f"注音完成：{len(cues)} 条；读音词典 / 术语表 {len(readings)} 条；{n_guess} 条有读音待确认的专有名词")
         return {"cues": cues, "tokens": tokens}
+
+    def _tidy(self, cues, edits):
+        """去掉不要的符号（➡ 等）；整理“｜”分段：
+        - 原文和译文段数对不上（大模型拿它当换行用）、或者本来就是一屏（只有一条来源）的，去掉“｜”，排版时按长度自己断；
+          手动改过文字的条目不动。
+        - 其余的每段按来源字幕算时间（parts）。"""
+        from . import segments
+
+        marks = [m for m in self.cfg.render.strip_marks if m]
+        fused = self.results.get("fuse") or load_json(self._out_path("fuse"), {}) or {}
+        items = {i["id"]: i for i in fused.get("items", [])}
+
+        def clean(t):
+            for m in marks:
+                t = t.replace(m, "")
+            return "\n".join(l.rstrip() for l in t.split("\n")).strip()
+
+        out = []
+        for c in cues:
+            c = dict(c, orig=dict(c["orig"], text=clean(c["orig"]["text"])),
+                     tr={k: dict(v, text=clean(v.get("text", ""))) for k, v in (c.get("tr") or {}).items()})
+            c.pop("parts", None)
+            touched = "orig" in edits.get(c["id"], {}) or "tr" in edits.get(c["id"], {})
+            if "｜" in c["orig"]["text"] + "".join(v["text"] for v in c["tr"].values()) and not touched and (
+                    not segments.bars_ok(c) or segments.single_event(c, items)):
+                c["orig"]["text"] = segments.unbar(c["orig"]["text"], c["orig"]["lang"])
+                for k, v in c["tr"].items():
+                    v["text"] = segments.unbar(v["text"], k)
+            if segments.bars_ok(c):
+                c["parts"] = segments.part_times(c, items) or segments.proportional(c)
+            out.append(c)
+        return out
 
     def _render(self, cues, tokens, aspect, boxes, only=None):
         from ..render import ass, layout, srt

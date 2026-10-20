@@ -46,7 +46,9 @@ class Japanese(LanguagePack):
 
     def prompt_source_notes(self) -> str:
         return ("日文字幕习惯：外挂字幕里的（　）通常是说话人或音效，≪≫ 表示画外音，♪ 表示歌曲；"
-                "方言台词按意思理解。")
+                "方言台词按意思理解。\n"
+                "字幕行尾的“➡”表示这句话没说完、接着下一条字幕：把这几条合成一条 cue，原文、译文都按原来的字幕条用“｜”分段；"
+                "原文和译文里都不要保留“➡”。")
 
     def display(self, text, opts):
         lines = [re.sub(r"[。、\s　]+$", "", l.strip()) for l in (text or "").replace("\\N", "\n").split("\n")]

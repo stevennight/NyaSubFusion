@@ -41,6 +41,7 @@ export interface Cue {
   orig: { lang: string; text: string };
   tr: Record<string, { text: string }>;
   flags: string[]; review: "ok" | "todo";
+  parts?: [number, number][];  // 用“｜”分段时每段的时间（输出时每段单独一屏）
 }
 
 export type Seg = [string] | [string, string] | [string, string, string];

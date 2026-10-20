@@ -126,6 +126,39 @@ def split_op(cue, at):
             "tr": {code: halves(v["text"], code) for code, v in cue.get("tr", {}).items()}}
 
 
+def piece_split_ops(cue, ks):
+    """在“｜”分段的第 k 个分界处（k 从 1 起）拆成单独的字幕，文字按段切、时间用每段的时间。
+    ks 可以有几个（全部拆开）：从后往前拆，每次拆的是上一次拆出的前半条。返回 (操作列表, 拆完后第一条的 id)。"""
+    from . import segments
+
+    ps = segments.pieces(cue["orig"]["text"])
+    trs = {code: segments.pieces(v["text"]) for code, v in cue.get("tr", {}).items() if v.get("text")}
+    parts = cue.get("parts") or segments.proportional(cue)
+    ops, cid, end = [], cue["id"], len(ps)
+    for k in sorted(set(ks), reverse=True):
+        if not 0 < k < len(ps):
+            continue
+        op = {"op": "split", "id": cid, "at": parts[k][0],
+              "orig": ["｜".join(ps[:k]), "｜".join(ps[k:end])],
+              "tr": {code: ["｜".join(p[:k]), "｜".join(p[k:end])] for code, p in trs.items() if len(p) == len(ps)}}
+        ops.append(op)
+        cid, end = cid + "a", k
+    return ops, cid
+
+
+def piece_join_fields(cue, k):
+    """把第 k 个分界前后两段合成一段（去掉那个“｜”）。返回字段修改。"""
+    from . import segments
+
+    def join(text, code):
+        ps = segments.pieces(text)
+        if not 0 < k < len(ps):
+            return text
+        return "｜".join(ps[:k - 1] + [segments.joiner(code).join([ps[k - 1].strip(), ps[k].strip()])] + ps[k + 1:])
+    return {"orig": join(cue["orig"]["text"], cue["orig"]["lang"]),
+            "tr": {code: join(v["text"], code) for code, v in cue.get("tr", {}).items() if v.get("text")}}
+
+
 def next_insert_id(edits):
     n = sum(1 for op in normalize(edits)["ops"] if op.get("op") == "insert")
     return f"u{n + 1}"

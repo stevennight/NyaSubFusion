@@ -41,6 +41,8 @@ export const api = {
     call<Preview>(`/api/projects/${pid}/preview${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   editCue: (pid: string, cid: string, body: Cfg) => call<EditResult>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
   splitCue: (pid: string, cid: string, at: number) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/split`, json("POST", { at })),
+  cuePieces: (pid: string, cid: string, action: "split" | "join", at: number | "all") =>
+    call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", { action, at })),
   mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
   insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),

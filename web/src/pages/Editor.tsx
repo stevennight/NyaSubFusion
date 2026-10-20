@@ -117,7 +117,7 @@ export function EditorPage() {
                   <td><span className={`dot ${c.review}`} /></td><td className="dim">{cues.indexOf(c) + 1}</td>
                   <td className="t">{fmt(c.start)} → {fmt(c.end)}</td><td className="typ">{TYPE_LBL[c.type] ?? c.type}</td>
                   <td>{c.sources.map((x) => <span key={x} className={`badge b-${x[0]}`} style={{ marginRight: 3 }}>{SRC_LBL[x[0]]}</span>)}</td>
-                  <td className="ja">{c.orig.text}</td><td>{c.tr[target]?.text}</td>
+                  <td className="ja"><Pieces cue={c} text={c.orig.text} /></td><td><Pieces cue={c} text={c.tr[target]?.text ?? ""} /></td>
                   <td className="fl">{c.flags.map((f) => FLAG_LBL[f] ?? f).join(" · ")}</td>
                 </tr>
               ))}
@@ -128,6 +128,8 @@ export function EditorPage() {
         {selected ? <Inspector key={selected.id + JSON.stringify(selected.tr) + selected.orig.text} cue={selected} index={cues.indexOf(selected)} onStep={step}
                                time={time} prev={cues[cues.indexOf(selected) - 1]} next={cues[cues.indexOf(selected) + 1]} target={target} onHint={setHint}
                                onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
+                               onPieces={(action, at) => edit(() => api.cuePieces(s.pid!, selected.id, action, at),
+                                 action === "join" ? "已合成一段" : at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
                                onMergeUp={() => { const p = cues[cues.indexOf(selected) - 1]; setHint(null); edit(() => api.mergeNext(s.pid!, p.id), `已和上面的 #${cues.indexOf(selected)} 合并`); }}
                                onMergeDown={() => { setHint(null); edit(() => api.mergeNext(s.pid!, selected.id), `已和下面的 #${cues.indexOf(selected) + 2} 合并`); }} />
           : <div className="isec dim">点时间轴或列表里的一条字幕，在这里对照来源、修改原文 / 译文 / 读音。</div>}
@@ -136,9 +138,17 @@ export function EditorPage() {
   );
 }
 
-function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSplit, onMergeUp, onMergeDown }: {
+/** 用“｜”分段的字幕：每段一行显示（输出时每段单独一屏）。 */
+function Pieces({ cue, text }: { cue: Cue; text: string }) {
+  const ps = text.split("｜").filter((p) => p.trim());
+  if (!cue.parts || ps.length < 2) return <>{text.replace(/｜/g, "")}</>;
+  return <>{ps.map((p, i) => <div key={i} className="piece">{p}</div>)}</>;
+}
+
+function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSplit, onPieces, onMergeUp, onMergeDown }: {
   cue: Cue; index: number; onStep: (d: number) => void; time: number; prev?: Cue; next?: Cue; target: string;
-  onHint: (id: string | null) => void; onSplit: () => void; onMergeUp: () => void; onMergeDown: () => void;
+  onHint: (id: string | null) => void; onSplit: () => void; onPieces: (action: "split" | "join", at: number | "all") => void;
+  onMergeUp: () => void; onMergeDown: () => void;
 }) {
   // 合并按钮的提示：和哪一条合并、合并后的时间和文字
   const mergeTip = (a: Cue, b: Cue) =>
@@ -207,6 +217,35 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
         </div>
         {cue.flags.length > 0 && <div className="row wrap" style={{ marginTop: 8 }}>{cue.flags.map((f) => <span key={f} className="chip warn">{FLAG_LBL[f] ?? f}</span>)}</div>}
       </div>
+
+      {cue.parts && cue.parts.length > 1 && (() => {
+        const op = cue.orig.text.split("｜").filter((p) => p.trim());
+        const tp = (cue.tr[target]?.text ?? "").split("｜").filter((p) => p.trim());
+        return (
+          <div className="isec">
+            <div className="row" style={{ marginBottom: 6 }}>
+              <h3 style={{ margin: 0 }}>分段 <span className="dim" style={{ fontWeight: 400 }}>{cue.parts.length} 屏，输出时依次显示</span></h3>
+              <span className="sp" />
+              <button className="btn sm" disabled={busy} title="每段拆成一条单独的字幕，之后每条的时间都能单独调" onClick={() => onPieces("split", "all")}>全部拆开</button>
+            </div>
+            {cue.parts.map(([a, b], i) => (
+              <div key={i}>
+                {i > 0 && (
+                  <div className="piece-gap">
+                    <button className="btn sm" disabled={busy} title={`从 ${fmt(a)} 处拆成两条单独的字幕`} onClick={() => onPieces("split", i)}>✂ 从这里拆成两条</button>
+                    <button className="btn sm" disabled={busy} title={`第 ${i} 段和第 ${i + 1} 段合成一屏`} onClick={() => onPieces("join", i)}>⤒ 和上一段合成一屏</button>
+                  </div>
+                )}
+                <div className={`piece-card ${time >= a && time < b ? "cur" : ""}`}>
+                  <div className="meta">第 {i + 1} 屏 · {fmt(a)} → {fmt(b)} · {(b - a).toFixed(1)}s</div>
+                  <div className="ja">{op[i]}</div>
+                  <div>{tp[i]}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="isec">
         <h3>来源对照 <span className="dim" style={{ fontWeight: 400 }}>{cue.sources.length} 路</span></h3>

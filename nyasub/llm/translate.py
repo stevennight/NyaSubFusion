@@ -4,9 +4,11 @@
 - api：直接调 OpenAI 兼容接口（见 client.py）。
 - export：把任务写成文件，交给 Claude Code 之类的助手完成，再导回（见 jobs.py）。
 """
+from difflib import SequenceMatcher
+
 from .. import lang
 from ..env import log, progress
-from ..textutil import fmt_time, full_sim, sim
+from ..textutil import fmt_time, full_sim, norm, sim
 from . import prompts
 
 SPEECH, SCREEN = ("subs", "asr"), ("telop", "info")
@@ -61,8 +63,11 @@ def apply_result(chunk, result, tgt, src_lang):
         orig = (c.get("orig") or c.get("ja") or "").strip() or "\n".join(s["text"] for s in srcs)
         tr = (c.get("tr") or c.get("zh") or "").strip()
         srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
+        srcs, loose = split_orphans(srcs, orig)
         cues.append(make_cue(srcs, orig, tr, tgt, c.get("type"), src_lang))
         cues += [make_cue([it], o, t, tgt, "info", src_lang) for it, o, t in split]
+        # 内容没用进这条字幕的画面字：单独成一条说明（译文之后补翻），不再把台词的时间拉长
+        cues += [make_cue([it], it["text"], "", tgt, "info", src_lang) for it in loose]
     for d in result.get("drop", []) or []:
         if d in by_id:
             seen.add(d)
@@ -111,6 +116,27 @@ def split_unspoken(srcs, orig, tr):
         return srcs, orig, tr, []
     gone = {id(s) for s, _, _ in split}
     return [s for s in srcs if id(s) not in gone], "｜".join(o_parts), "｜".join(t_parts), split
+
+
+def _covered(text, by):
+    """text 有多少比例的字出现在 by 里（按至少两个字连续相同的片段算）。"""
+    a, b = norm(text), norm(by)
+    if not a:
+        return 1.0
+    blocks = SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    return sum(x.size for x in blocks if x.size >= 2) / len(a)
+
+
+def split_orphans(srcs, orig):
+    """大模型把“同一时间字幕在说别的话”的画面字并进了台词，但原文里根本没用它的内容（只是时间挨着），
+    比如采访时画面上打出的问题概括、标签、注释：拆出来单独显示。返回 (留下的来源, 拆出的画面字)。"""
+    if not any(s["src"] in SPEECH for s in srcs):
+        return srcs, []
+    text = orig.replace("｜", "")
+    loose = [s for s in srcs if s["src"] in SCREEN and s.get("over_speech") and _covered(s["text"], text) < 0.8]
+    if not loose:
+        return srcs, []
+    return [s for s in srcs if s not in loose], loose
 
 
 def fallback(chunk, missing, tgt, src_lang):
@@ -173,10 +199,37 @@ def run_api(items, cfg, cache_dir, src_code, known_terms):
             cues += fallback(chunk, missing, tgt_code, src.code)
         all_cues += sorted(cues, key=lambda x: x["start"])
     cues = finalize(all_cues)
+    translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
 
     for extra in targets[1:]:
         translate_extra(llm, cues, src, extra, tgt_code, gl_text, cfg)
     return cues, glossary
+
+
+def translate_missing(llm, cues, src, tgt_code, gl_text, cfg, batch=30):
+    """还没有译文的条目（拆出来的画面字、模型漏掉的台词）补翻一次，带前后文。"""
+    tgt = lang.get(tgt_code)
+    todo = [i for i, c in enumerate(cues) if c["orig"]["text"].strip() and not c.get("tr", {}).get(tgt_code, {}).get("text")]
+    if not todo:
+        return
+    log(f"补翻 {len(todo)} 条没有译文的字幕 / 画面字")
+    system = prompts.missing_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}))
+    for k in range(0, len(todo), batch):
+        group = todo[k:k + batch]
+        try:
+            res = llm.chat_json(system, prompts.missing_prompt(cues, group, gl_text, tgt_code))
+        except Exception as e:
+            log(f"  补翻失败，保留原文：{e}")
+            continue
+        got = {str(x.get("id")): (x.get("tr") or "").strip() for x in res.get("items", []) or []}
+        for i in group:
+            c = cues[i]
+            if got.get(c["id"]):
+                c.setdefault("tr", {})[tgt_code] = {"text": got[c["id"]]}
+                if "llm_fallback" in c["flags"]:
+                    c["flags"].remove("llm_fallback")
+            elif "llm_fallback" not in c["flags"]:
+                c["flags"].append("llm_fallback")
 
 
 def translate_extra(llm, cues, src, tgt_code, ref_code, gl_text, cfg, batch=40):
