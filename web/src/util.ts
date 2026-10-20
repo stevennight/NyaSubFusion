@@ -42,7 +42,7 @@ export function styleCss(st: Style, k: number): CSSProperties {
   if (st.shadow > 0) shadows.push(`${st.shadow * k}px ${st.shadow * k}px ${st.shadow * k * 1.5}px #000a`);
   return {
     fontFamily: `"${st.font}", "Microsoft YaHei", "Yu Gothic", sans-serif`,
-    fontSize: st.size * k,
+    fontSize: st.size * k * (st.em_scale ?? 1),
     color: st.color,
     fontWeight: st.bold ? 700 : 400,
     fontStyle: st.italic ? "italic" : "normal",

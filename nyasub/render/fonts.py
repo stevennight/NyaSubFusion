@@ -119,6 +119,11 @@ class Metrics:
     def found(self):
         return self.cmap is not None
 
+    @property
+    def em_scale(self):
+        """ASS 的字号是字体整体高度（上伸 + 下伸），浏览器的字号是 em：浏览器里要乘这个比例才和播放器里一样大。"""
+        return self.em / self.units if self.cmap else 1.0
+
     def width(self, text, size):
         if not self.cmap:
             return sum(size if ord(c) > 0x2E7F else size * 0.55 for c in text)

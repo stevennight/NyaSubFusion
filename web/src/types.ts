@@ -62,6 +62,7 @@ export interface ProjectData {
 
 export interface Style {
   font: string; size: number; color: string; outline_color: string; outline: number; shadow: number; bold: boolean; italic: boolean;
+  em_scale?: number;  // 预览用：ASS 字号是字体整体高度，浏览器字号是 em，乘上它两边才一样大
 }
 
 export interface PreviewRow { style: string; role: string; chunks: [string, string | null][]; rsize: number; rcolor: string; height: number }

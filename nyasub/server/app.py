@@ -529,7 +529,7 @@ def create_app(token: str | None = None) -> FastAPI:
     @app.get("/api/projects/{pid}/preview")
     def preview(pid: str, profile: str | None = None):
         """按输出方案排好的字幕（和导出的 ASS 同一套位置），界面直接叠在视频上。"""
-        from ..render import ass, layout
+        from ..render import ass, fonts, layout
 
         run = make_run(pid)
         run.load_state()
@@ -553,7 +553,8 @@ def create_app(token: str | None = None) -> FastAPI:
                      "rsize": r["rsize"], "rcolor": r["ly"].annotate.color, "height": r["height"]} for r in p["rows"]])
             out.append(base)
         return {"profile": prof.name, "profiles": [x.name for x in profs], "px": px, "py": py,
-                "styles": {k: v.model_dump() for k, v in used.items()}, "items": out}
+                "styles": {k: {**v.model_dump(), "em_scale": fonts.metrics(v.font).em_scale} for k, v in used.items()},
+                "items": out}
 
     def _reannotate(pid):
         run = make_run(pid)
