@@ -125,11 +125,11 @@ export function EditorPage() {
         </div>
       </div>
       <aside className="inspector">
-        {selected ? <Inspector key={selected.id + JSON.stringify(selected.tr) + selected.orig.text} cue={selected} index={cues.indexOf(selected)} onStep={step}
+        {selected ? <Inspector key={selected.id + JSON.stringify([selected.tr, selected.orig.text, selected.start, selected.end, selected.parts])} cue={selected} index={cues.indexOf(selected)} onStep={step}
                                time={time} prev={cues[cues.indexOf(selected) - 1]} next={cues[cues.indexOf(selected) + 1]} target={target} onHint={setHint}
                                onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
-                               onPieces={(action, at) => edit(() => api.cuePieces(s.pid!, selected.id, action, at),
-                                 action === "join" ? "已合成一段" : at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
+                               onPieces={(body) => edit(() => api.cuePieces(s.pid!, selected.id, body),
+                                 body.action === "join" ? "已合成一段" : body.action === "cut" ? "已分成两段" : body.at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
                                onMergeUp={() => { const p = cues[cues.indexOf(selected) - 1]; setHint(null); edit(() => api.mergeNext(s.pid!, p.id), `已和上面的 #${cues.indexOf(selected)} 合并`); }}
                                onMergeDown={() => { setHint(null); edit(() => api.mergeNext(s.pid!, selected.id), `已和下面的 #${cues.indexOf(selected) + 2} 合并`); }} />
           : <div className="isec dim">点时间轴或列表里的一条字幕，在这里对照来源、修改原文 / 译文 / 读音。</div>}
@@ -145,9 +145,13 @@ function Pieces({ cue, text }: { cue: Cue; text: string }) {
   return <>{ps.map((p, i) => <div key={i} className="piece">{p}</div>)}</>;
 }
 
+type PieceAction = { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number };
+
+const splitBars = (text: string) => text.split("｜").filter((p) => p.trim());
+
 function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSplit, onPieces, onMergeUp, onMergeDown }: {
   cue: Cue; index: number; onStep: (d: number) => void; time: number; prev?: Cue; next?: Cue; target: string;
-  onHint: (id: string | null) => void; onSplit: () => void; onPieces: (action: "split" | "join", at: number | "all") => void;
+  onHint: (id: string | null) => void; onSplit: () => void; onPieces: (body: PieceAction) => void;
   onMergeUp: () => void; onMergeDown: () => void;
 }) {
   // 合并按钮的提示：和哪一条合并、合并后的时间和文字
@@ -158,13 +162,25 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
   const canSplit = time > cue.start + 0.2 && time < cue.end - 0.2;
   const s = useStore();
   const d = s.data!;
-  const [texts, setTexts] = useState<Record<string, string>>(() => ({ orig: cue.orig.text, ...Object.fromEntries(d.targets.map((t) => [t, cue.tr[t]?.text ?? ""])) }));
-  const [alts, setAlts] = useState<string[] | null>(null);
+  // 每段：时间 + 原文 + 各译文。没分段的字幕就是一段
+  const multi = !!cue.parts && cue.parts.length > 1;
+  const segs: [number, number][] = multi ? cue.parts! : [[cue.start, cue.end]];
+  const fields = ["orig", ...d.targets];
+  const fullText = (f: string) => (f === "orig" ? cue.orig.text : cue.tr[f]?.text ?? "");
+  const piecesOf = (f: string) => {
+    if (!multi) return [fullText(f)];
+    const ps = splitBars(fullText(f));
+    return segs.map((_, i) => ps[i] ?? "");
+  };
+  const [texts, setTexts] = useState<Record<string, string[]>>(() => Object.fromEntries(fields.map((f) => [f, piecesOf(f)])));
+  const [alts, setAlts] = useState<{ orig: string; tr: string }[] | null>(null);
   const [instr, setInstr] = useState("");
   const [busy, setBusy] = useState(false);
   const [pop, setPop] = useState<{ wi: number; si: number; x: number; y: number; value: string } | null>(null);
   const items = Object.fromEntries(d.fused.items.map((it) => [it.id, it]));
   const words: Word[] = d.tokens[cue.id]?.orig ?? [];
+  const curSeg = segs.findIndex(([a, b]) => time >= a && time < b);
+  const canCut = curSeg >= 0 && time > segs[curSeg][0] + 0.2 && time < segs[curSeg][1] - 0.2;
 
   const patch = async (body: Record<string, unknown>, msg?: string) => {
     if (!s.pid) return;
@@ -173,10 +189,21 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
     catch (e) { s.setError((e as Error).message); }
     finally { setBusy(false); }
   };
-  const saveText = (key: string) => {
-    const old = key === "orig" ? cue.orig.text : cue.tr[key]?.text ?? "";
-    if (texts[key] === old) return;
-    patch(key === "orig" ? { orig: texts[key] } : { tr: { [key]: texts[key] } }, "已保存");
+  const saveText = (f: string) => {
+    const joined = multi ? texts[f].map((p) => p.trim()).join("｜") : texts[f][0];
+    if (joined === fullText(f)) return;
+    patch(f === "orig" ? { orig: joined } : { tr: { [f]: joined } }, "已保存");
+  };
+  const setPiece = (f: string, i: number, v: string) => setTexts({ ...texts, [f]: texts[f].map((p, k) => (k === i ? v : p)) });
+  // 改某段的开始 / 结束：相邻那段跟着动；第一段的开始、最后一段的结束就是整条字幕的起止
+  const saveTime = (i: number, edge: 0 | 1, v: number) => {
+    if (!Number.isFinite(v) || Math.abs(v - segs[i][edge]) < 0.006) return;  // 输入框里显示的是两位小数
+    const ps = segs.map(([a, b]) => [a, b] as [number, number]);
+    ps[i][edge] = v;
+    if (edge === 0 && i > 0) ps[i - 1][1] = v;
+    if (edge === 1 && i < ps.length - 1) ps[i + 1][0] = v;
+    if (ps.some(([a, b]) => b - a < 0.2)) { s.setError("每段至少要 0.2 秒，而且不能和相邻的段颠倒"); return; }
+    patch({ start: ps[0][0], end: ps[ps.length - 1][1], ...(multi ? { parts: ps } : {}) }, "时间已保存");
   };
   const retranslate = async () => {
     if (!s.pid) return;
@@ -205,11 +232,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
         </div>
         <div className="kv" style={{ gridTemplateColumns: "44px 1fr" }}>
           <span className="lbl">时间</span>
-          <div className="row">
-            <input className="inp" type="number" step={0.1} defaultValue={cue.start} style={{ width: 84 }} onBlur={(e) => Number(e.target.value) !== cue.start && patch({ start: Number(e.target.value) })} />→
-            <input className="inp" type="number" step={0.1} defaultValue={cue.end} style={{ width: 84 }} onBlur={(e) => Number(e.target.value) !== cue.end && patch({ end: Number(e.target.value) })} />
-            <span className="dim">{(cue.end - cue.start).toFixed(1)}s</span>
-          </div>
+          <span className="dim">{fmt(cue.start)} → {fmt(cue.end)} · {(cue.end - cue.start).toFixed(1)}s{multi ? ` · 分 ${segs.length} 段显示` : ""}</span>
           <span className="lbl">类型</span>
           <select className="inp" value={cue.type} onChange={(e) => patch({ type: e.target.value })}>
             {Object.entries(TYPE_LBL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -218,34 +241,76 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
         {cue.flags.length > 0 && <div className="row wrap" style={{ marginTop: 8 }}>{cue.flags.map((f) => <span key={f} className="chip warn">{FLAG_LBL[f] ?? f}</span>)}</div>}
       </div>
 
-      {cue.parts && cue.parts.length > 1 && (() => {
-        const op = cue.orig.text.split("｜").filter((p) => p.trim());
-        const tp = (cue.tr[target]?.text ?? "").split("｜").filter((p) => p.trim());
-        return (
-          <div className="isec">
-            <div className="row" style={{ marginBottom: 6 }}>
-              <h3 style={{ margin: 0 }}>分段 <span className="dim" style={{ fontWeight: 400 }}>{cue.parts.length} 屏，输出时依次显示</span></h3>
-              <span className="sp" />
-              <button className="btn sm" disabled={busy} title="每段拆成一条单独的字幕，之后每条的时间都能单独调" onClick={() => onPieces("split", "all")}>全部拆开</button>
-            </div>
-            {cue.parts.map(([a, b], i) => (
-              <div key={i}>
-                {i > 0 && (
-                  <div className="piece-gap">
-                    <button className="btn sm" disabled={busy} title={`从 ${fmt(a)} 处拆成两条单独的字幕`} onClick={() => onPieces("split", i)}>✂ 从这里拆成两条</button>
-                    <button className="btn sm" disabled={busy} title={`第 ${i} 段和第 ${i + 1} 段合成一屏`} onClick={() => onPieces("join", i)}>⤒ 和上一段合成一屏</button>
-                  </div>
-                )}
-                <div className={`piece-card ${time >= a && time < b ? "cur" : ""}`}>
-                  <div className="meta">第 {i + 1} 屏 · {fmt(a)} → {fmt(b)} · {(b - a).toFixed(1)}s</div>
-                  <div className="ja">{op[i]}</div>
-                  <div>{tp[i]}</div>
-                </div>
+      <div className="isec">
+        <div className="row" style={{ marginBottom: 6 }}>
+          <h3 style={{ margin: 0 }}>字幕 <span className="dim" style={{ fontWeight: 400 }}>{multi ? `${segs.length} 段，输出时依次显示` : "1 段"}</span></h3>
+          <span className="sp" />
+          <button className="btn sm" disabled={busy || !canCut} title={canCut ? `在 ${fmt(time)} 处把第 ${curSeg + 1} 段分成两段（还是同一条字幕，文字按时间比例切开，之后可以改）` : "把播放头移到某一段中间"}
+                  onClick={() => onPieces({ action: "cut", t: time })}>✂ 在播放头分段</button>
+          {multi && <button className="btn sm" disabled={busy} title="每段拆成一条单独的字幕" onClick={() => onPieces({ action: "split", at: "all" })}>全部拆成单独字幕</button>}
+        </div>
+        {segs.map(([a, b], i) => (
+          <div key={i}>
+            {i > 0 && (
+              <div className="piece-gap">
+                <button className="btn sm" disabled={busy} title={`从 ${fmt(a)} 处拆成两条单独的字幕`} onClick={() => onPieces({ action: "split", at: i })}>✂ 拆成两条字幕</button>
+                <button className="btn sm" disabled={busy} title={`第 ${i} 段和第 ${i + 1} 段合成一段（一屏）`} onClick={() => onPieces({ action: "join", at: i })}>⤒ 和上一段合并</button>
               </div>
-            ))}
+            )}
+            <div className={`piece-card ${i === curSeg ? "cur" : ""}`}>
+              <div className="row piece-time">
+                <b>第 {i + 1} 段</b>
+                <input className="inp" type="number" step={0.1} defaultValue={+a.toFixed(2)} onBlur={(e) => saveTime(i, 0, Number(e.target.value))} />→
+                <input className="inp" type="number" step={0.1} defaultValue={+b.toFixed(2)} onBlur={(e) => saveTime(i, 1, Number(e.target.value))} />
+                <span className="dim">{(b - a).toFixed(1)}s</span>
+              </div>
+              <label className="lbl">原文</label>
+              <textarea className="inp ja" rows={2} value={texts.orig[i]} onChange={(e) => setPiece("orig", i, e.target.value)} onBlur={() => saveText("orig")} />
+              {d.targets.map((t) => (
+                <div key={t}>
+                  <label className="lbl">{langName(t, s.langs)}</label>
+                  <textarea className="inp" rows={2} style={{ fontSize: 15 }} value={texts[t][i]} onChange={(e) => setPiece(t, i, e.target.value)} onBlur={() => saveText(t)} />
+                </div>
+              ))}
+            </div>
           </div>
-        );
-      })()}
+        ))}
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="btn sm" disabled={busy} onClick={retranslate} title={multi ? "整句一起重译，候选会按同样的段数分好" : "重新翻译这一句"}>↻ 整句重新翻译</button>
+          <input className="inp" style={{ flex: 1 }} placeholder="附加要求，例如：更口语一点" value={instr} onChange={(e) => setInstr(e.target.value)} />
+        </div>
+        {alts && (
+          <div className="alts">
+            {alts.length === 0 ? <div className="dim" style={{ marginTop: 8 }}>请求中…</div> : alts.map((alt) => {
+              // 分段变了（原文的“｜”位置不同）：原文一起换，每段时间按来源重新算
+              const resplit = alt.orig !== cue.orig.text;
+              const op = splitBars(alt.orig), tp = splitBars(alt.tr);
+              return (
+                <button key={alt.orig + alt.tr} onClick={() => {
+                  patch({ tr: { [d.targets[0]]: alt.tr }, ...(resplit ? { orig: alt.orig, parts: null } : {}) }, resplit ? "已替换译文并重新分段" : "已替换译文");
+                  setAlts(null);
+                }}>
+                  <div className="dim" style={{ fontSize: 11 }}>{tp.length > 1 ? `分 ${tp.length} 段` : "不分段"}{resplit ? " · 分段有调整" : ""}</div>
+                  {tp.map((p, i) => <div key={i} className="piece">{p}{resplit && op[i] && <div className="dim ja" style={{ fontSize: 11 }}>{op[i]}</div>}</div>)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {words.length > 0 && (
+        <div className="isec">
+          <h3>读音 <span className="dim" style={{ fontWeight: 400 }}>点汉字改读音</span></h3>
+          <div className="origedit">
+            {words.map((w, wi) => w.segs.map((sg, si) => (sg.length > 1
+              ? <ruby key={`${wi}-${si}`} className={w.guess ? "guess" : ""} title={w.guess ? "读音来自分词器，待确认" : ""}
+                      onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setPop({ wi, si, x: r.left, y: r.bottom + 6, value: sg[1]! }); }}>
+                  {sg[0]}<rt>{sg[1]}</rt></ruby>
+              : <span key={`${wi}-${si}`}>{sg[0]}</span>)))}
+          </div>
+        </div>
+      )}
 
       <div className="isec">
         <h3>来源对照 <span className="dim" style={{ fontWeight: 400 }}>{cue.sources.length} 路</span></h3>
@@ -263,43 +328,10 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
         })}
       </div>
 
-      <div className="isec">
-        <h3>原文 <span className="dim" style={{ fontWeight: 400 }}>点汉字改读音</span></h3>
-        {words.length > 0 && (
-          <div className="origedit">
-            {words.map((w, wi) => w.segs.map((sg, si) => (sg.length > 1
-              ? <ruby key={`${wi}-${si}`} className={w.guess ? "guess" : ""} title={w.guess ? "读音来自分词器，待确认" : ""}
-                      onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setPop({ wi, si, x: r.left, y: r.bottom + 6, value: sg[1]! }); }}>
-                  {sg[0]}<rt>{sg[1]}</rt></ruby>
-              : <span key={`${wi}-${si}`}>{sg[0]}</span>)))}
-          </div>
-        )}
-        <textarea className="inp ja" rows={2} style={{ marginTop: 6 }} value={texts.orig} onChange={(e) => setTexts({ ...texts, orig: e.target.value })} onBlur={() => saveText("orig")} />
-      </div>
-
-      <div className="isec">
-        <div className="row" style={{ marginBottom: 6 }}><h3 style={{ margin: 0 }}>译文</h3><span className="sp" />
-          <button className="btn sm" disabled={busy} onClick={retranslate}>↻ 重新翻译</button></div>
-        {d.targets.map((t) => (
-          <div key={t} className="field">
-            <label>{langName(t, s.langs)}</label>
-            <textarea className="inp" rows={2} style={{ fontSize: 15 }} value={texts[t]} onChange={(e) => setTexts({ ...texts, [t]: e.target.value })} onBlur={() => saveText(t)} />
-          </div>
-        ))}
-        <input className="inp" placeholder="重译的附加要求，例如：更口语一点" value={instr} onChange={(e) => setInstr(e.target.value)} />
-        {alts && (
-          <div className="alts">
-            {alts.length === 0 ? <div className="dim" style={{ marginTop: 8 }}>请求中…</div> : alts.map((a) => (
-              <button key={a} onClick={() => { setTexts({ ...texts, [d.targets[0]]: a }); patch({ tr: { [d.targets[0]]: a } }, "已替换译文"); setAlts(null); }}>{a}</button>
-            ))}
-          </div>
-        )}
-      </div>
-
       <div className="row wrap">
         <button className="btn pri" disabled={busy} onClick={() => patch({ review: cue.review === "ok" ? "todo" : "ok" }, cue.review === "ok" ? "已改回待审校" : "已标记为已审")}>
           {cue.review === "ok" ? "✓ 已审（点击撤销）" : "✓ 标记已审"}</button>
-        <button className="btn" disabled={busy || !canSplit} title={canSplit ? `在 ${fmt(time)} 处拆开` : "把播放头移到这条字幕中间"} onClick={onSplit}>✂ 在播放头拆分</button>
+        <button className="btn" disabled={busy || !canSplit} title={canSplit ? `在 ${fmt(time)} 处拆成两条字幕` : "把播放头移到这条字幕中间"} onClick={onSplit}>✂ 在播放头拆成两条</button>
         <button className="btn" disabled={busy || !prev} title={prev ? mergeTip(prev, cue) : "上面没有字幕"} onClick={onMergeUp}
                 onMouseEnter={() => prev && onHint(prev.id)} onMouseLeave={() => onHint(null)}>↑ 与上一条 #{index} 合并</button>
         <button className="btn" disabled={busy || !next} title={next ? mergeTip(cue, next) : "下面没有字幕"} onClick={onMergeDown}

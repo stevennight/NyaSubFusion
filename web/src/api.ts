@@ -41,15 +41,15 @@ export const api = {
     call<Preview>(`/api/projects/${pid}/preview${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   editCue: (pid: string, cid: string, body: Cfg) => call<EditResult>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
   splitCue: (pid: string, cid: string, at: number) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/split`, json("POST", { at })),
-  cuePieces: (pid: string, cid: string, action: "split" | "join", at: number | "all") =>
-    call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", { action, at })),
+  cuePieces: (pid: string, cid: string, body: { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number }) =>
+    call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", body)),
   mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
   insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
     call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),
   retranslate: (pid: string, cid: string, body: { instruction?: string; lang?: string }) =>
-    call<{ alts: string[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
+    call<{ alts: { orig: string; tr: string }[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
   exportVideo: (pid: string, mode: "mux" | "burn", profiles?: string[]) =>
     call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_video`, json("POST", { mode, profiles })),

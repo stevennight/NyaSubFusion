@@ -263,22 +263,56 @@ def add_quality_flags(cues):
     return cues
 
 
-def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruction=""):
-    """单条重译：给出 3 个候选。context 是前后几条字幕（含当前条）。"""
+def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruction="", sources=()):
+    """整句重译：给出 3 个候选 [{"orig": 分好段的原文, "tr": 分好段的译文}]。
+    分段可以保持，也可以按来源字幕的时间、停顿和每屏长度重新分（原文文字不变，只动“｜”的位置）。
+    context 是前后几条字幕（含当前条）；sources 是这条字幕的来源条目（带时间）。"""
+    from ..core import segments
     from .client import LLM
 
     llm = LLM(cfg, cache_dir=cache_dir)
     src, tgt = lang.get(src_code), lang.get(tgt_code)
-    system = (f"你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{cfg.project.context or '（未提供）'}\n"
-              f"给你一条字幕的原文、当前译文和前后文，请给出 3 个不同的{tgt.name}译文候选，按推荐程度排序。"
+    cur_orig = cue["orig"]["text"]
+    cur_tr = cue.get("tr", {}).get(tgt_code, {}).get("text", "")
+    system = (f"你是资深{src.name}→{tgt.name}影视字幕译者兼校对。节目信息：{cfg.project.context or '（未提供）'}\n"
+              f"给你一条字幕的原文、当前分段和译文、它的来源（原来的字幕 / 画面字 / 语音，带时间）和前后文，"
+              f"请给出 3 个不同的{tgt.name}译文候选，按推荐程度排序。\n"
+              "分段：一条字幕可以用“｜”分成几屏依次显示。当前分段合理就保持；不合理就重新分。"
+              "分段要对应来源里原来的换屏和说话的停顿（看来源的时间），每屏一眼读得完、不超过 2 行；"
+              "一屏放得下又没有明显停顿的不要分。原文和译文必须分成同样多段、一一对应，"
+              "原文只能调整“｜”的位置，文字一个字都不能改。不同候选的分段可以不同。\n"
               f"{tgt.prompt_target_rules(cfg.render.lang_options.get(tgt_code, {}))}\n"
-              '输出 JSON：{"alts": ["候选1", "候选2", "候选3"]}')
-    lines = []
+              '输出 JSON：{"alts": [{"orig": "用｜分好段的原文", "tr": "用｜分好同样多段的译文"}, ...]}')
+    parts = cue.get("parts") or [[cue["start"], cue["end"]]]
+    o_ps = segments.pieces(cur_orig) if len(parts) > 1 else [cur_orig]
+    t_ps = segments.pieces(cur_tr) if len(parts) > 1 else [cur_tr]
+    seg_lines = [f"第{i + 1}段 {fmt_time(a)}-{fmt_time(b)}：{o_ps[i] if i < len(o_ps) else ''}　〔{t_ps[i] if i < len(t_ps) else ''}〕"
+                 for i, (a, b) in enumerate(parts)]
+    src_lines = [f"[{prompts.SRC_LABEL.get(s['src'], s['src'])} {fmt_time(s['start'])}-{fmt_time(s['end'])}] "
+                 f"{s['text'].replace(chr(10), ' / ')}" for s in sorted(sources, key=lambda s: s["start"])]
+    ctx = []
     for c in context:
         mark = "→ 本条" if c["id"] == cue["id"] else "　 "
-        lines.append(f"{mark} {c['orig']['text'].replace(chr(10), ' / ')} ｜ 当前译文：{c.get('tr', {}).get(tgt_code, {}).get('text', '')}")
-    user = f"## 术语表\n{prompts.glossary_text(terms)}\n\n## 前后文\n" + "\n".join(lines)
+        ctx.append(f"{mark} {c['orig']['text'].replace(chr(10), ' / ')}　〔当前译文：{c.get('tr', {}).get(tgt_code, {}).get('text', '')}〕")
+    user = (f"## 术语表\n{prompts.glossary_text(terms)}\n\n## 本条当前分段\n" + "\n".join(seg_lines)
+            + ("\n\n## 本条的来源\n" + "\n".join(src_lines) if src_lines else "")
+            + "\n\n## 前后文\n" + "\n".join(ctx))
     if instruction:
         user += f"\n\n## 额外要求\n{instruction}"
     res = llm.chat_json(system, user)
-    return [a.strip() for a in res.get("alts", []) if isinstance(a, str) and a.strip()][:3]
+    out = []
+    for a in res.get("alts", []) or []:
+        if isinstance(a, str):
+            a = {"tr": a}
+        if not isinstance(a, dict) or not (a.get("tr") or "").strip():
+            continue
+        o, t = (a.get("orig") or "").strip(), a["tr"].strip()
+        if norm(o.replace("｜", "")) != norm(cur_orig.replace("｜", "")):
+            o = cur_orig  # 原文的字被改了：不采用它的原文，保持当前原文
+        if len(segments.pieces(o)) != len(segments.pieces(t)):
+            if len(segments.pieces(t)) == len(segments.pieces(cur_orig)):
+                o = cur_orig
+            else:  # 段数怎么也对不上：都不分段
+                o, t = segments.unbar(o, src_code), segments.unbar(t, tgt_code)
+        out.append({"orig": o, "tr": t})
+    return out[:3]

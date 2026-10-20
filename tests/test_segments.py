@@ -63,7 +63,7 @@ def test_piece_split_and_join():
         (0, 3, "あ", "A"), (3, 5, "い", "B"), (5, 9, "う", "C")]
     ops, _ = piece_split_ops(cue, [1])
     assert [c["orig"]["text"] for c in apply([cue], {"ops": ops})] == ["あ", "い｜う"]
-    assert piece_join_fields(cue, 2) == {"orig": "あ｜いう", "tr": {"zh-Hans": "A｜B C"}}
+    assert piece_join_fields(cue, 2) == {"orig": "あ｜いう", "tr": {"zh-Hans": "A｜B C"}, "parts": [[0, 3], [3, 9]]}
 
 
 def test_refine_truncated_reading():
@@ -72,3 +72,21 @@ def test_refine_truncated_reading():
     assert not truncated("風がこっちから来とる", "TaJ\n風がこっちから来とる")  # 只是去掉了噪点
     assert not truncated("ご飯", "ごはん")
     assert not truncated("", "マタギが奥山に行った時に")
+
+
+def test_piece_cut_and_manual_times():
+    from nyasub.core.edits import piece_cut_fields
+
+    cue = _cue("今日はいい天気ですね散歩に行きましょう", "今天天气真好 去散步吧", 0.0, 9.0)
+    f = piece_cut_fields(cue, 4.5)
+    assert f == {"orig": "今日はいい天気ですね｜散歩に行きましょう", "tr": {"zh-Hans": "今天天气真好｜去散步吧"},
+                 "parts": [[0.0, 4.5], [4.5, 9.0]]}
+    assert piece_cut_fields(cue, 0.1) is None  # 太靠边
+    # 合并时时间也跟着合
+    two = _cue(f["orig"], f["tr"]["zh-Hans"], 0.0, 9.0, parts=f["parts"])
+    assert piece_join_fields(two, 1)["parts"] == [[0.0, 9.0]]
+    # 手动调的每段时间：首尾对得上、一段接一段才用
+    assert segments.valid_parts([[0.0, 3.0], [3.0, 9.0]], two)
+    assert not segments.valid_parts([[0.0, 3.0], [3.5, 9.0]], two)
+    assert not segments.valid_parts([[0.0, 3.0], [3.0, 8.0]], two)
+    assert not segments.valid_parts([[0.0, 9.0]], two)

@@ -37,7 +37,7 @@ def _fields(cues, fields):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review"):
+        for k in ("start", "end", "type", "review", "parts"):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:
@@ -155,8 +155,40 @@ def piece_join_fields(cue, k):
         if not 0 < k < len(ps):
             return text
         return "｜".join(ps[:k - 1] + [segments.joiner(code).join([ps[k - 1].strip(), ps[k].strip()])] + ps[k + 1:])
-    return {"orig": join(cue["orig"]["text"], cue["orig"]["lang"]),
-            "tr": {code: join(v["text"], code) for code, v in cue.get("tr", {}).items() if v.get("text")}}
+    out = {"orig": join(cue["orig"]["text"], cue["orig"]["lang"]),
+           "tr": {code: join(v["text"], code) for code, v in cue.get("tr", {}).items() if v.get("text")}}
+    parts = cue.get("parts")
+    if parts and 0 < k < len(parts):
+        out["parts"] = parts[:k - 1] + [[parts[k - 1][0], parts[k][1]]] + parts[k + 1:]
+    return out
+
+
+def piece_cut_fields(cue, t):
+    """在 t 秒处把所在的那一段一分为二（同一条字幕里多一屏），文字按时间比例切。返回字段修改；t 不在某段中间返回 None。"""
+    from . import segments
+
+    parts = cue.get("parts") or [[cue["start"], cue["end"]]]
+    k = next((i for i, (a, b) in enumerate(parts) if a + 0.2 < t < b - 0.2), None)
+    if k is None:
+        return None
+    a, b = parts[k]
+    r = (t - a) / (b - a)
+
+    def cut(text, code):
+        ps = segments.pieces(text) if len(parts) > 1 else [text]
+        if len(ps) != len(parts):
+            return None
+        x, y = lang.get(code).split(ps[k].strip(), [r, 1 - r])
+        if not x.strip() or not y.strip():
+            return None
+        return "｜".join(ps[:k] + [x.strip(), y.strip()] + ps[k + 1:])
+
+    orig = cut(cue["orig"]["text"], cue["orig"]["lang"])
+    if orig is None:
+        return None
+    tr = {code: cut(v["text"], code) for code, v in cue.get("tr", {}).items() if v.get("text")}
+    return {"orig": orig, "tr": {k2: v for k2, v in tr.items() if v is not None},
+            "parts": parts[:k] + [[a, round(t, 3)], [round(t, 3), b]] + parts[k + 1:]}
 
 
 def next_insert_id(edits):

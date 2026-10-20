@@ -27,6 +27,15 @@ def bars_ok(cue):
     return all(len(pieces(t)) == n for t in trs)
 
 
+def valid_parts(parts, cue):
+    """手动调过的每段时间还能不能用：段数对得上、首尾就是这条字幕的起止、一段接一段、每段至少 0.2 秒。"""
+    if not parts or len(parts) != len(pieces(cue["orig"]["text"])):
+        return False
+    if abs(parts[0][0] - cue["start"]) > 0.01 or abs(parts[-1][1] - cue["end"]) > 0.01:
+        return False
+    return all(b - a >= 0.2 for a, b in parts) and all(abs(p[1] - q[0]) < 0.01 for p, q in zip(parts, parts[1:]))
+
+
 def joiner(code):
     """去掉“｜”时两段之间放什么：按词分隔的语言和中文（中文字幕句中停顿用空格）放空格，日文直接接上。"""
     pack = lang.get(code)

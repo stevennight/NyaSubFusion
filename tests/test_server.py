@@ -123,7 +123,14 @@ def test_media_and_retranslate(client, sample):
 
     llm_client.LLM._call = lambda self, s, u, images=None: fakellm_alts
     r = client.post(f"/api/projects/{pid}/cues/q1/retranslate", json={"instruction": "更口语"}).json()
-    assert r["alts"] == ["甲", "乙", "丙"]
+    assert [a["tr"] for a in r["alts"]] == ["甲", "乙", "丙"]  # 只给译文时原文保持不变
+    orig = r["alts"][0]["orig"]
+    # 重新分段：原文只动“｜”的位置；改了原文的字就不采用它的原文
+    flat = orig.replace("\n", "")
+    fakellm_alts["alts"] = [{"orig": flat[:4] + "｜" + flat[4:], "tr": "甲｜乙"}, {"orig": "别的字｜x", "tr": "丙｜丁"}]
+    r = client.post(f"/api/projects/{pid}/cues/q1/retranslate", json={"instruction": "分段"}).json()
+    assert r["alts"][0] == {"orig": flat[:4] + "｜" + flat[4:], "tr": "甲｜乙"}
+    assert r["alts"][1] == {"orig": orig, "tr": "丙 丁"}
 
 
 def test_token_required(sample):

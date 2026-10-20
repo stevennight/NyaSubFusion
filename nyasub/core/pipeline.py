@@ -825,7 +825,9 @@ class Run:
                 for k, v in c["tr"].items():
                     v["text"] = segments.unbar(v["text"], k)
             if segments.bars_ok(c):
-                c["parts"] = segments.part_times(c, items) or segments.proportional(c)
+                mine = edits.get(c["id"], {}).get("parts")  # 手动调过每段的时间
+                c["parts"] = ((mine if segments.valid_parts(mine, c) else None) or segments.part_times(c, items)
+                              or segments.proportional(c))
             out.append(c)
         return out
 

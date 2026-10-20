@@ -600,14 +600,21 @@ def create_app(token: str | None = None) -> FastAPI:
     @app.post("/api/projects/{pid}/cues/{cid}/pieces")
     def cue_pieces(pid: str, cid: str, body: dict = Body(...)):
         """“｜”分段的操作：{"action": "split", "at": k 或 "all"} 在第 k 个分界处拆成单独的字幕；
-        {"action": "join", "at": k} 把第 k 个分界前后两段合成一段。"""
+        {"action": "join", "at": k} 把第 k 个分界前后两段合成一段；
+        {"action": "cut", "t": 秒} 在 t 秒处把所在的那一段分成两段（还是同一条字幕）。"""
         from ..core import segments
-        from ..core.edits import piece_join_fields, piece_split_ops
+        from ..core.edits import piece_cut_fields, piece_join_fields, piece_split_ops
 
         run, cues = _current_cues(pid)
         cue = next((c for c in cues if c["id"] == cid), None)
         if not cue:
             raise HTTPException(404, "没有这条字幕")
+        if body.get("action") == "cut":
+            fields = piece_cut_fields(cue, float(body["t"]))
+            if not fields:
+                raise HTTPException(400, "播放头要在某一段中间（离两端至少 0.2 秒），而且原文、译文的段数要对得上")
+            EditStore(run.proj).set_fields(cid, fields)
+            return _edit_result(pid, cid)
         n = len(segments.pieces(cue["orig"]["text"]))
         at = body.get("at")
         ks = list(range(1, n)) if at == "all" else [int(at)]
@@ -743,8 +750,9 @@ def create_app(token: str | None = None) -> FastAPI:
             raise HTTPException(404, "没有这条字幕")
         tgt = lang.canonical(body.get("lang") or run.cfg.project.targets[0])
         terms = ((run.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
+        items = {it["id"]: it for it in (run.results.get("fuse") or {}).get("items", [])}
         alts = do(run.cfg, run.proj / "llm_cache", cues[i], cues[max(0, i - 3): i + 4], run.src, tgt, terms,
-                  body.get("instruction", ""))
+                  body.get("instruction", ""), [items[x] for x in cues[i].get("sources", []) if x in items])
         return {"alts": alts, "lang": tgt}
 
     @app.post("/api/projects/{pid}/export")
