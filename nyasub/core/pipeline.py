@@ -343,6 +343,19 @@ class Run:
             env.set_cancel(None)
         return self
 
+    def _round_stages(self):
+        """这一轮运行会经过的步骤（按“运行到”截止；输出视频只在运行到最后时才做）。"""
+        until = STAGES.index(self.opts.until)
+        out = []
+        for n in self._stage_names() + ["render"]:
+            if n in VIDEO_STAGES:
+                ok = self.opts.until == "render"
+            else:  # 画面字复核和画面字识别一起做完才停
+                ok = STAGES.index(n) <= until or (n == "ocr_refine" and self.opts.until == "ocr")
+            if ok:
+                out.append(n)
+        return out
+
     def _stop(self, name):
         return STAGES.index(name) >= STAGES.index(self.opts.until)
 
@@ -356,6 +369,7 @@ class Run:
 
     def _run(self):
         cfg, p = self.cfg, self.proj
+        emit({"type": "round", "stages": self._round_stages()})  # 界面：这一轮会走到的步骤先显示成“待执行”
         log(f"=== {p.video.name}")
         log(f"工作目录：{p.root}")
         t_all = time.time()
@@ -418,7 +432,14 @@ class Run:
         annotated = self.stage("annotate", lambda: self._annotate(translated))
         if self._stop("annotate"):
             return self._done(t_all)
-        self._render(annotated["cues"], annotated["tokens"], aspect, boxes)
+        emit({"type": "stage", "name": "render", "status": "running"})
+        t = time.time()
+        try:
+            self._render(annotated["cues"], annotated["tokens"], aspect, boxes)
+        except Exception as e:
+            emit({"type": "stage", "name": "render", "status": "failed", "error": str(e)})
+            raise
+        emit({"type": "stage", "name": "render", "status": "done", "seconds": round(time.time() - t, 1)})
         if cfg.render.video.mode != "off":
             self._video(cfg.render.video.mode)
         return self._done(t_all)

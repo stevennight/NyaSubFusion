@@ -11,7 +11,8 @@ interface Store {
   langs: LangInfo[];
   logs: LogLine[];
   stageProg: Record<string, Progress>;   // 正在跑的步骤的进度（步骤图上显示）
-  live: Record<string, StageStatus>;
+  live: Record<string, StageStatus>;      // 这一轮里各步骤的状态（还没走到的是 pending）
+  liveSec: Record<string, number>;        // 这一轮里已完成步骤的用时
   running: boolean;
   progress: Progress | null;    // 输出视频的进度
   version: number;              // 数据 / 配置变了就加一，预览据此刷新
@@ -40,6 +41,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [stageProg, setStageProg] = useState<Record<string, Progress>>({});
   const [live, setLive] = useState<Record<string, StageStatus>>({});
+  const [liveSec, setLiveSec] = useState<Record<string, number>>({});
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [version, setVersion] = useState(0);
@@ -80,6 +82,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLogs([]);
     setStageProg({});
     setLive({});
+    setLiveSec({});
   }, []);
 
   useEffect(() => { api.langs().then(setLangs).catch(() => {}); }, []);
@@ -88,8 +91,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // 实时事件
   useEffect(() => {
     if (!pid) return;
-    api.log(pid).then((evs) => setLogs(evs.filter((e) => e.type === "log").map((e) => ({ msg: e.msg ?? "", stage: e.stage })))).catch(() => {});
+    api.log(pid).then((evs) => {
+      setLogs(evs.filter((e) => e.type === "log").map((e) => ({ msg: e.msg ?? "", stage: e.stage })));
+      // 打开页面时正在运行：按这一轮的事件还原各步骤的状态（哪些已完成、哪些还待执行）
+      if (evs.some((e) => e.type === "job")) return;
+      const m: Record<string, StageStatus> = {}, sec: Record<string, number> = {};
+      for (const e of evs) {
+        if (e.type === "round") for (const n of e.stages ?? []) m[n] = "pending";
+        if (e.type === "stage" && e.name) {
+          m[e.name] = e.status as StageStatus;
+          if (e.seconds != null) sec[e.name] = e.seconds;
+        }
+      }
+      setLive(m);
+      setLiveSec(sec);
+    }).catch(() => {});
     return subscribe(pid, (e: LiveEvent) => {
+      if (e.type === "round") {  // 新一轮开始：这一轮会走到的步骤都先是“待执行”，不再显示上一轮的用时和日志
+        setLive(Object.fromEntries((e.stages ?? []).map((n) => [n, "pending" as StageStatus])));
+        setLiveSec({});
+        setStageProg({});
+      }
+      if (e.type === "stage" && e.name && e.seconds != null) setLiveSec((m) => ({ ...m, [e.name!]: e.seconds! }));
       if (e.type === "log" && e.msg) setLogs((l) => [...l.slice(-3000), { msg: e.msg!, stage: e.stage }]);
       if (e.type === "stage" && e.name) setLive((m) => ({ ...m, [e.name!]: e.status as StageStatus }));
       if (e.type === "stage" && e.status === "running") setRunning(true);  // 别处启动的运行（队列、接口）也显示成运行中
@@ -105,10 +128,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (e.type === "hello") setRunning(e.job?.status === "running");
       if (e.type === "job") {
         setRunning(false);
-        setLive({});
         setProgress(null);
         setStageProg({});
-        reload();
+        // 新的步骤状态和用时拿到以后再清掉这一轮的，免得中间闪一下上一轮的用时
+        reload().finally(() => { setLive({}); setLiveSec({}); });
         if (e.status === "failed") setError(e.error ?? "运行失败");
       }
     });
@@ -127,6 +150,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLogs([]);
     setStageProg({});
     setLive({});
+    setLiveSec({});
     setRunning(true);
     try {
       await api.run(pid, body);
@@ -158,9 +182,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [pid, toast]);
 
   const value = useMemo<Store>(() => ({
-    pid, summary, data, config, langs, logs, stageProg, live, running, progress, version, error,
+    pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
     open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

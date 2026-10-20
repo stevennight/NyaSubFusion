@@ -17,7 +17,7 @@ const ORDER = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "f
 const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"],
   ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
-const STATUS_LBL: Record<string, string> = { done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
+const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
 const ENCODERS: [string, string][] = [["auto", "自动（先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
   ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
@@ -50,7 +50,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
     const live = Object.fromEntries(Object.entries(s.live).filter(([k, v]) => !((m[k] === "off" || m[k] === "empty") && v !== "failed")));
     return { ...m, ...live };
   }, [s.summary, s.live]);
-  const seconds = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.seconds]));
+  // 用时：这一轮走过的步骤用这一轮的；还没走到（待执行）或正在跑的不显示上一轮的
+  const seconds = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage,
+    p.stage in s.liveSec ? s.liveSec[p.stage] : ["pending", "running"].includes(status[p.stage]) ? null : p.seconds]));
   const stale = (s.summary?.plan ?? []).filter((p) => !["done", "off", "empty"].includes(p.status));
   const notes: Record<string, string | undefined> = Object.fromEntries((s.summary?.plan ?? []).map((p) => [p.stage, p.note]));
   notes.render = s.summary?.render?.note ?? (s.summary?.render?.files.length ? s.summary.render.files.join("、") : undefined);
@@ -263,7 +265,9 @@ function StageLogDialog({ stage, status, seconds, note, onClose, onStage }: {
     return () => window.removeEventListener("keydown", k);
   }, []);
   const p = s.stageProg[stage];
-  const lines = live.length ? live.map((l) => (all && l.stage ? `[${STAGE_LBL[l.stage] ?? l.stage}] ${l.msg}` : l.msg)) : saved ?? [];
+  // 这一轮还没走到 / 刚开始跑：不拿上一轮的日志充数
+  const fresh = status === "pending" || status === "running";
+  const lines = live.length ? live.map((l) => (all && l.stage ? `[${STAGE_LBL[l.stage] ?? l.stage}] ${l.msg}` : l.msg)) : fresh ? [] : saved ?? [];
   return createPortal(
     <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-body log-dialog">
@@ -276,8 +280,9 @@ function StageLogDialog({ stage, status, seconds, note, onClose, onStage }: {
           {!all && <button className="btn sm ghost" onClick={() => onStage("all")}>全部日志</button>}
           <button className="btn sm" onClick={onClose}>关闭</button>
         </div>
-        {!all && !live.length && saved && saved.length > 0 && <div className="dim" style={{ fontSize: 12, marginBottom: 6 }}>上次运行这一步时的日志</div>}
-        <LogView lines={lines} empty={all ? "（还没有日志）" : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
+        {!all && !live.length && !fresh && saved && saved.length > 0 && <div className="dim" style={{ fontSize: 12, marginBottom: 6 }}>上次运行这一步时的日志</div>}
+        <LogView lines={lines} empty={all ? "（还没有日志）" : status === "pending" ? "这一轮还没运行到这一步" : status === "running" ? "运行中…"
+          : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
       </div>
     </div>, document.body);
 }

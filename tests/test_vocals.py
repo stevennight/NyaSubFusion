@@ -127,3 +127,21 @@ def test_second_pass_filters_junk():
     assert not asr._keep(_Seg(0, 0.3, -0.5), "サクッ", junk)                # 极短的碎片
     assert not asr._keep(_Seg(0, 2, -0.95), "ていた", junk)                 # 置信度太低
     assert asr._keep(_Seg(0, 2, -0.5), "お疲れ様でした、先輩", junk)        # 只有整段等于幻觉句才丢
+
+
+# ---------------- 界面：一轮运行开始时先报这一轮会经过哪些步骤 ----------------
+def test_round_event_lists_stages_of_this_run(sample):
+    from nyasub import env
+
+    cfg, _ = config.load(None, None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    evs = []
+    env.on_event(evs.append)
+    try:
+        pipeline.Run(sample, cfg, pipeline.Options(until="subs")).run()
+    finally:
+        env.off_event(evs.append)
+    first = next(e for e in evs if e.get("type") in ("round", "stage"))
+    assert first == {"type": "round", "stages": ["probe", "audio", "subs"]}
+    r = pipeline.Run(sample, cfg, pipeline.Options(until="ocr"))
+    assert r._round_stages()[-2:] == ["ocr", "ocr_refine"]
+    assert pipeline.Run(sample, cfg, pipeline.Options())._round_stages()[-1] == "render"

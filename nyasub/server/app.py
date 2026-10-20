@@ -102,6 +102,7 @@ class Hub:
         self.subs: dict[str, set] = {}
         self.jobs: dict[str, Job] = {}
         self.backlog: dict[str, list] = {}
+        self.rounds: dict[str, dict] = {}  # 每个项目这一轮的步骤（日志多了 backlog 会截掉开头，单独留一份）
         self.threads: dict[int, str] = {}  # 线程 → 项目
         env.on_event(self._on_event)
 
@@ -114,6 +115,8 @@ class Hub:
         ev = dict(ev, t=round(time.time(), 3))
         log = self.backlog.setdefault(pid, [])
         log.append(ev)
+        if ev.get("type") == "round":
+            self.rounds[pid] = ev
         del log[:-2000]
         if self.loop:
             for q in list(self.subs.get(pid, ())):
@@ -127,6 +130,7 @@ class Hub:
         job.cancel = cancel
         self.jobs[pid] = job
         self.backlog[pid] = []
+        self.rounds.pop(pid, None)
 
         def run():
             self.threads[threading.get_ident()] = pid
@@ -484,7 +488,10 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.get("/api/projects/{pid}/log")
     def get_log(pid: str):
-        return hub.backlog.get(pid, [])
+        """这一轮的事件（日志、步骤状态、进度）。开头被截掉时补上这一轮的步骤列表。"""
+        evs = hub.backlog.get(pid, [])
+        r = hub.rounds.get(pid)
+        return ([r] if r and evs and r not in evs and r["t"] <= evs[0]["t"] else []) + evs
 
     @app.websocket("/ws/projects/{pid}")
     async def ws(socket: WebSocket, pid: str):

@@ -149,6 +149,7 @@ class Queue:
             job = Job(pid)
             self.hub.jobs[pid] = job  # 项目页能看到“运行中”，也挡住同时的手动运行
             self.hub.backlog[pid] = []
+            self.hub.rounds.pop(pid, None)
             self._changed()
         tid = threading.get_ident()
         self.hub.threads[tid] = pid

@@ -1,6 +1,6 @@
 // 与内核接口对应的数据类型（只写界面用到的字段）
 
-export type StageStatus = "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting" | "cancelled" | "off" | "empty";
+export type StageStatus = "pending" | "done" | "stale" | "missing" | "running" | "cached" | "failed" | "waiting" | "cancelled" | "off" | "empty";
 
 export interface PlanItem { stage: string; status: StageStatus; seconds?: number | null; note?: string }
 
@@ -94,6 +94,7 @@ export type Cfg = Record<string, any>;
 export interface LiveEvent {
   type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null;
   stage?: string; done?: number; total?: number; label?: string;   // type = "progress"：某一步的进度；type = "log"：stage 是写日志的步骤
+  stages?: string[];   // type = "round"：这一轮运行会经过的步骤
 }
 export interface Progress { stage: string; done: number; total: number; label?: string }
 export interface LogLine { msg: string; stage?: string }

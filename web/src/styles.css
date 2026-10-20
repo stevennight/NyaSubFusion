@@ -100,6 +100,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .node .st { position: absolute; right: 8px; top: 9px; width: 9px; height: 9px; border-radius: 50%; background: #555 }
 .node.done .st, .node.cached .st { background: var(--ok) }
 .node.stale { border-color: #ffc35a99; background: #2a2516 } .node.stale .st { background: var(--warn) }
+.node.pending { border-style: dashed; opacity: .75 } .node.pending .st { background: transparent; border: 1.5px solid var(--tx3) }
 .node.running { border-color: var(--acc2) } .node.running .st { background: var(--acc2); animation: pulse 1s infinite }
 .node.failed { border-color: var(--bad) } .node.failed .st { background: var(--bad) }
 .node.waiting .st { background: var(--acc) }
