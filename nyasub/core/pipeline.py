@@ -64,7 +64,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=2),  # v2：去掉 ➡ 之类的符号；“｜”分段按来源算时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=3),  # v3：说明类位置按主要来源算；去掉“ / ”  # v2：去掉 ➡ 之类的符号；“｜”分段按来源算时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -832,13 +832,26 @@ class Run:
         def clean(t):
             for m in marks:
                 t = t.replace(m, "")
+            # “ / ”是给大模型看的换行标记（提示词里把来源的换行写成“ / ”），大模型有时照抄进结果：换回换行
+            t = t.replace(" / ", "\n")
             return "\n".join(l.rstrip() for l in t.split("\n")).strip()
+
+        from ..llm.translate import info_geometry
 
         out = []
         for c in cues:
             c = dict(c, orig=dict(c["orig"], text=clean(c["orig"]["text"])),
                      tr={k: dict(v, text=clean(v.get("text", ""))) for k, v in (c.get("tr") or {}).items()})
             c.pop("parts", None)
+            mine = edits.get(c["id"], {})
+            if c.get("type") in ("info", "name", "title") and mine.get("rect") is None:  # 手动选过位置的不动（None = 改回自动）
+                # 说明类的位置按主要那条画面字算（旧结果里可能并上了画面另一处误认的字）；手动调过时间的不动时间
+                srcs = [items[s] for s in c.get("sources", []) if s in items]
+                geo = info_geometry(srcs)
+                if geo:
+                    c["rect"] = geo["rect"]
+                    if srcs and all(s["src"] in ("telop", "info") for s in srcs) and "start" not in mine and "end" not in mine:
+                        c["start"], c["end"] = geo["start"], geo["end"]
             touched = "orig" in edits.get(c["id"], {}) or "tr" in edits.get(c["id"], {})
             if "｜" in c["orig"]["text"] + "".join(v["text"] for v in c["tr"].values()) and not touched and (
                     not segments.bars_ok(c) or segments.single_event(c, items)):

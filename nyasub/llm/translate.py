@@ -34,9 +34,12 @@ def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
            "type": typ or "dialogue", "sources": [s["id"] for s in srcs],
            "onscreen": any(s["src"] in ("telop", "info") for s in srcs),
            "orig": {"lang": src_lang, "text": orig}, "tr": {tgt: {"text": tr}} if tr else {}}
-    rects = [s["rect"] for s in srcs if s.get("rect")]
-    if cue["type"] in ("info", "name", "title") and rects:  # 几个画面字合成一条时（标题分成两行识别），取并集
-        cue["rect"] = [min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects)]
+    if cue["type"] in ("info", "name", "title"):
+        geo = info_geometry(srcs)
+        if geo:
+            cue["rect"] = geo["rect"]
+            if all(s["src"] in SCREEN for s in srcs):  # 只有画面字时，时间也只看主要的那几条
+                cue["start"], cue["end"] = geo["start"], geo["end"]
     flags = []
     if all(s["src"] == "asr" for s in srcs):
         flags.append("asr_only")
@@ -48,6 +51,33 @@ def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
         flags.append("llm_fallback")
     cue["flags"] = flags
     return cue
+
+
+def info_geometry(srcs):
+    """说明类字幕的位置和时间：以最主要的那条画面字（置信度 × 面积最大）为准，
+    只并上挨着它的（标题分成两行识别的情况）；离得远的（画面另一处被误认成同样文字的）不算，
+    否则位置会取到两处之间、时间也被拉长。返回 {"rect", "start", "end"}，没有位置返回 None。"""
+    rs = [s for s in srcs if s.get("rect")]
+    if not rs:
+        return None
+    area = lambda r: max(1e-6, (r[2] - r[0]) * (r[3] - r[1]))
+    best = max(rs, key=lambda s: s.get("ocr_score", 1) * area(s["rect"]))
+
+    def near(r, b):
+        gap = max(b[3] - b[1], r[3] - r[1], 0.02) * 1.5  # 相隔不超过一行半
+        same_row = min(r[3], b[3]) - max(r[1], b[1]) >= 0.5 * min(r[3] - r[1], b[3] - b[1])  # 同一行左右两段（“制作・著作　NHK”）
+        return same_row or (r[0] < b[2] + gap and b[0] < r[2] + gap and r[1] < b[3] + gap and b[1] < r[3] + gap)
+
+    group, rest = [best], [s for s in rs if s is not best]
+    while True:  # 挨着组里任何一条的都并进来（竖着叠了三段的台标：上段挨中段、中段挨下段）
+        add = [s for s in rest if any(near(s["rect"], g["rect"]) for g in group)]
+        if not add:
+            break
+        group += add
+        rest = [s for s in rest if s not in add]
+    return {"rect": [min(s["rect"][0] for s in group), min(s["rect"][1] for s in group),
+                     max(s["rect"][2] for s in group), max(s["rect"][3] for s in group)],
+            "start": min(s["start"] for s in group), "end": max(s["end"] for s in group)}
 
 
 def apply_result(chunk, result, tgt, src_lang):

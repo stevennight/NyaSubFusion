@@ -237,6 +237,25 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
           <select className="inp" value={cue.type} onChange={(e) => patch({ type: e.target.value })}>
             {Object.entries(TYPE_LBL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          {["info", "name", "title"].includes(cue.type) && (() => {
+            // 说明类显示在哪：默认跟着最主要的那条画面字；识别错了可以改成跟着另一条，或者放到画面顶部
+            const TOP = [0.3, 0.01, 0.7, 0.05];
+            const same = (a?: number[], b?: number[]) => JSON.stringify(a) === JSON.stringify(b);
+            const srcs = cue.sources.map((id) => items[id]).filter((it) => it?.rect);
+            const value = same(cue.rect, TOP) ? "top" : srcs.find((it) => same(it.rect, cue.rect))?.id ?? "auto";
+            return (<>
+              <span className="lbl">位置</span>
+              <select className="inp" value={value} title="显示在画面上哪里（输出时译文贴在这处画面字旁边）"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        patch({ rect: v === "auto" ? null : v === "top" ? TOP : items[v].rect }, "位置已更改");
+                      }}>
+                <option value="auto">自动（跟着最主要的画面字）</option>
+                {srcs.map((it) => <option key={it.id} value={it.id}>跟着 {it.id}：{it.text.replace(/\n/g, " ").slice(0, 16)}</option>)}
+                <option value="top">画面顶部</option>
+              </select>
+            </>);
+          })()}
         </div>
         {cue.flags.length > 0 && <div className="row wrap" style={{ marginTop: 8 }}>{cue.flags.map((f) => <span key={f} className="chip warn">{FLAG_LBL[f] ?? f}</span>)}</div>}
       </div>

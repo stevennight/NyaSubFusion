@@ -4,7 +4,7 @@ import re
 from difflib import SequenceMatcher
 
 from ..env import check_cancel, log, progress
-from ..textutil import norm, sim
+from ..textutil import full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
@@ -42,7 +42,29 @@ def _ask(llm, group, paths):
         got = [{"text": t} for t in res.get("texts", [])]
     if len(got) != len(group):
         raise ValueError(f"返回 {len(got)} 条，应为 {len(group)} 条")
-    return [g if isinstance(g, dict) else {"text": g} for g in got]
+    got = [g if isinstance(g, dict) else {"text": g} for g in got]
+    for j in borrowed(group, got):
+        log(f"  {group[j]['id']}：复核结果和同一批另一张图的字一样、和本地识别对不上（串图了），保留本地结果")
+        got[j] = {}
+    return got
+
+
+def borrowed(group, got):
+    """同一批里，某张图的复核结果其实是另一张图上的字（模型串图了）：返回这些图的序号。
+    判断：结果和别的图的字（本地识别或复核结果）几乎一样，和自己的本地识别却对不上，而两张图本地识别的字本来也不一样。"""
+    local = [e.get("text_local", e["text"]) for e in group]
+    texts = [(g.get("text") or "").replace(" / ", "\n") for g in got]
+    out = []
+    for j, t in enumerate(texts):
+        mine = norm(local[j])
+        # 本地只认出一两个字（或者复核结果里包含本地认出的字）时，复核补全是正常的，不算串图
+        if not norm(t) or len(mine) < 3 or mine in norm(t) or sim(t, local[j]) >= 50:
+            continue
+        for k in range(len(group)):
+            if k != j and full_sim(local[j], local[k]) < 50 and max(full_sim(t, local[k]), full_sim(t, texts[k])) >= 85:
+                out.append(j)
+                break
+    return out
 
 
 def _apply(e, g):

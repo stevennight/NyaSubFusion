@@ -37,7 +37,7 @@ def _fields(cues, fields):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review", "parts"):
+        for k in ("start", "end", "type", "review", "parts", "rect"):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:

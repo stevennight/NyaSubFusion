@@ -122,3 +122,27 @@ def test_info_translation_avoids_other_screen_text():
     top = p["y"] - h if p["an"] in (1, 2, 3) else p["y"]
     assert top + h <= 0.55 * py or top >= 0.8 * py  # 没有压到另一个框
     assert 0 <= top and top + h <= py
+
+
+def test_info_position_ignores_far_stray_source():
+    from nyasub.llm.translate import info_geometry
+
+    # 画面右边缘一小块误认成同样文字的（o213）不能把位置拉到画面中间、把时间提前
+    stray = {"id": "o213", "src": "info", "start": 675.474, "end": 678.14, "rect": [0.9699, 0.4229, 0.9992, 0.4486], "ocr_score": 0.703}
+    title = {"id": "o217", "src": "info", "start": 679.14, "end": 686.474, "rect": [0.0152, 0.8389, 0.3352, 0.9986], "ocr_score": 0.958}
+    assert info_geometry([stray, title]) == {"rect": title["rect"], "start": 679.14, "end": 686.474}
+    # 竖着叠的三段台标、同一行左右两段：都并在一起
+    logo = [{"id": "a", "start": 0, "end": 5, "rect": [0.075, 0.5375, 0.2117, 0.6375]},
+            {"id": "b", "start": 0, "end": 5, "rect": [0.0516, 0.7458, 0.2359, 0.7833]},
+            {"id": "c", "start": 0, "end": 5, "rect": [0.0844, 0.8882, 0.2129, 0.9819]}]
+    assert info_geometry(logo)["rect"] == [0.0516, 0.5375, 0.2359, 0.9819]
+    credit = [{"id": "a", "start": 0, "end": 5, "rect": [0.07, 0.83, 0.3, 0.9]}, {"id": "b", "start": 0, "end": 5, "rect": [0.78, 0.83, 0.98, 0.9]}]
+    assert info_geometry(credit)["rect"] == [0.07, 0.83, 0.98, 0.9]
+
+
+def test_refine_rejects_reading_copied_from_another_image():
+    from nyasub.llm.refine import borrowed
+
+    group = [{"id": "o213", "text": "的精切日手的梯切目"}, {"id": "o217", "text": "冬を食べるワニ"}, {"id": "o1010", "text": "近"}]
+    got = [{"text": "冬を食べる ワニ"}, {"text": "冬を食べるワニ"}, {"text": "米沢市 / 近藤"}]
+    assert borrowed(group, got) == [0]  # 只认出一个字的补全不算串图
