@@ -286,3 +286,6 @@ table.tb { width: 100%; border-collapse: collapse }
 .piece-time { gap: 6px }
 .piece-time input.tm { width: 112px; font-variant-numeric: tabular-nums; padding-left: 6px; padding-right: 6px }
 .alts .piece + .piece { border-top: 1px dashed #3a3a48; margin-top: 2px; padding-top: 2px }
+.piece-opts { gap: 6px; margin-top: 6px; flex-wrap: wrap }
+.piece-opts .lbl { font-size: 11px; color: var(--tx3) }
+.piece-opts select { width: auto; flex: 1; min-width: 0; padding-top: 3px; padding-bottom: 3px; font-size: 12px }

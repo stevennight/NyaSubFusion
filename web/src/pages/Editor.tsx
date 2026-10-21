@@ -177,11 +177,14 @@ export function EditorPage() {
         </div>
       </div>
       <aside className="inspector">
-        {selected ? <Inspector key={selected.id + JSON.stringify([selected.tr, selected.orig.text, selected.start, selected.end, selected.parts])} cue={selected} index={cues.indexOf(selected)} onStep={step}
+        {selected ? <Inspector key={selected.id + JSON.stringify([selected.tr, selected.orig.text, selected.start, selected.end, selected.parts, selected.parts_type, selected.parts_show])} cue={selected} index={cues.indexOf(selected)} onStep={step}
                                time={time} prev={cues[cues.indexOf(selected) - 1]} next={cues[cues.indexOf(selected) + 1]} target={target} onHint={setHint}
                                onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
                                onPieces={(body) => edit(() => api.cuePieces(s.pid!, selected.id, body),
-                                 body.action === "join" ? "已合成一段" : body.action === "cut" ? "已分成两段" : body.at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
+                                 body.action === "join" ? "已合成一段" : body.action === "cut" ? "已分成两段"
+                                   : body.action === "show" ? "已更改这一段的原文显示"
+                                   : body.action === "type" ? (["info", "name", "title"].includes(body.type ?? "") ? "这一段已拆成单独的说明" : "已更改这一段的类型")
+                                   : body.at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
                                onMergeUp={() => { const p = cues[cues.indexOf(selected) - 1]; setHint(null); edit(() => api.mergeNext(s.pid!, p.id), `已和上面的 #${cues.indexOf(selected)} 合并`); }}
                                onMergeDown={() => { setHint(null); edit(() => api.mergeNext(s.pid!, selected.id), `已和下面的 #${cues.indexOf(selected) + 2} 合并`); }} />
           : <div className="isec dim">点时间轴或列表里的一条字幕，在这里对照来源、修改原文 / 译文 / 读音。</div>}
@@ -197,7 +200,8 @@ function Pieces({ cue, text }: { cue: Cue; text: string }) {
   return <>{ps.map((p, i) => <div key={i} className="piece">{p}</div>)}</>;
 }
 
-type PieceAction = { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number };
+type PieceAction = { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number }
+  | { action: "type"; seg: number; type: string | null } | { action: "show"; seg: number; show: "on" | "off" | null };
 
 const splitBars = (text: string) => text.split("｜").filter((p) => p.trim());
 
@@ -350,6 +354,29 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
                 <TimeInput value={b} onCommit={(v) => saveTime(i, 1, v)} />
                 <span className="dim">{(b - a).toFixed(1)}s</span>
               </div>
+              {multi && (() => {
+                // 这一段单独的类型 / 原文显示；不设就跟随整条（上面的“类型”“原文”）
+                const ty = cue.parts_type?.[i] ?? "";
+                const sh = cue.parts_show?.[i] ?? "";
+                const autoOn = cue.show_orig ? (cue.show_orig === "on" ? "显示" : "不显示")
+                  : (cue.parts_onscreen?.[i] ? "画面上已有，不显示" : "显示");
+                return (
+                  <div className="row piece-opts">
+                    <span className="lbl">类型</span>
+                    <select className="inp" value={ty} onChange={(e) => onPieces({ action: "type", seg: i, type: e.target.value || null })}>
+                      <option value="">跟随整条（{TYPE_LBL[cue.type] ?? cue.type}）</option>
+                      {["dialogue", "narration", "song", "sfx"].map((k) => <option key={k} value={k}>{TYPE_LBL[k]}</option>)}
+                      <option value="info">说明（拆成单独一条）</option>
+                    </select>
+                    <span className="lbl">原文</span>
+                    <select className="inp" value={sh} onChange={(e) => onPieces({ action: "show", seg: i, show: (e.target.value || null) as "on" | "off" | null })}>
+                      <option value="">跟随整条（{autoOn}）</option>
+                      <option value="on">显示</option>
+                      <option value="off">不显示</option>
+                    </select>
+                  </div>
+                );
+              })()}
               <label className="lbl">原文</label>
               <textarea className="inp ja" rows={2} value={texts.orig[i]} onChange={(e) => setPiece("orig", i, e.target.value)} onBlur={() => saveText("orig")} />
               {d.targets.map((t) => (

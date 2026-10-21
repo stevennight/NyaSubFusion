@@ -873,6 +873,10 @@ class Run:
                 if not long:
                     for k, v in c["tr"].items():
                         v["text"] = segments.unbar(v["text"], k)
+            n_pieces = len(segments.pieces(c["orig"]["text"]))
+            for key in ("parts_type", "parts_show"):  # 每段单独的设置：段数变了就不再适用
+                if c.get(key) is not None and (len(c[key]) != n_pieces or n_pieces < 2):
+                    c.pop(key)
             if segments.bars_ok(c):
                 mine = edits.get(c["id"], {}).get("parts")  # 手动调过每段的时间
                 c["parts"] = ((mine if segments.valid_parts(mine, c) else None) or segments.part_times(c, items)

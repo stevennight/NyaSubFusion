@@ -37,7 +37,7 @@ def _fields(cues, fields):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig"):
+        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig") + tuple(SEG_KEYS):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:
@@ -46,6 +46,28 @@ def _fields(cues, fields):
             c["tr"][code] = {"text": text}
         out.append(c)
     return out
+
+
+# 每段单独的设置（列表，一段一个，None = 跟随整条）→ 只剩一段时对应的整条设置
+SEG_KEYS = {"parts_type": "type", "parts_show": "show_orig"}
+
+
+def _seg_lists(c, a, b, n_a):
+    """拆成两条时，每段的设置跟着各自的段走；拆出来只剩一段的，变成那一条的整条设置。"""
+    from . import segments
+
+    n = len(segments.pieces(c["orig"]["text"]))
+    for key, whole in SEG_KEYS.items():
+        lst = c.get(key)
+        for part, sub in ((a, (lst or [])[:n_a]), (b, (lst or [])[n_a:])):
+            part.pop(key, None)
+            if not lst or len(lst) != n:
+                continue
+            if len(sub) == 1:
+                if sub[0] is not None:
+                    part[whole] = sub[0]
+            elif any(x is not None for x in sub):
+                part[key] = sub
 
 
 def _split(cues, op):
@@ -62,6 +84,9 @@ def _split(cues, op):
         for code, halves in (op.get("tr") or {}).items():
             a["tr"][code], b["tr"][code] = {"text": halves[0]}, {"text": halves[1]}
         a["review"] = b["review"] = "todo"
+        from . import segments
+
+        _seg_lists(c, a, b, len(segments.pieces(oa)) or 1)
         out += [a, b]
     return out
 
@@ -160,6 +185,10 @@ def piece_join_fields(cue, k):
     parts = cue.get("parts")
     if parts and 0 < k < len(parts):
         out["parts"] = parts[:k - 1] + [[parts[k - 1][0], parts[k][1]]] + parts[k + 1:]
+    for key in SEG_KEYS:  # 合成的那段沿用前一段的设置（前一段没设就用后一段的）
+        lst = cue.get(key)
+        if lst and 0 < k < len(lst):
+            out[key] = lst[:k - 1] + [lst[k - 1] if lst[k - 1] is not None else lst[k]] + lst[k + 1:]
     return out
 
 
@@ -187,8 +216,30 @@ def piece_cut_fields(cue, t):
     if orig is None:
         return None
     tr = {code: cut(v["text"], code) for code, v in cue.get("tr", {}).items() if v.get("text")}
-    return {"orig": orig, "tr": {k2: v for k2, v in tr.items() if v is not None},
-            "parts": parts[:k] + [[a, round(t, 3)], [round(t, 3), b]] + parts[k + 1:]}
+    out = {"orig": orig, "tr": {k2: v for k2, v in tr.items() if v is not None},
+           "parts": parts[:k] + [[a, round(t, 3)], [round(t, 3), b]] + parts[k + 1:]}
+    for key, whole in SEG_KEYS.items():  # 分出来的两段沿用原来那段的设置
+        lst = cue.get(key) if len(parts) > 1 else [cue.get(whole) if key == "parts_show" else None]
+        if lst and len(lst) == len(parts) and any(x is not None for x in lst):
+            out[key] = lst[:k] + [lst[k], lst[k]] + lst[k + 1:]
+    return out
+
+
+def piece_isolate_ops(cue, seg):
+    """把第 seg 段（从 0 起）单独拆成一条：返回 (操作列表, 那一条的 id)。"""
+    from . import segments
+
+    n = len(segments.pieces(cue["orig"]["text"]))
+    ks = [k for k in (seg, seg + 1) if 0 < k < n]
+    ops, _ = piece_split_ops(cue, ks)
+    cid = cue["id"]
+    if len(ks) == 2:
+        return ops, cid + "ab"
+    if ks == [seg]:      # 最后一段：拆出的后半条
+        return ops, cid + "b"
+    if ks == [seg + 1]:  # 第一段：拆出的前半条
+        return ops, cid + "a"
+    return ops, cid
 
 
 def next_insert_id(edits):

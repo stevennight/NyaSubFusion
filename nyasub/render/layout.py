@@ -101,10 +101,24 @@ def _expand(cue, layers, profile, cfg, tok, seen):
     时间：有 parts（每段按来源字幕算好的时间）就按段用；段内再按长度拆的、或者没有 parts 的，按主图层字数分配。
     原文和译文的“｜”段数对不上时（大模型拿它当换行用）不按“｜”分，当成一整句按长度断。"""
     bars = segments.bars_ok(cue)
-    # 原文要不要显示：审校时手动指定的优先（show_orig = on / off）；否则画面上已有原文硬字幕时不显示
+    n_seg = len(segments.pieces(cue["orig"]["text"])) if bars else 0
+    per_seg = lambda key: cue.get(key) if n_seg and len(cue.get(key) or []) == n_seg else None
+    seg_show, seg_type, pon = per_seg("parts_show"), per_seg("parts_type"), per_seg("parts_onscreen")
     force = cue.get("show_orig") if cue.get("show_orig") in ("on", "off") else None
-    hidden = lambda ly: ly.role == "original" and (
-        force == "off" or (force is None and ly.show == "auto" and cue.get("onscreen")))
+
+    def orig_hidden(ly, k=None):
+        """原文要不要显示（k = 第几段，None = 整条）：这一段手动指定的 > 整条手动指定的 > 画面上已有原文硬字幕就不显示。"""
+        if ly.role != "original":
+            return False
+        f = (seg_show[k] if seg_show and k is not None else None) or force
+        if f in ("on", "off"):
+            return f == "off"
+        if ly.show != "auto":
+            return False
+        return bool(pon[k]) if pon and k is not None else bool(cue.get("onscreen"))
+
+    # 整条都不显示原文时这一层整个跳过；有一段要显示就保留，到每一屏再按段决定
+    hidden = lambda ly: all(orig_hidden(ly, k) for k in range(n_seg)) if n_seg else orig_hidden(ly)
     has_orig_shown = any(ly.role == "original" and not hidden(ly) for ly, _ in layers)
     any_tr = any(_source_of(cue, ly, code)[0] for ly, code in layers if ly.role == "translation")
     fell_back = False
@@ -157,7 +171,6 @@ def _expand(cue, layers, profile, cfg, tok, seen):
 
     parts = cue.get("parts") if bars else None
     # 分段里画面上已经有原文的那几段：这几屏不再显示原文（其他段照常显示）
-    pon = cue.get("parts_onscreen") if force is None and bars and len(cue.get("parts_onscreen") or []) == len(p_pieces) else None
     if parts and len(parts) == len(p_pieces):
         spans = []
         for k, (a, b) in enumerate(parts):
@@ -170,13 +183,14 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         lys = []
         for i, (li, ly, code, _, key) in enumerate(texts):
             lines = per_layer[i][gi]
-            if not lines or (pon and pon[groups[gi][0]] and ly.role == "original" and ly.show == "auto"):
+            if not lines or (n_seg and orig_hidden(ly, groups[gi][0])):
                 continue
             words = tok.get("orig") if key == "orig" else tok.get("tr", {}).get(key)
             lys.append((ly, code, _decorate(lines, ly, code, words, seen[li], profile)))
         lys = [x for x in lys if x[2]]
         if lys:
-            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": cue.get("type"),
+            typ = (seg_type[groups[gi][0]] if seg_type and n_seg else None) or cue.get("type")  # 这一段单独设了类型就用它
+            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ,
                         "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
         t0 += d
     return out

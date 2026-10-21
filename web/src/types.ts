@@ -44,6 +44,8 @@ export interface Cue {
   parts?: [number, number][];  // 用“｜”分段时每段的时间（输出时每段单独一屏）
   parts_onscreen?: boolean[];  // 每段的原文是不是画面上已经有了（有就不再显示原文）
   show_orig?: "on" | "off" | null;  // 手动指定原文显示 / 不显示（null = 自动）
+  parts_type?: (string | null)[] | null;        // 每段单独的类型（null = 跟随整条）
+  parts_show?: ("on" | "off" | null)[] | null;  // 每段单独指定原文显示 / 不显示
 }
 
 export type Seg = [string] | [string, string] | [string, string, string];

@@ -117,3 +117,18 @@ def test_duplicate_info_cues_merged():
     out = merge_dup_info([a, b])
     assert len(out) == 1 and out[0]["sources"] == ["o658", "o659"]
     assert len(merge_dup_info([a, b], keep={"q2"})) == 2  # 手动改过的不合并
+
+
+def test_per_segment_type_and_show():
+    from nyasub.core.edits import apply, piece_isolate_ops
+
+    cue = _cue("今日は｜散歩｜歌", "今天｜散步｜歌", 0.0, 9.0, parts=[[0, 3], [3, 6], [6, 9]], onscreen=True,
+               parts_onscreen=[True, True, True], parts_show=[None, "on", None], parts_type=[None, None, "song"])
+    out = _layout(cue)
+    assert [[ly.role for ly, _, _ in x["layers"]] for x in out] == [["translation"], ["translation", "original"], ["translation"]]
+    assert [x["type"] for x in out] == ["dialogue", "dialogue", "song"]
+    # 中间那段设成说明：单独拆成一条，前后两段的设置跟着各自的段走
+    ops, nid = piece_isolate_ops(cue, 1)
+    got = {c["id"]: c for c in apply([cue], {"ops": ops})}
+    assert nid == "q1ab" and got[nid]["orig"]["text"] == "散歩" and got[nid]["show_orig"] == "on"
+    assert got["q1b"]["type"] == "song" and got["q1aa"]["orig"]["text"] == "今日は"

@@ -609,14 +609,34 @@ def create_app(token: str | None = None) -> FastAPI:
     def cue_pieces(pid: str, cid: str, body: dict = Body(...)):
         """“｜”分段的操作：{"action": "split", "at": k 或 "all"} 在第 k 个分界处拆成单独的字幕；
         {"action": "join", "at": k} 把第 k 个分界前后两段合成一段；
-        {"action": "cut", "t": 秒} 在 t 秒处把所在的那一段分成两段（还是同一条字幕）。"""
+        {"action": "cut", "t": 秒} 在 t 秒处把所在的那一段分成两段（还是同一条字幕）；
+        {"action": "type", "seg": i, "type": 类型} / {"action": "show", "seg": i, "show": "on" | "off" | null}
+        单独设第 i 段（从 0 起）的类型 / 原文显不显示；设成说明类的，那一段拆出来单独成一条（说明要单独定位置）。"""
         from ..core import segments
-        from ..core.edits import piece_cut_fields, piece_join_fields, piece_split_ops
+        from ..core.edits import piece_cut_fields, piece_isolate_ops, piece_join_fields, piece_split_ops
 
         run, cues = _current_cues(pid)
         cue = next((c for c in cues if c["id"] == cid), None)
         if not cue:
             raise HTTPException(404, "没有这条字幕")
+        if body.get("action") in ("type", "show"):
+            n = len(segments.pieces(cue["orig"]["text"]))
+            seg = int(body.get("seg", -1))
+            if n < 2 or not 0 <= seg < n:
+                raise HTTPException(400, "这条字幕没有这一段")
+            store = EditStore(run.proj)
+            if body["action"] == "type" and body.get("type") in ("info", "name", "title"):
+                ops, nid = piece_isolate_ops(cue, seg)
+                e = store.load()
+                e["ops"] += ops
+                e["cues"][nid] = {**e["cues"].get(nid, {}), "type": body["type"]}
+                store.save(e)  # 拆出来 + 改类型算一次修改
+                return _edit_result(pid, nid)
+            key, val = ("parts_type", body.get("type")) if body["action"] == "type" else ("parts_show", body.get("show"))
+            lst = list(cue.get(key) or [None] * n)
+            lst[seg] = val or None
+            store.set_fields(cid, {key: lst if any(x is not None for x in lst) else None})
+            return _edit_result(pid, cid)
         if body.get("action") == "cut":
             fields = piece_cut_fields(cue, float(body["t"]))
             if not fields:
