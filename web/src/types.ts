@@ -42,6 +42,8 @@ export interface Cue {
   tr: Record<string, { text: string }>;
   flags: string[]; review: "ok" | "todo";
   parts?: [number, number][];  // 用“｜”分段时每段的时间（输出时每段单独一屏）
+  parts_onscreen?: boolean[];  // 每段的原文是不是画面上已经有了（有就不再显示原文）
+  show_orig?: "on" | "off" | null;  // 手动指定原文显示 / 不显示（null = 自动）
 }
 
 export type Seg = [string] | [string, string] | [string, string, string];

@@ -56,7 +56,7 @@ class LanguagePack:
             acc += r
             target = int(round(n * acc))
             cut = target
-            for d in range(0, 12 if self.word_based else 8):
+            for d in range(0, 12):
                 hit = [p for p in (target + d, target - d)
                        if start < p < n and (text[p - 1] in self.break_after or (self.word_based and text[p] == " "))]
                 if hit:

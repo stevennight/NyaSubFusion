@@ -60,11 +60,12 @@ DEFS = {
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=3),
+                                     "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=4),
+    # v4：原文照抄字幕的字；人名全部进术语表、各段沿用新译名、最后统一一遍
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=3),  # v3：说明类位置按主要来源算；去掉“ / ”  # v2：去掉 ➡ 之类的符号；“｜”分段按来源算时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=4),  # v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -832,18 +833,27 @@ class Run:
         def clean(t):
             for m in marks:
                 t = t.replace(m, "")
-            # “ / ”是给大模型看的换行标记（提示词里把来源的换行写成“ / ”），大模型有时照抄进结果：换回换行
-            t = t.replace(" / ", "\n")
+            # “ / ”是给大模型看的换行标记（提示词里把来源的换行写成“ / ”），大模型有时照抄进结果，
+            # 或者自己用全角“／”把一条字幕的两行（两个人说的话、标签的两行）接起来：都换回换行。数字之间的“／”（1／2）不动
+            t = re.sub(r" / |\s*(?<!\d)／(?!\d)\s*", "\n", t)
             return "\n".join(l.rstrip() for l in t.split("\n")).strip()
 
-        from ..llm.translate import info_geometry
+        from ..llm.translate import covered, fix_type, info_geometry, merge_dup_info
 
+        cues = merge_dup_info([dict(c) for c in cues], keep=set(edits))  # 同一块画面字识别成两条的合成一条
         out = []
         for c in cues:
-            c = dict(c, orig=dict(c["orig"], text=clean(c["orig"]["text"])),
+            orig = c["orig"]["text"]
+            trs = {k: v.get("text", "") for k, v in (c.get("tr") or {}).items()}
+            if not segments.bars_ok(c):  # 原文用“ / ”分段、译文用“｜”分段，段数一样：“ / ”就是分段
+                orig = segments.reconcile(orig, trs) or orig
+            c = dict(c, orig=dict(c["orig"], text=clean(orig)),
                      tr={k: dict(v, text=clean(v.get("text", ""))) for k, v in (c.get("tr") or {}).items()})
             c.pop("parts", None)
+            c.pop("parts_onscreen", None)
             mine = edits.get(c["id"], {})
+            if "type" not in mine:  # 没有画面字来源的“说明”其实是旁白（手动改过类型的不动）
+                c["type"] = fix_type(c.get("type"), [items[s] for s in c.get("sources", []) if s in items])
             if c.get("type") in ("info", "name", "title") and mine.get("rect") is None:  # 手动选过位置的不动（None = 改回自动）
                 # 说明类的位置按主要那条画面字算（旧结果里可能并上了画面另一处误认的字）；手动调过时间的不动时间
                 srcs = [items[s] for s in c.get("sources", []) if s in items]
@@ -855,13 +865,27 @@ class Run:
             touched = "orig" in edits.get(c["id"], {}) or "tr" in edits.get(c["id"], {})
             if "｜" in c["orig"]["text"] + "".join(v["text"] for v in c["tr"].values()) and not touched and (
                     not segments.bars_ok(c) or segments.single_event(c, items)):
+                # 一屏放得下的（大模型拿“｜”当换行用）：都不分；放不下的长句：保留译文的“｜”当换屏的位置，
+                # 原文按比例跟着切（比按行数硬切、断在半句中间好）
+                long = not segments.single_event(c, items) and any(
+                    len(segments.unbar(v["text"], k)) > 2 * segments.line_chars(k, self.cfg) for k, v in c["tr"].items())
                 c["orig"]["text"] = segments.unbar(c["orig"]["text"], c["orig"]["lang"])
-                for k, v in c["tr"].items():
-                    v["text"] = segments.unbar(v["text"], k)
+                if not long:
+                    for k, v in c["tr"].items():
+                        v["text"] = segments.unbar(v["text"], k)
             if segments.bars_ok(c):
                 mine = edits.get(c["id"], {}).get("parts")  # 手动调过每段的时间
                 c["parts"] = ((mine if segments.valid_parts(mine, c) else None) or segments.part_times(c, items)
                               or segments.proportional(c))
+            # 画面上已经有原文的（硬字幕）：按段判断，只有那一段的字确实是画面字才不再显示原文；
+            # 半句画面字、半句字幕的，字幕那部分的原文照常显示
+            screen = [items[s]["text"] for s in c.get("sources", []) if s in items and items[s]["src"] in ("telop", "info")]
+            if screen:
+                ps = segments.pieces(c["orig"]["text"]) if c.get("parts") else [c["orig"]["text"]]
+                shown = [covered(p, "\n".join(screen)) >= 0.8 for p in ps]
+                c["onscreen"] = all(shown)
+                if c.get("parts"):
+                    c["parts_onscreen"] = shown
             out.append(c)
         return out
 

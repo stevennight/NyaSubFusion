@@ -36,10 +36,29 @@ def valid_parts(parts, cue):
     return all(b - a >= 0.2 for a, b in parts) and all(abs(p[1] - q[0]) < 0.01 for p, q in zip(parts, parts[1:]))
 
 
+def reconcile(orig, trs):
+    """原文用“ / ”（提示词里的换行标记）分段、译文用“｜”分段，段数一样：把“ / ”当分段。
+    trs：{语言: 译文}。对上了返回新的原文，否则 None。"""
+    want = {len(pieces(t)) for t in trs.values() if t}
+    if " / " in orig and len(want) == 1:
+        fixed = orig.replace(" / ", "｜")
+        if len(pieces(fixed)) in want and len(pieces(fixed)) > 1:
+            return fixed
+    return None
+
+
+def line_chars(code, cfg):
+    """这种语言每行最多几个字（按语言的排版选项）。"""
+    return int(cfg.render.lang_options.get(code, {}).get("line_chars") or lang.get(code).line_chars)
+
+
 def joiner(code):
-    """去掉“｜”时两段之间放什么：按词分隔的语言和中文（中文字幕句中停顿用空格）放空格，日文直接接上。"""
+    """去掉“｜”时两段之间放什么：按词分隔的语言和中文（中文字幕句中停顿用空格）放空格，
+    日文放全角空格（日文字幕的停顿习惯；需要再切开时也能切在这里，不会切到词中间）。"""
     pack = lang.get(code)
-    return " " if pack.word_based or pack.code.startswith("zh") else ""
+    if pack.word_based or pack.code.startswith("zh"):
+        return " "
+    return "　" if pack.code == "ja" else ""
 
 
 def unbar(text, code):

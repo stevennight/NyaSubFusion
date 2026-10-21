@@ -146,3 +146,22 @@ def test_refine_rejects_reading_copied_from_another_image():
     group = [{"id": "o213", "text": "的精切日手的梯切目"}, {"id": "o217", "text": "冬を食べるワニ"}, {"id": "o1010", "text": "近"}]
     got = [{"text": "冬を食べる ワニ"}, {"text": "冬を食べるワニ"}, {"text": "米沢市 / 近藤"}]
     assert borrowed(group, got) == [0]  # 只认出一个字的补全不算串图
+
+
+def test_subs_wording_kept_and_names_checked():
+    from nyasub.llm.translate import keep_subs_wording, term_misses
+
+    # 大模型把字幕里的“キミイ”改成了另一个人“一美”：改回字幕的写法，“｜”位置不变
+    subs = [{"src": "subs", "start": 0, "text": "それでも　地元の人たちが\n亡きキミイさんの思いを受け継ぎ➡"},
+            {"src": "subs", "start": 1, "text": "伝統の味を守ろうとしています。"}]
+    assert keep_subs_wording(subs, "それでも　地元の人たちが｜亡き一美さんの思いを受け継ぎ｜伝統の味を守ろうとしています。") == \
+        "それでも　地元の人たちが｜亡きキミイさんの思いを受け継ぎ｜伝統の味を守ろうとしています。"
+    # 画面字那半句不动；只是全角半角不同的也不动
+    mixed = [{"src": "telop", "start": 0, "text": "非常に歩留まりの悪い野菜です"}, {"src": "subs", "start": 1, "text": "７年前"}]
+    assert keep_subs_wording(mixed, "非常に歩留まりの悪い野菜です｜7年前") == "非常に歩留まりの悪い野菜です｜7年前"
+    # 译文没按术语表的名字翻：找出来；片假名名字不算更长单词的一部分
+    cues = [{"orig": {"text": "これはキミイの写真"}, "tr": {"zh-Hans": {"text": "这是Kimi的照片"}}},
+            {"orig": {"text": "キミイさんの夢"}, "tr": {"zh-Hans": {"text": "纪美的梦想"}}},
+            {"orig": {"text": "蚕のさなぎに イナゴ"}, "tr": {"zh-Hans": {"text": "蚕蛹和蚱蜢"}}}]
+    terms = [{"src": "キミイさん", "tr": "纪美", "type": "人名"}, {"src": "イナ", "tr": "伊那", "type": "地名"}]
+    assert term_misses(cues, terms, "zh-Hans") == [(0, [("キミイ", "纪美")])]

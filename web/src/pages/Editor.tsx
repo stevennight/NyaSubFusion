@@ -11,6 +11,36 @@ type Filter = "all" | "todo" | "asr" | "ocr";
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
+/** 时:分:秒.毫秒，例如 00:22:08.810 */
+function fmtHms(t: number) {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)}.${p(ms % 1000, 3)}`;
+}
+
+/** 读“时:分:秒.毫秒”，也接受“分:秒”或者直接写秒；格式不对返回 null。 */
+function parseHms(v: string): number | null {
+  const parts = v.trim().replace(/：/g, ":").replace(/[，,]/g, ".").split(":");
+  if (!parts[0] || parts.length > 3 || parts.some((x) => !/^\d+(\.\d+)?$/.test(x))) return null;
+  return parts.reduce((acc, x) => acc * 60 + Number(x), 0);
+}
+
+/** 时间输入框：显示 时:分:秒.毫秒，回车或离开时保存，Esc 取消。 */
+function TimeInput({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+  return (
+    <input className="inp tm" defaultValue={fmtHms(value)} title="时:分:秒.毫秒（也可以写 分:秒 或 秒数）"
+           onKeyDown={(e) => {
+             if (e.key === "Enter") e.currentTarget.blur();
+             if (e.key === "Escape") { e.currentTarget.value = fmtHms(value); e.currentTarget.blur(); }
+           }}
+           onBlur={(e) => {
+             const v = parseHms(e.currentTarget.value);
+             if (v === null) { e.currentTarget.value = fmtHms(value); return; }  // 格式不对：恢复原来的
+             onCommit(v);
+           }} />
+  );
+}
+
 export function EditorPage() {
   const s = useStore();
   const d = s.data;
@@ -219,7 +249,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
   const setPiece = (f: string, i: number, v: string) => setTexts({ ...texts, [f]: texts[f].map((p, k) => (k === i ? v : p)) });
   // 改某段的开始 / 结束：相邻那段跟着动；第一段的开始、最后一段的结束就是整条字幕的起止
   const saveTime = (i: number, edge: 0 | 1, v: number) => {
-    if (!Number.isFinite(v) || Math.abs(v - segs[i][edge]) < 0.006) return;  // 输入框里显示的是两位小数
+    if (!Number.isFinite(v) || Math.abs(v - segs[i][edge]) < 0.0005) return;  // 没改（输入框精确到毫秒）
     const ps = segs.map(([a, b]) => [a, b] as [number, number]);
     ps[i][edge] = v;
     if (edge === 0 && i > 0) ps[i - 1][1] = v;
@@ -259,6 +289,21 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
           <select className="inp" value={cue.type} onChange={(e) => patch({ type: e.target.value })}>
             {Object.entries(TYPE_LBL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          {!["info", "name", "title"].includes(cue.type) && (() => {
+            // 原文要不要显示：默认画面上已经有这句硬字幕时不显示；审校时可以强制显示 / 不显示
+            const onSegs = (cue.parts_onscreen ?? []).flatMap((on, i) => (on ? [i + 1] : []));
+            const auto = cue.onscreen ? "自动（画面上已有，不显示）"
+              : onSegs.length ? `自动（第 ${onSegs.join("、")} 段画面上已有，不显示）` : "自动（显示）";
+            return (<>
+              <span className="lbl">原文</span>
+              <select className="inp" value={cue.show_orig ?? "auto"} title="输出的字幕里显示不显示原文（只影响有原文图层的方案）"
+                      onChange={(e) => patch({ show_orig: e.target.value === "auto" ? null : e.target.value }, "已更改原文显示")}>
+                <option value="auto">{auto}</option>
+                <option value="on">显示</option>
+                <option value="off">不显示</option>
+              </select>
+            </>);
+          })()}
           {["info", "name", "title"].includes(cue.type) && (() => {
             // 说明类显示在哪：默认跟着最主要的那条画面字；识别错了可以改成跟着另一条，或者放到画面顶部
             const TOP = [0.3, 0.01, 0.7, 0.05];
@@ -301,8 +346,8 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
             <div className={`piece-card ${i === curSeg ? "cur" : ""}`}>
               <div className="row piece-time">
                 <b>第 {i + 1} 段</b>
-                <input className="inp" type="number" step={0.1} defaultValue={+a.toFixed(2)} onBlur={(e) => saveTime(i, 0, Number(e.target.value))} />→
-                <input className="inp" type="number" step={0.1} defaultValue={+b.toFixed(2)} onBlur={(e) => saveTime(i, 1, Number(e.target.value))} />
+                <TimeInput value={a} onCommit={(v) => saveTime(i, 0, v)} />→
+                <TimeInput value={b} onCommit={(v) => saveTime(i, 1, v)} />
                 <span className="dim">{(b - a).toFixed(1)}s</span>
               </div>
               <label className="lbl">原文</label>

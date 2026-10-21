@@ -15,7 +15,7 @@ def test_bars_only_count_when_orig_and_translation_match():
     assert not segments.bars_ok(_cue("でも一美さんは　西和賀で生きることにこだわり続けました。", "但一美始终坚持｜要在西和贺生活"))
     assert not segments.bars_ok(_cue("あ", "甲"))
     assert segments.unbar("但一美始终坚持｜要在西和贺生活", "zh-Hans") == "但一美始终坚持 要在西和贺生活"
-    assert segments.unbar("その夢と｜共に", "ja") == "その夢と共に"
+    assert segments.unbar("その夢と｜共に", "ja") == "その夢と　共に"  # 日文：全角空格（停顿）
 
 
 def test_part_times_snap_to_source_boundaries():
@@ -49,9 +49,9 @@ def _layout(cue):
 def test_layout_uses_parts_and_ignores_mismatched_bars():
     out = _layout(_cue("今日は｜散歩", "今天｜散步", 0.0, 6.0, parts=[[0.0, 1.5], [1.5, 6.0]]))
     assert [(x["start"], x["end"]) for x in out] == [(0.0, 1.5), (1.5, 6.0)]
-    # 只有译文里有“｜”：不分屏
+    # 只有译文里有“｜”：排版按译文的“｜”换屏，原文按比例跟着切（一屏放得下的，整理时已经去掉了“｜”）
     out = _layout(_cue("その夢と共に歩んだのが", "陪他一同追逐梦想的｜是"))
-    assert len(out) == 1
+    assert len(out) == 2 and all(len(x["layers"]) == 2 for x in out)
 
 
 def test_piece_split_and_join():
@@ -63,7 +63,7 @@ def test_piece_split_and_join():
         (0, 3, "あ", "A"), (3, 5, "い", "B"), (5, 9, "う", "C")]
     ops, _ = piece_split_ops(cue, [1])
     assert [c["orig"]["text"] for c in apply([cue], {"ops": ops})] == ["あ", "い｜う"]
-    assert piece_join_fields(cue, 2) == {"orig": "あ｜いう", "tr": {"zh-Hans": "A｜B C"}, "parts": [[0, 3], [3, 9]]}
+    assert piece_join_fields(cue, 2) == {"orig": "あ｜い　う", "tr": {"zh-Hans": "A｜B C"}, "parts": [[0, 3], [3, 9]]}
 
 
 def test_refine_truncated_reading():
@@ -90,3 +90,30 @@ def test_piece_cut_and_manual_times():
     assert not segments.valid_parts([[0.0, 3.0], [3.5, 9.0]], two)
     assert not segments.valid_parts([[0.0, 3.0], [3.0, 8.0]], two)
     assert not segments.valid_parts([[0.0, 9.0]], two)
+
+
+def test_original_hidden_only_for_onscreen_segment():
+    # 第 1 段是画面上已有的字（不再显示原文），第 2 段来自字幕（原文照常显示）
+    cue = _cue("大丈夫だ｜大豆を入れ", "没事｜放进大豆", 0.0, 6.0, parts=[[0.0, 1.5], [1.5, 6.0]], parts_onscreen=[True, False])
+    out = _layout(cue)
+    roles = [[ly.role for ly, _, _ in x["layers"]] for x in out]
+    assert roles == [["translation"], ["translation", "original"]]
+
+
+def test_show_orig_override():
+    on = _cue("大丈夫だ", "没事", onscreen=True)
+    assert [ly.role for ly, _, _ in _layout(on)[0]["layers"]] == ["translation"]  # 自动：画面上已有，不显示
+    assert [ly.role for ly, _, _ in _layout(dict(on, show_orig="on"))[0]["layers"]] == ["translation", "original"]
+    off = _cue("大丈夫だ", "没事")
+    assert [ly.role for ly, _, _ in _layout(dict(off, show_orig="off"))[0]["layers"]] == ["translation"]
+
+
+def test_duplicate_info_cues_merged():
+    from nyasub.llm.translate import merge_dup_info
+
+    a = _cue("ラポロアイヌネイション 会長｜差間 啓全さん", "会长｜差间", 1953.474, 1960.807, type="info", sources=["o658"])
+    b = _cue("ラポロアイヌネイション 会長\n差間 啓全さん", "会长 差间", 1953.474, 1960.807, type="info", sources=["o659"])
+    b["id"] = "q2"
+    out = merge_dup_info([a, b])
+    assert len(out) == 1 and out[0]["sources"] == ["o658", "o659"]
+    assert len(merge_dup_info([a, b], keep={"q2"})) == 2  # 手动改过的不合并

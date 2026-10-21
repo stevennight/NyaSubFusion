@@ -101,7 +101,10 @@ def _expand(cue, layers, profile, cfg, tok, seen):
     时间：有 parts（每段按来源字幕算好的时间）就按段用；段内再按长度拆的、或者没有 parts 的，按主图层字数分配。
     原文和译文的“｜”段数对不上时（大模型拿它当换行用）不按“｜”分，当成一整句按长度断。"""
     bars = segments.bars_ok(cue)
-    hidden = lambda ly: ly.role == "original" and ly.show == "auto" and cue.get("onscreen")  # 画面上已有原文硬字幕
+    # 原文要不要显示：审校时手动指定的优先（show_orig = on / off）；否则画面上已有原文硬字幕时不显示
+    force = cue.get("show_orig") if cue.get("show_orig") in ("on", "off") else None
+    hidden = lambda ly: ly.role == "original" and (
+        force == "off" or (force is None and ly.show == "auto" and cue.get("onscreen")))
     has_orig_shown = any(ly.role == "original" and not hidden(ly) for ly, _ in layers)
     any_tr = any(_source_of(cue, ly, code)[0] for ly, code in layers if ly.role == "translation")
     fell_back = False
@@ -113,7 +116,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         if not t and ly.role == "translation" and not any_tr and not has_orig_shown and not fell_back:
             t, key, code = cue["orig"]["text"], "orig", cue["orig"]["lang"]  # 一条译文都没有时显示原文（只显示一次）
             fell_back = True
-        if t and not bars:
+        if t and not bars and ly.role != "translation":  # 段数对不上：原文不按“｜”分，跟着译文的分屏按比例切
             t = t.replace("｜", " " if lang.get(code).word_based else "")
         if t:
             texts.append((li, ly, code, t, key))
@@ -153,6 +156,8 @@ def _expand(cue, layers, profile, cfg, tok, seen):
             per_layer.append([pack.wrap(p, _max_chars(ly, pack, opts))[: profile.max_lines] if p else [] for p in parts])
 
     parts = cue.get("parts") if bars else None
+    # 分段里画面上已经有原文的那几段：这几屏不再显示原文（其他段照常显示）
+    pon = cue.get("parts_onscreen") if force is None and bars and len(cue.get("parts_onscreen") or []) == len(p_pieces) else None
     if parts and len(parts) == len(p_pieces):
         spans = []
         for k, (a, b) in enumerate(parts):
@@ -165,7 +170,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         lys = []
         for i, (li, ly, code, _, key) in enumerate(texts):
             lines = per_layer[i][gi]
-            if not lines:
+            if not lines or (pon and pon[groups[gi][0]] and ly.role == "original" and ly.show == "auto"):
                 continue
             words = tok.get("orig") if key == "orig" else tok.get("tr", {}).get(key)
             lys.append((ly, code, _decorate(lines, ly, code, words, seen[li], profile)))

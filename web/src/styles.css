@@ -284,5 +284,5 @@ table.tb { width: 100%; border-collapse: collapse }
 .piece-gap { display: flex; gap: 6px; justify-content: center; margin: 4px 0 }
 .piece-card .lbl { display: block; font-size: 11px; color: var(--tx3); margin: 6px 0 2px }
 .piece-time { gap: 6px }
-.piece-time input { width: 80px }
+.piece-time input.tm { width: 112px; font-variant-numeric: tabular-nums; padding-left: 6px; padding-right: 6px }
 .alts .piece + .piece { border-top: 1px dashed #3a3a48; margin-top: 2px; padding-top: 2px }
