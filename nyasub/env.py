@@ -178,6 +178,11 @@ def set_cancel(event):
     _local.cancel = event
 
 
+def cancel_event():
+    """当前线程的取消标志（交给工作线程用：在工作线程里 set_cancel(它)，check_cancel 就也能停下）。"""
+    return getattr(_local, "cancel", None)
+
+
 def check_cancel():
     """长循环里调用：当前线程的取消标志已设置就抛 Cancelled。语音识别每段、画面字每帧、大模型每次请求前都会检查。"""
     ev = getattr(_local, "cancel", None)

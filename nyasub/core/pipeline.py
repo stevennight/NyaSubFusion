@@ -129,8 +129,12 @@ class Run:
                     "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
-        if name == "asr":  # 人声分离开着时才有（关着时和以前的指纹一样，不会重新识别）
-            return {"vocals": self._separation_model(), "fill_gaps": 1, "v": 2} if self._separate() else None  # v2：按原音频判断语言
+        if name == "asr":  # 人声分离 / 云端识别开着时才有（都关着时和以前的指纹一样，不会重新识别）
+            d = {"vocals": self._separation_model(), "fill_gaps": 1, "v": 2} if self._separate() else {}  # v2：按原音频判断语言
+            if self.cfg.asr.backend == "api":
+                ep = self.cfg.endpoint("asr")
+                d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"]}
+            return d or None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
             return {"video": file_stamp(self.proj.video), "tracks": [
                 {"lang": t["lang"], "title": t["title"],
@@ -580,18 +584,26 @@ class Run:
         separated = self._separate()
         if separated:
             wav = str(self._vocals(self.results["probe"]).relative_to(self.proj.root))
-            if c.vad_threshold > 0.15:  # 背景音乐去掉了，门槛放低也不会把音乐当成说话，能多找回小声的台词
+            if c.backend == "local" and c.vad_threshold > 0.15:  # 背景音乐去掉了，门槛放低也不会把音乐当成说话，能多找回小声的台词
                 log(f"人声已分离：人声门槛 {c.vad_threshold} → 0.15")
                 c = c.model_copy(update={"vad_threshold": 0.15})
 
         src = self.cfg.project.source
         whisper_lang = None if src == "auto" else lang.get(src).whisper
         info = self.results["probe"]
+        junk = lang.get(src).hallucinations if src != "auto" else ()
         t = time.time()
-        segs, detected = asr.transcribe(str(self.proj / wav), c.model_dump(), whisper_lang,
-                                        offset=info.get("audio_offset", 0.0), duration=info["duration"],
-                                        fill_gaps=separated, junk=lang.get(src).hallucinations if src != "auto" else (),
-                                        detect_wav=self.proj / self.results["audio"]["wav"] if separated else None)
+        if c.backend == "api":  # 云端接口：没有本地模型，补识别（_fill_gaps）不做
+            from ..sources import asr_api
+
+            segs, detected = asr_api.transcribe(str(self.proj / wav), c.model_dump(), self.cfg.endpoint("asr"),
+                                                whisper_lang, offset=info.get("audio_offset", 0.0),
+                                                duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache")
+        else:
+            segs, detected = asr.transcribe(str(self.proj / wav), c.model_dump(), whisper_lang,
+                                            offset=info.get("audio_offset", 0.0), duration=info["duration"],
+                                            fill_gaps=separated, junk=junk,
+                                            detect_wav=self.proj / self.results["audio"]["wav"] if separated else None)
         # 只有别的（非拉丁）文字、完全没有这种语言文字的段丢掉：日语节目里冒出的“시청해주셔서 감사합니다”
         # （韩语的“谢谢观看”）是幻觉；英文歌词之类的拉丁字母不算
         pack = lang.get(lang.canonical(detected) if detected else src)

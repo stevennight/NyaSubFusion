@@ -21,6 +21,10 @@ device = "cuda"
 vad_threshold = 0.25          # 人声检测门槛，调低能识别小声说话
 separate = "auto"             # 人声分离（先去掉背景音乐再识别）：auto = 没有字幕时才做 / on / off
 hf_endpoint = ""              # 模型下载慢可用镜像：https://hf-mirror.com
+backend = "local"             # local：本机 faster-whisper / api：云端接口（按时长付费，一小时约 0.3~0.4 美元）
+api_kind = "transcribe"       # transcribe：/v1/audio/transcriptions / gemini：能听音频的多模态大模型（chat/completions）
+api_provider = ""             # [llm] 接口列表里的名字；空 = 和翻译用同一个
+api_model = "gpt-transcribe"  # whisper-1 / gemini-2.5-flash …；空 = 按 api_kind 的默认
 
 [ocr]
 enabled = true
