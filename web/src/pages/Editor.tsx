@@ -9,6 +9,8 @@ import { FLAG_LBL, fmt, langName, SRC_LBL, TYPE_LBL } from "../util";
 
 type Filter = "all" | "todo" | "asr" | "ocr";
 
+const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
+
 export function EditorPage() {
   const s = useStore();
   const d = s.data;
@@ -53,10 +55,26 @@ export function EditorPage() {
     if (n) select(n.id);
   }, [cues, sel, select]);
 
+  // 播放倍速：记在本机，下次打开还是这个速度
+  const [playing, setPlaying] = useState(false);
+  const [rate, setRateState] = useState(() => { try { return Number(localStorage.getItem("nyasub.rate")) || 1; } catch { return 1; } });
+  const setRate = useCallback((r: number) => {
+    setRateState(r);
+    try { localStorage.setItem("nyasub.rate", String(r)); } catch { /* 存不了就只在这次有效 */ }
+  }, []);
+  const shiftRate = useCallback((dir: number) => {
+    const i = RATES.indexOf(rate);
+    const n = RATES[Math.max(0, Math.min(RATES.length - 1, (i < 0 ? RATES.indexOf(1) : i) + dir))];
+    setRate(n);
+    s.toast(`播放速度 ${n}×`);
+  }, [rate, setRate, s]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.("input,textarea,select")) return;
       if (e.code === "Space") { e.preventDefault(); player.current?.toggle(); }
+      if (e.key === "[") shiftRate(-1);
+      if (e.key === "]") shiftRate(1);
       if (e.key === "j" || e.key === "J") step(-1);
       if (e.key === "k" || e.key === "K") step(1);
       if (e.ctrlKey && (e.key === "z" || e.key === "Z") && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -64,7 +82,7 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, undo, redo]);
+  }, [step, undo, redo, shiftRate]);
 
   if (!d) return <div className="empty">加载中…</div>;
   if (!cues.length) return <div className="empty">还没有字幕。先在「流程」里运行一次。</div>;
@@ -79,12 +97,16 @@ export function EditorPage() {
   return (
     <div className="editor">
       <div className="player">
-        <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} />
+        <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying} />
         <div className="pctl">
           <button className="iconbtn" title="上一条 (J)" onClick={() => step(-1)}>⏮</button>
-          <button className="iconbtn big" title="播放 / 暂停（空格）" onClick={() => player.current?.toggle()}>▶</button>
+          <button className="iconbtn big" title={playing ? "暂停（空格）" : "播放（空格）"} onClick={() => player.current?.toggle()}>{playing ? "❚❚" : "▶"}</button>
           <button className="iconbtn" title="下一条 (K)" onClick={() => step(1)}>⏭</button>
           <span className="time">{fmt(time)} / {fmt(duration)}</span>
+          <select className="inp" style={{ width: "auto" }} value={rate} title="播放速度（[ 慢一档，] 快一档）。声音音调不变"
+                  onChange={(e) => setRate(Number(e.target.value))}>
+            {RATES.map((r) => <option key={r} value={r}>{r}×</option>)}
+          </select>
           <label className="row dim"><input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />识别框</label>
           <span className="sp" />
           预览方案
@@ -107,7 +129,7 @@ export function EditorPage() {
           <button className="btn sm" title="在播放头处插入一条 2 秒的空字幕" onClick={insertAt}>＋ 插入</button>
           <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
           <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
-          <span className="dim">J/K 上下条 · 空格播放</span>
+          <span className="dim">J/K 上下条 · 空格播放 · [ ] 倍速</span>
         </div>
         <div className="bd">
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>

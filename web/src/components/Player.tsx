@@ -12,7 +12,9 @@ export interface PlayerHandle { seek: (t: number) => void; toggle: () => void; p
 export const Player = forwardRef<PlayerHandle, {
   preview: Preview | null; boxes?: Candidate[]; showSubs?: boolean; onTime: (t: number) => void; style?: React.CSSProperties;
   controls?: boolean;   // 在画面下方显示播放 / 进度条（审校页有自己的时间轴，不用）
-}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false }, ref) {
+  rate?: number;        // 播放倍速（声音保持原来的音调）
+  onPlaying?: (playing: boolean) => void;   // 开始 / 暂停播放时通知（外面自己画的播放按钮用）
+}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false, rate = 1, onPlaying }, ref) {
   const s = useStore();
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
@@ -78,6 +80,10 @@ export const Player = forwardRef<PlayerHandle, {
   }, [canAttach, attached, s.pid]);
   useEffect(() => () => { hls.current?.destroy(); hls.current = null; }, [s.pid]);
 
+  // 倍速：换了视频源（接上 HLS 等）时浏览器会重置，加载后再设一次
+  const applyRate = () => { const v = video.current; if (v) { v.defaultPlaybackRate = rate; v.playbackRate = rate; } };
+  useEffect(applyRate, [rate, src]);
+
   // 播放时用 requestAnimationFrame 更新时间（timeupdate 太稀疏）
   useEffect(() => {
     if (!playing) return;
@@ -104,7 +110,8 @@ export const Player = forwardRef<PlayerHandle, {
         {s.pid && (direct || src?.kind === "hls") && (
           <video ref={video} src={direct ? api.videoUrl(s.pid) : undefined} preload="auto"
                  style={{ visibility: ready ? "visible" : "hidden" }}
-                 onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+                 onPlay={() => { setPlaying(true); onPlaying?.(true); }} onPause={() => { setPlaying(false); onPlaying?.(false); }}
+                 onLoadedMetadata={applyRate}
                  onSeeked={(e) => { const t = e.currentTarget.currentTime; setTime(t); onTime(t); }} />
         )}
         {building && !canAttach && (
