@@ -289,3 +289,13 @@ table.tb { width: 100%; border-collapse: collapse }
 .piece-opts { gap: 6px; margin-top: 6px; flex-wrap: wrap }
 .piece-opts .lbl { font-size: 11px; color: var(--tx3) }
 .piece-opts select { width: auto; flex: 1; min-width: 0; padding-top: 3px; padding-bottom: 3px; font-size: 12px }
+
+/* 时间轴「译文」轨：拖边缘改时间、拖中间平移、拖分界线改分段 */
+.blk2.st.edit { cursor: grab }
+.blk2.st .seam { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #0000008c; pointer-events: none }
+.blk2.st.live { z-index: 4; border-color: #fff; box-shadow: 0 0 0 1px #fff, 0 2px 8px #000a }
+.timeline.dc-ew, .timeline.dc-ew * { cursor: ew-resize !important }
+.timeline.dc-move, .timeline.dc-move * { cursor: grabbing !important }
+.snapline { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #ffd54a; pointer-events: none; z-index: 5 }
+.tl-dragtip { position: absolute; bottom: 25px; transform: translateX(-50%); z-index: 6; pointer-events: none; white-space: nowrap;
+  font: 11px/16px Consolas, "Cascadia Mono", monospace; color: #fff; background: #15151bf0; border: 1px solid #ffffff40; border-radius: 4px; padding: 0 6px }

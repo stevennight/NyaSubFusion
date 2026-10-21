@@ -5,18 +5,11 @@ import { Timeline } from "../components/Timeline";
 import { usePeaks, usePreview } from "../hooks";
 import { useStore } from "../store";
 import type { Candidate, Cue, EditResult, Word } from "../types";
-import { FLAG_LBL, fmt, langName, SRC_LBL, TYPE_LBL } from "../util";
+import { FLAG_LBL, fmt, fmtHms, langName, SRC_LBL, TYPE_LBL } from "../util";
 
 type Filter = "all" | "todo" | "asr" | "ocr";
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
-
-/** 时:分:秒.毫秒，例如 00:22:08.810 */
-function fmtHms(t: number) {
-  const ms = Math.max(0, Math.round(t * 1000));
-  const p = (n: number, w = 2) => String(n).padStart(w, "0");
-  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)}.${p(ms % 1000, 3)}`;
-}
 
 /** 读“时:分:秒.毫秒”，也接受“分:秒”或者直接写秒；格式不对返回 null。 */
 function parseHms(v: string): number | null {
@@ -147,6 +140,9 @@ export function EditorPage() {
       </div>
       <Timeline duration={duration} time={time} pps={pps} subs={d.subs} ocr={d.ocr} asr={d.asr} fused={d.fused.items} cues={cues}
                 target={target} peaks={peaks} selected={sel} hint={hint} onSeek={(t) => player.current?.seek(t)} onSelect={(id) => select(id)}
+                onCueTime={(id, t) => edit(() => api.editCue(s.pid!, id, t), "时间已保存")}
+                onCueSplit={(id, at) => edit(() => api.splitCue(s.pid!, id, at), "已拆成两条")}
+                onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
                 onDropped={(c: Candidate) => { s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`); player.current?.seek(c.start); }} />
       <div className="cuelist">
         <div className="hd">

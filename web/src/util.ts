@@ -7,6 +7,13 @@ export function fmt(t: number) {
   return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
+/** 时:分:秒.毫秒，例如 00:22:08.810 */
+export function fmtHms(t: number) {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)}.${p(ms % 1000, 3)}`;
+}
+
 export const TYPE_LBL: Record<string, string> = {
   dialogue: "台词", narration: "旁白", info: "说明", name: "人名条", title: "标题", song: "歌词", sfx: "音效",
 };
