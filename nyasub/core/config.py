@@ -43,6 +43,10 @@ class AsrCfg(_M):
     separate: Literal["auto", "on", "off"] = "auto"  # 人声分离（去掉背景音乐再识别）：auto = 没有字幕时才做
     download_root: str = ""
     hf_endpoint: str = ""                    # 模型下载镜像，例如 https://hf-mirror.com
+    backend: Literal["local", "api"] = "local"  # local：本机 faster-whisper；api：云端接口（按时长付费，见 sources/asr_api.py）
+    api_kind: Literal["transcribe", "gemini"] = "transcribe"  # transcribe：/v1/audio/transcriptions；gemini：多模态大模型听音频
+    api_provider: str = ""                   # 用哪个接口（llm.providers 里的 name）；空 = 和翻译用同一个
+    api_model: str = "gpt-transcribe"        # 空 = 按 api_kind 的默认模型
 
 
 class Region(_M):
@@ -231,14 +235,25 @@ class Config(_M):
 
         c = self.llm
         name = (c.vision or c.translate) if purpose == "vision" else c.translate
+        if purpose == "asr":  # 云端语音识别：接口凭据和翻译共用一套，模型单独设
+            name = self.asr.api_provider or c.translate
         p = next((x for x in c.providers if x.name == name), None) if name else None
         if p:
             model = (p.vision_model or p.model) if purpose == "vision" else p.model
+            if purpose == "asr":
+                model = self.asr_api_model()
             key = secrets.get(p.name) or (os.environ.get(p.api_key_env, "") if p.api_key_env else "") or p.api_key
             return {"name": p.name, "base_url": p.base_url, "model": model, "key": key}
         model = (c.vision_model or c.model) if purpose == "vision" else c.model
+        if purpose == "asr":
+            model = self.asr_api_model()
         key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")
         return {"name": "", "base_url": c.base_url, "model": model, "key": key}
+
+    def asr_api_model(self) -> str:
+        from ..sources.asr_api import DEFAULT_MODEL
+
+        return self.asr.api_model or DEFAULT_MODEL[self.asr.api_kind]
 
     def llm_mode(self) -> str:
         if self.llm.mode != "auto":

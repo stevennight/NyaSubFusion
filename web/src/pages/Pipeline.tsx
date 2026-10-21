@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { api } from "../api";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
-import type { Cfg, Progress, StageStatus } from "../types";
+import type { Cfg, Progress, Provider, StageStatus } from "../types";
 import { deepGet, pct, setIn, STAGE_LBL } from "../util";
 
 // 步骤图：从左到右大致按实际运行顺序排（节点上的数字就是运行顺序），连线是“用到了谁的结果”。
@@ -13,6 +13,11 @@ const NODES: { id: string; c: number; r: number }[] = [
   { id: "ocr", c: 4, r: 3 }, { id: "ocr_refine", c: 5, r: 3 }, { id: "align", c: 5, r: 2 }, { id: "fuse", c: 6, r: 2 },
   { id: "translate", c: 7, r: 2 }, { id: "annotate", c: 8, r: 2 }, { id: "render", c: 9, r: 2 },
 ];
+// 云端语音识别的接口类型（和内核 sources/asr_api.py 的 DEFAULT_MODEL 对应）
+const ASR_API_KINDS = {
+  transcribe: { label: "转写接口", model: "gpt-transcribe", desc: "OpenAI 兼容的 /v1/audio/transcriptions（gpt-transcribe、whisper-1 等）；只给文字的接口会切成小段识别" },
+  gemini: { label: "多模态大模型", model: "gemini-2.5-flash", desc: "Gemini 等能听音频的大模型（chat/completions + 音频），按句给时间，没有逐字时间" },
+};
 const ORDER = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate", "render", "mux", "burn"];
 const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"], ["probe", "ocr"], ["audio", "asr"],
   ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
@@ -63,6 +68,17 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
   const set = (path: string, v: unknown) => setDraft((d) => setIn(d, path, v));
+  const asrBackend = String(val("asr.backend") ?? "local");
+  const asrKind = (String(val("asr.api_kind") ?? "transcribe") in ASR_API_KINDS ? String(val("asr.api_kind") ?? "transcribe") : "transcribe") as keyof typeof ASR_API_KINDS;
+  const providers = (deepGet(s.config?.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const translateName = String(deepGet(s.config?.effective, "llm.translate") ?? "");
+  // 换接口类型时：模型还是另一种的默认值，就跟着换成这一种的默认值
+  const setAsrKind = (k: keyof typeof ASR_API_KINDS) => setDraft((d) => {
+    let out = setIn(d, "asr.api_kind", k);
+    const m = String(deepGet(d, "asr.api_model") ?? deepGet(s.config?.effective, "asr.api_model") ?? "");
+    if (!m || Object.values(ASR_API_KINDS).some((x) => x.model === m)) out = setIn(out, "asr.api_model", ASR_API_KINDS[k].model);
+    return out;
+  });
 
   const save = async () => {
     setSaving(true);
@@ -150,6 +166,28 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
               <div className={`src-col ${val("asr.enabled") ? "" : "off"}`}>
                 <label className="row src-head"><input type="checkbox" checked={!!val("asr.enabled")} onChange={(e) => set("asr.enabled", e.target.checked)} /><span className="badge b-a">语音</span>语音识别</label>
                 <div className="kv">
+                  <span className="lbl">识别方式</span>
+                  <div className="seg" title="本机：faster-whisper，免费，要显卡才快；云端接口：把音频切成 10 分钟一块上传给转写接口，按时长付费">
+                    {[["local", "本机"], ["api", "云端接口"]].map(([v, l]) =>
+                      <button key={v} className={asrBackend === v ? "on" : ""} onClick={() => set("asr.backend", v)}>{l}</button>)}</div>
+                  {asrBackend === "api" ? <>
+                    <span />
+                    <span className="dim" style={{ fontSize: 11.5 }}>按音频时长付费（一小时节目约 0.3~0.4 美元）；接口和 API Key 在「设置」里管理</span>
+                    <span className="lbl">接口</span>
+                    <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
+                      <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
+                      {providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                    </select>
+                    <span className="lbl">接口类型</span>
+                    <div className="seg">
+                      {(Object.keys(ASR_API_KINDS) as (keyof typeof ASR_API_KINDS)[]).map((k) =>
+                        <button key={k} className={asrKind === k ? "on" : ""} onClick={() => setAsrKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div>
+                    <span />
+                    <span className="dim" style={{ fontSize: 11.5 }}>{ASR_API_KINDS[asrKind].desc}</span>
+                    <span className="lbl">模型</span>
+                    <input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[asrKind].model}
+                      onChange={(e) => set("asr.api_model", e.target.value)} />
+                  </> : <>
                   <span className="lbl">模型</span>
                   <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
                     {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
@@ -158,14 +196,17 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                   </select>
                   <span />
                   <span className="dim" style={{ fontSize: 11.5 }}>{models.find((m) => m.id === val("asr.model"))?.desc ?? ""}</span>
+                  </>}
                   <span className="lbl">人声分离</span>
                   <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">
                     {[["auto", "自动"], ["on", "开"], ["off", "关"]].map(([v, l]) =>
                       <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
                   <span />
                   <span className="dim" style={{ fontSize: 11.5 }}>自动：没有字幕时才做（这时语音是主要来源）</span>
+                  {asrBackend === "local" && <>
                   <span className="lbl">人声门槛</span>
                   <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span></div>
+                  </>}
                 </div>
               </div>
               <div className={`src-col ${val("ocr.enabled") ? "" : "off"}`}>
