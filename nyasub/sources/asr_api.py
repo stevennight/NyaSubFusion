@@ -66,6 +66,15 @@ class _Retry(Exception):
     """临时错误（限流、服务端错误、网络），等一会儿重试。"""
 
 
+class _Rejected(AsrApiError):
+    """400 但没说原因（OpenRouter 转发上游错误时只有“Provider returned 400”）：可能是某个参数上游不支持，换一种请求再试。"""
+
+
+# 逐字时间不是每家都支持（Mistral Voxtral 只给逐句时间，要 word 就 400）：按顺序试，试出能用的记住，后面的块直接用
+GRANULARITIES = (["word", "segment"], ["segment"])
+_gran_ok: dict = {}
+
+
 # ---------------- 音量包络：找切点、找小段里有声音的部分 ----------------
 class Wav:
     def __init__(self, path):
@@ -158,7 +167,8 @@ def _check(r):
         raise _NoTimestamps(msg)
     hint = {401: "API Key 不对", 403: "没有权限", 404: "接口地址或模型不存在（这个接口可能不支持音频转写）",
             413: "音频太大"}.get(r.status_code, "请求被拒绝")
-    raise AsrApiError(f"语音识别接口报错（{r.status_code}，{hint}）：{msg}")
+    err = _Rejected if r.status_code == 400 else AsrApiError
+    raise err(f"语音识别接口报错（{r.status_code}，{hint}）：{msg}")
 
 
 def _with_retry(fn):
@@ -177,21 +187,41 @@ def _with_retry(fn):
 
 
 def _transcribe_file(ep, path, fmt, language, timed):
-    """/audio/transcriptions：返回接口的 JSON。timed=False 时只要文字。"""
-    data = {"model": ep["model"], "response_format": "verbose_json" if timed else "json", "temperature": "0"}
-    if timed:
-        data["timestamp_granularities[]"] = ["word", "segment"]
-    if language:
-        data["language"] = language
+    """/audio/transcriptions：返回接口的 JSON。timed=False 时只要文字。
+    要时间时先要逐字 + 逐句，被拒（400）就只要逐句；都被拒才当成不给时间（_NoTimestamps，改成切小段只要文字）。"""
     mime = {"mp3": "audio/mpeg", "flac": "audio/flac", "wav": "audio/wav"}[fmt]
 
-    def call():
+    def call(gran):
+        data = {"model": ep["model"], "response_format": "verbose_json" if timed else "json", "temperature": "0"}
+        if gran:
+            data["timestamp_granularities[]"] = gran
+        if language:
+            data["language"] = language
         with _client() as c, open(path, "rb") as f:
             r = c.post(_url(ep, "/audio/transcriptions"), headers={"Authorization": f"Bearer {ep['key']}"},
                        data=data, files={"file": (Path(path).name, f, mime)})
         _check(r)
         return r.json() if r.content.strip()[:1] in (b"{", b"[") else {"text": r.text}
-    return _with_retry(call)
+
+    if not timed:
+        return _with_retry(lambda: call(None))
+    who = (ep["base_url"], ep["model"])
+    tries = [_gran_ok[who]] if who in _gran_ok else list(GRANULARITIES)
+    last = None
+    for gran in tries:
+        try:
+            resp = _with_retry(lambda g=gran: call(g))
+        except _Rejected as e:
+            if who in _gran_ok:  # 已经试出能用的请求方式了，这次被拒是别的原因（比如这段音频有问题）：照实报错
+                raise
+            last = e
+            continue
+        if who not in _gran_ok:
+            _gran_ok[who] = gran
+            if gran != list(GRANULARITIES[0]):
+                log(f"  {ep['model']} 不支持逐字时间，改用逐句时间")
+        return resp
+    raise _NoTimestamps(str(last))
 
 
 SYSTEM = """你是逐字转写员。把音频里说出来的每一句话按原语言逐字写下来：不翻译、不总结、不润色，口语、语气词、方言照原样写；
@@ -404,6 +434,7 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     kind = c.get("api_kind", "transcribe")
     if not ep.get("key") or not ep.get("model"):
         raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
+    _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
     w = Wav(wav)
     total = w.duration
     size = chunk_seconds(c, ep)
@@ -496,6 +527,6 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         (("逐字", timing["word"]), ("逐句", timing["segment"]), ("小段", timing["clip"])) if n) +
         f"），请求 {state['calls']} 次，复用缓存 {state['hits']} 次")
     if timing["segment"] + timing["clip"] and not timing["word"]:
-        log("接口没给逐字时间：字幕自动对时（按逐字时间估计偏移）这次不可用")
+        log("接口没给逐字时间：字幕自动对时改按逐句时间估计（误差大约 0.2 秒）")
     return out, language or state["lang"]
 

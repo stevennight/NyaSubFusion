@@ -9,6 +9,9 @@ from ..textutil import norm
 def estimate_offset(subs, asr, max_shift=10.0):
     """返回 (offset 秒, 改善比例)；字幕时间要加上 offset。比对不出来时返回 (0, 0)。"""
     words = sorted(((w["s"] + w["e"]) / 2, norm(w["w"])) for a in asr for w in a.get("words", []))
+    if len(words) < 50:  # 没有逐字时间（云端接口只给逐句时间）：把每句的字均匀摊在这句的时间里，估整体偏移够用
+        words = sorted((a["start"] + (a["end"] - a["start"]) * (k + 0.5) / len(t), ch)
+                       for a in asr if (t := norm(a.get("text", ""))) for k, ch in enumerate(t))
     if len(words) < 50:
         return 0.0, 0.0
     mids = [m for m, _ in words]

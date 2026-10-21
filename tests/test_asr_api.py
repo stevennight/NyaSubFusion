@@ -65,7 +65,7 @@ class Api:
     """模拟接口：按上传的“音频”（a, b）返回这段里的台词。"""
 
     def __init__(self, mode="verbose"):
-        self.mode = mode          # verbose / words_only / text_only / chat
+        self.mode = mode          # verbose / words_only / text_only / segment_only / chat
         self.requests = []
         self.fail = []            # 依次返回的错误状态码
         self.prompt_tokens = None
@@ -81,6 +81,9 @@ class Api:
             body = req.content.decode("utf-8", "replace")
             span = json.loads(re.search(r'\{"a": [^}]*\}', body).group(0))
             a, b = span["a"], span["b"]
+            # Mistral Voxtral（经 OpenRouter）：要逐字时间就 400，而且不说原因
+            if self.mode == "segment_only" and re.search(r'name="timestamp_granularities\[\]"\r\n\r\nword\r\n', body):
+                return httpx.Response(400, json={"error": {"message": "Provider returned 400", "code": 400}})
             if self.mode == "text_only" and "verbose_json" in body:
                 return httpx.Response(400, json={"error": {"message": "response_format 'verbose_json' is not compatible with model"}})
             inside = [t for t in TRUTH if a <= (t[0] + t[1]) / 2 < b]
@@ -92,6 +95,8 @@ class Api:
             out = {"language": "japanese", "text": "", "words": words}
             if self.mode == "verbose":
                 out["segments"] = segs
+            if self.mode == "segment_only":
+                out = {"language": "ja", "text": "", "segments": segs}
             return httpx.Response(200, json=out)
         assert req.url.path.endswith("/chat/completions")
         body = json.loads(req.content)
@@ -314,3 +319,27 @@ def test_chunk_length_setting():
     # 30 分钟的音频按 3 分钟切：10 块左右，每块不超过 3 分钟（加重叠）
     chunks = plan_chunks(1800.0, lambda lo, hi: hi, 180.0, None, 45.0)
     assert 10 <= len(chunks) <= 11 and all(b - a <= 182.0 for a, b, _, _ in chunks)
+
+
+def test_word_timing_rejected_falls_back_to_segment_timing(wav, api):
+    # OpenRouter + Voxtral：要逐字时间就“Provider returned 400”；改要逐句时间后正常，而且后面的块不再先失败一次
+    api["api"].mode = "segment_only"
+    segs, _ = _run(wav)
+    assert "".join(s["text"] for s in segs).replace("。", "") == "".join(t[2] for t in TRUTH)
+    assert all(s["words"] == [] for s in segs)  # 不编造逐字时间
+    bodies = [r.content.decode("utf-8", "replace") for r in api["api"].requests]
+    with_word = [b for b in bodies if re.search(r'name="timestamp_granularities\[\]"\r\n\r\nword\r\n', b)]
+    spans = {re.search(r'\{"a": [^}]*\}', x).group(0) for x in bodies}
+    assert len(with_word) == 1 and len(bodies) == len(spans) + 1  # 只有第一次试逐字被拒，之后每块直接要逐句
+
+
+def test_subtitle_offset_estimated_from_sentence_timing():
+    from nyasub.fusion.align import estimate_offset
+
+    # 字幕整体比语音早 1 秒；语音只有逐句时间（没有逐字）时也能估出来
+    lines = ["今日はいい天気ですね", "散歩に行きましょうか", "川の水が冷たいです", "鍋を食べるのが楽しみ", "雪がたくさん降りました",
+             "子供たちが遊んでいる", "夕方には帰りましょう", "お茶をいれてください", "山の上は寒いですね", "明日も晴れるといいな"] * 2
+    speech = [{"start": 5.0 * i + 1.0, "end": 5.0 * i + 4.0, "text": t, "words": []} for i, t in enumerate(lines)]
+    subs = [{"start": 5.0 * i, "end": 5.0 * i + 3.0, "text": t} for i, t in enumerate(lines)]
+    off, gain = estimate_offset(subs, speech)
+    assert abs(off - 1.0) <= 0.3 and gain > 0.05
