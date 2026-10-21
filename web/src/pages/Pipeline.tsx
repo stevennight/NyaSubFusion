@@ -344,7 +344,8 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
   const picked = (val("render.video.profiles") as string[]) ?? [];
   const toggle = (n: string) => set("render.video.profiles", picked.includes(n) ? picked.filter((x) => x !== n) : [...picked, n]);
   const ready = !!s.data?.cues.length && !s.running && !dirty;
-  const p = s.progress;
+  // 只显示封装 / 压制自己的进度（语音识别等步骤的进度在上面的步骤图里）
+  const p = s.progress && ["mux", "burn"].includes(s.progress.stage) ? s.progress : null;
   const videos = s.summary?.videos ?? {};
   return (
     <div className="card">
@@ -390,6 +391,7 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
           <span className="dim">{STAGE_LBL[p.stage] ?? p.stage} {pct(p)}%</span>
           <button className="btn sm" onClick={s.cancel}>取消</button>
         </>)}
+        {s.running && !p && <span className="dim">正在处理字幕，完成后才能输出视频</span>}
         {!s.running && (videos.mux || videos.burn) && <span className="dim">已输出：{[videos.mux, videos.burn].filter(Boolean).join("、")}</span>}
       </div>
     </div>
