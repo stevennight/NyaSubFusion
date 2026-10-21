@@ -52,7 +52,10 @@ export type Seg = [string] | [string, string] | [string, string, string];
 export interface Word { t: string; segs: Seg[]; pos: string; p: boolean; num: boolean; src: string; guess: boolean }
 export interface Tokens { orig: Word[] | null; tr: Record<string, Word[]> }
 
-export interface EditResult { cue: Cue | null; history: { undo: number; redo: number } }
+export interface EditResult {
+  cue: Cue | null; history: { undo: number; redo: number };
+  changed?: { id: string | null; at: number | null; what: string };   // 撤销 / 重做：改动的是哪一条、改了什么
+}
 
 export interface ProjectData {
   meta: ProjectSummary["meta"]; src: string; targets: string[]; aspect: number;

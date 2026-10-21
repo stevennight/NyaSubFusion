@@ -684,11 +684,18 @@ def create_app(token: str | None = None) -> FastAPI:
     def undo_redo(pid: str, action: str):
         if action not in ("undo", "redo"):
             raise HTTPException(404)
+        from ..core.edits import describe_change
+
         _, proj = project_paths(pid)
         store = EditStore(proj)
+        before = store.load()
         if (store.undo() if action == "undo" else store.redo()) is None:
             raise HTTPException(400, "没有可以撤销的修改" if action == "undo" else "没有可以重做的修改")
-        return _edit_result(pid)
+        change = describe_change(before, store.load(), undone=action == "undo")
+        res = _edit_result(pid, change["id"])
+        if change["id"] and res["cue"] is None:  # 那一条已经不在了（被拆分 / 合并掉）：只跳时间
+            change["id"] = None
+        return {**res, "changed": change}
 
     # ---------- 术语与读音词典 ----------
     @app.get("/api/series")

@@ -65,7 +65,11 @@ export default function App() {
         {view === "settings" && <SettingsPage />}
         {view === "queue" && <QueuePage onOpenProject={() => setView("pipeline")} />}
       </main>
-      {s.toastMsg && <div className="toast">{s.toastMsg}</div>}
+      {s.toastMsg && (
+        <div className="toast">{s.toastMsg}
+          {s.toastAction && <button className="btn sm" style={{ marginLeft: 12 }} onClick={() => s.toastAction!.run()}>{s.toastAction.label}</button>}
+        </div>
+      )}
     </div>
   );
 }

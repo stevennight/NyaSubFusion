@@ -25,9 +25,12 @@ interface Store {
   cancel: () => Promise<void>;
   bump: () => void;
   setError: (e: string | null) => void;
-  toast: (msg: string) => void;
+  toast: (msg: string, action?: ToastAction) => void;   // action：提示里带一个按钮（比如撤销后的“重做”）
   toastMsg: string | null;
+  toastAction: ToastAction | null;
 }
+
+export interface ToastAction { label: string; run: () => void }
 
 const Ctx = createContext<Store | null>(null);
 const LAST = "nyasub.project";
@@ -47,12 +50,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [toastMsg, setToast] = useState<string | null>(null);
+  const [toastAction, setToastAction] = useState<ToastAction | null>(null);
   const toastTimer = useRef(0);
 
-  const toast = useCallback((msg: string) => {
+  const toast = useCallback((msg: string, action?: ToastAction) => {
     setToast(msg);
+    setToastAction(action ?? null);
     clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+    // 带按钮的多留一会儿，来得及点
+    toastTimer.current = window.setTimeout(() => { setToast(null); setToastAction(null); }, action ? 6000 : 2600);
   }, []);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
 
@@ -183,8 +189,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
-    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg]);
+    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction,
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

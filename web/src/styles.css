@@ -299,3 +299,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .snapline { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #ffd54a; pointer-events: none; z-index: 5 }
 .tl-dragtip { position: absolute; bottom: 25px; transform: translateX(-50%); z-index: 6; pointer-events: none; white-space: nowrap;
   font: 11px/16px Consolas, "Cascadia Mono", monospace; color: #fff; background: #15151bf0; border: 1px solid #ffffff40; border-radius: 4px; padding: 0 6px }
+
+/* 撤销 / 重做后改动的那一行闪一下 */
+@keyframes rowflash { 0%, 60% { background: #ffc35a40 } 100% { background: transparent } }
+.tb tr.flash td { animation: rowflash 1.6s ease-out }
+.toast { display: flex; align-items: center }

@@ -68,8 +68,38 @@ export function EditorPage() {
       if (msg) s.toast(msg);
     } catch (e) { s.setError((e as Error).message); }
   }, [s]);
-  const undo = useCallback(() => s.pid && edit(() => api.undoRedo(s.pid!, "undo"), "已撤销"), [s.pid, edit]);
-  const redo = useCallback(() => s.pid && edit(() => api.undoRedo(s.pid!, "redo"), "已重做"), [s.pid, edit]);
+  // 撤销 / 重做：跳到改动的那一条（闪一下），提示改了什么，提示里可以直接反悔
+  const [flash, setFlash] = useState<string | null>(null);
+  const undoRedo = useCallback(async (action: "undo" | "redo") => {
+    if (!s.pid) return;
+    try {
+      const r = await api.undoRedo(s.pid, action);
+      await s.reload();
+      const ch = r.changed;
+      let where = "";
+      if (r.cue) {
+        setSel(r.cue.id);
+        setFlash(r.cue.id);
+        window.setTimeout(() => setFlash(null), 1600);
+        player.current?.seek(r.cue.start + Math.min(0.5, (r.cue.end - r.cue.start) / 3));
+        where = `${fmt(r.cue.start)}「${r.cue.orig.text.replace(/[｜\n]/g, " ").slice(0, 12)}」的`;
+      } else if (ch?.at != null) {
+        player.current?.seek(ch.at);
+        where = `${fmt(ch.at)} 处的`;
+      }
+      const back = action === "undo" ? "redo" : "undo";
+      s.toast(`${action === "undo" ? "已撤销" : "已重做"}：${where}${ch?.what ?? "修改"}`,
+              { label: back === "redo" ? "重做 (Ctrl+Y)" : "撤销 (Ctrl+Z)", run: () => undoRedoRef.current(back) });
+    } catch (e) { s.setError((e as Error).message); }
+  }, [s]);
+  const undoRedoRef = useRef(undoRedo);
+  undoRedoRef.current = undoRedo;
+  const undo = useCallback(() => undoRedo("undo"), [undoRedo]);
+  const redo = useCallback(() => undoRedo("redo"), [undoRedo]);
+  // 选中的那一条滚到列表里看得见的地方（撤销、上下条、点时间轴时）
+  useEffect(() => {
+    if (sel) document.querySelector(`.cuelist tr[data-id="${sel}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
   const insertAt = useCallback(() => s.pid && edit(() => api.insertCue(s.pid!, { start: Math.round(time * 100) / 100, end: Math.round((time + 2) * 100) / 100 }), "已插入一条空字幕"), [s.pid, edit, time]);
 
   const step = useCallback((dir: number) => {
@@ -161,7 +191,7 @@ export function EditorPage() {
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>
             <tbody>
               {cues.filter(matches).map((c) => (
-                <tr key={c.id} className={`${c.id === sel ? "sel" : ""} ${current.has(c.id) ? "cur" : ""} ${c.id === hint ? "hint" : ""}`} onClick={() => select(c.id)}>
+                <tr key={c.id} data-id={c.id} className={`${c.id === sel ? "sel" : ""} ${current.has(c.id) ? "cur" : ""} ${c.id === hint ? "hint" : ""} ${c.id === flash ? "flash" : ""}`} onClick={() => select(c.id)}>
                   <td><span className={`dot ${c.review}`} /></td><td className="dim">{cues.indexOf(c) + 1}</td>
                   <td className="t">{fmt(c.start)} → {fmt(c.end)}</td><td className="typ">{TYPE_LBL[c.type] ?? c.type}</td>
                   <td>{c.sources.map((x) => <span key={x} className={`badge b-${x[0]}`} style={{ marginRight: 3 }}>{SRC_LBL[x[0]]}</span>)}</td>

@@ -242,6 +242,49 @@ def piece_isolate_ops(cue, seg):
     return ops, cid
 
 
+FIELD_LBL = {"orig": "原文", "tr": "译文", "start": "时间", "end": "时间", "parts": "分段时间", "type": "类型",
+             "review": "审校状态", "delete": "删除", "rect": "位置", "show_orig": "原文显示",
+             "parts_type": "分段类型", "parts_show": "分段原文显示"}
+OP_LBL = {"split": "拆分", "merge": "合并", "insert": "插入"}
+
+
+def describe_change(before, after, undone):
+    """撤销 / 重做前后的修改记录比一比：改的是哪一条、改了什么，界面跳过去并提示。
+    undone = True 表示这是撤销（after 是撤销后的状态）。返回 {"id": 跳到哪一条（可能没有）, "at": 时间（没有 id 时用）, "what": 说明}。"""
+    b, a = normalize(before), normalize(after)
+    ops_b, ops_a = b["ops"], a["ops"]
+    short, long_ = (ops_a, ops_b) if len(ops_a) < len(ops_b) else (ops_b, ops_a)
+    if len(short) != len(long_) and long_[:len(short)] == short:
+        op = long_[len(short)]                      # 撤销 / 重做的是一个结构操作（拆分 / 合并 / 插入）
+        gone = undone                              # 撤销 = 这个操作没了；重做 = 这个操作回来了
+        kind = op.get("op")
+        if kind == "split":
+            cid = op["id"] if gone else op["id"] + "a"
+        elif kind == "merge":
+            cid = op["ids"][0]
+        else:
+            cid = None if gone else op.get("id")
+        n = len(long_) - len(short)
+        what = OP_LBL.get(kind, kind) + (f"等 {n} 步" if n > 1 else "")
+        return {"id": cid, "at": op.get("at") or op.get("start"), "what": what}
+    changed = [cid for cid in set(b["cues"]) | set(a["cues"]) if b["cues"].get(cid) != a["cues"].get(cid)]
+    if not changed:
+        return {"id": None, "at": None, "what": "修改"}
+    cid = changed[0]
+    old, new = b["cues"].get(cid, {}), a["cues"].get(cid, {})
+    keys = [k for k in set(old) | set(new) if old.get(k) != new.get(k)]
+    names = []
+    for k in keys:
+        lbl = FIELD_LBL.get(k, k)
+        if lbl not in names:
+            names.append(lbl)
+    what = "、".join(names) or "修改"
+    if len(changed) > 1:
+        what += f"（共 {len(changed)} 条）"
+    deleted = new.get("delete") and not old.get("delete")
+    return {"id": None if deleted else cid, "at": new.get("start", old.get("start")), "what": what}
+
+
 def next_insert_id(edits):
     n = sum(1 for op in normalize(edits)["ops"] if op.get("op") == "insert")
     return f"u{n + 1}"

@@ -132,3 +132,20 @@ def test_per_segment_type_and_show():
     got = {c["id"]: c for c in apply([cue], {"ops": ops})}
     assert nid == "q1ab" and got[nid]["orig"]["text"] == "散歩" and got[nid]["show_orig"] == "on"
     assert got["q1b"]["type"] == "song" and got["q1aa"]["orig"]["text"] == "今日は"
+
+
+def test_undo_redo_describes_what_changed():
+    from nyasub.core.edits import describe_change
+
+    base = {"cues": {"q3": {"orig": "あ"}}, "ops": []}
+    timed = {"cues": {"q3": {"orig": "あ"}, "q7": {"start": 12.0, "end": 14.0}}, "ops": []}
+    # 撤销改时间：跳到 q7，说明是“时间”
+    assert describe_change(timed, base, undone=True) == {"id": "q7", "at": 12.0, "what": "时间"}
+    # 撤销拆分：回到原来那一条；重做拆分：跳到拆出来的前一半
+    split = {"cues": {}, "ops": [{"op": "split", "id": "q5", "at": 30.0}]}
+    empty = {"cues": {}, "ops": []}
+    assert describe_change(split, empty, undone=True)["id"] == "q5"
+    assert describe_change(empty, split, undone=False) == {"id": "q5a", "at": 30.0, "what": "拆分"}
+    # 重做删除：那一条没了，只给时间
+    deleted = {"cues": {"q9": {"delete": True, "start": 50.0}}, "ops": []}
+    assert describe_change({"cues": {"q9": {"start": 50.0}}, "ops": []}, deleted, undone=False)["id"] is None
