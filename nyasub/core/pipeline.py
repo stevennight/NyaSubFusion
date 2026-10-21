@@ -133,7 +133,10 @@ class Run:
             d = {"vocals": self._separation_model(), "fill_gaps": 1, "v": 2} if self._separate() else {}  # v2：按原音频判断语言
             if self.cfg.asr.backend == "api":
                 ep = self.cfg.endpoint("asr")
-                d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"]}
+                from ..sources.asr_api import chunk_seconds
+
+                d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
+                            "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
             return d or None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
             return {"video": file_stamp(self.proj.video), "tracks": [

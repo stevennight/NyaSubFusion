@@ -47,6 +47,7 @@ class AsrCfg(_M):
     api_kind: Literal["transcribe", "gemini"] = "transcribe"  # transcribe：/v1/audio/transcriptions；gemini：多模态大模型听音频
     api_provider: str = ""                   # 用哪个接口（llm.providers 里的 name）；空 = 和翻译用同一个
     api_model: str = "gpt-transcribe"        # 空 = 按 api_kind 的默认模型
+    api_chunk_seconds: float = 0             # 每块上传多长（秒）；0 = 自动：OpenRouter 3 分钟（它上游 60 秒超时），其它 10 分钟
 
 
 class Region(_M):

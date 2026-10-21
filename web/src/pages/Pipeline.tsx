@@ -172,7 +172,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                       <button key={v} className={asrBackend === v ? "on" : ""} onClick={() => set("asr.backend", v)}>{l}</button>)}</div>
                   {asrBackend === "api" ? <>
                     <span />
-                    <span className="dim" style={{ fontSize: 11.5 }}>按音频时长付费（一小时节目约 0.3~0.4 美元）；接口和 API Key 在「设置」里管理</span>
+                    <span className="dim" style={{ fontSize: 11.5 }}>按音频时长付费（一小时节目约 0.2~0.4 美元，看模型）；接口和 API Key 在「设置」里管理</span>
                     <span className="lbl">接口</span>
                     <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
                       <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
@@ -187,6 +187,15 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                     <span className="lbl">模型</span>
                     <input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[asrKind].model}
                       onChange={(e) => set("asr.api_model", e.target.value)} />
+                    <span />
+                    <span className="dim" style={{ fontSize: 11.5 }}>要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0</span>
+                    <span className="lbl">每块时长</span>
+                    <select className="inp" value={String(Number(val("asr.api_chunk_seconds") ?? 0))}
+                            title="音频切成多长一块上传。太长可能超过接口的处理时间上限（OpenRouter 是 60 秒）而失败；太短切点多，句子被切断的机会多一点"
+                            onChange={(e) => set("asr.api_chunk_seconds", Number(e.target.value))}>
+                      <option value="0">自动（OpenRouter 3 分钟，其它 10 分钟）</option>
+                      {[1, 2, 3, 5, 10, 20].map((m) => <option key={m} value={String(m * 60)}>{m} 分钟</option>)}
+                    </select>
                   </> : <>
                   <span className="lbl">模型</span>
                   <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>

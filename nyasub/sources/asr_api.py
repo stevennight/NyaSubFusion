@@ -33,6 +33,8 @@ from .. import env
 from ..env import Cancelled, check_cancel, log, progress
 
 CHUNK = 600.0       # 每块大约这么长（接口有文件大小上限：OpenAI 25 MB，10 分钟 64 kbps 的 mp3 不到 5 MB）
+CHUNK_SHORT = 180.0  # 处理时间有上限的接口（OpenRouter：上游 60 秒超时）默认切短一些
+CHUNK_RANGE = (30.0, 1500.0)
 OVERLAP = 2.0       # 相邻两块重叠这么长
 SEARCH = 30.0       # 切点在 [目标 - SEARCH, 目标] 里找最安静的地方，免得切在一个字中间
 CLIP = 25.0         # 只给文字的接口：切成不超过这么长的小段
@@ -388,6 +390,14 @@ def _run_parallel(jobs, fn, on_done):
     pool.shutdown(wait=True)
 
 
+def chunk_seconds(c: dict, ep: dict) -> float:
+    """每块上传多长：设置里填了就用（限制在 30 秒 ~ 25 分钟）；没填（0）按接口自动选。"""
+    v = float(c.get("api_chunk_seconds") or 0)
+    if v > 0:
+        return min(max(v, CHUNK_RANGE[0]), CHUNK_RANGE[1])
+    return CHUNK_SHORT if "openrouter.ai" in (ep.get("base_url") or "") else CHUNK
+
+
 def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None):
     """c 是 AsrCfg 的 dict，ep 是 Config.endpoint("asr")。返回 (语音段列表, 检测到的语言)，和 asr.transcribe 一样。
     duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。"""
@@ -396,9 +406,10 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
     w = Wav(wav)
     total = w.duration
-    chunks = plan_chunks(total, w.quiet)
+    size = chunk_seconds(c, ep)
+    chunks = plan_chunks(total, w.quiet, size, None, min(SEARCH, size / 4))
     log(f"云端语音识别：{ep.get('name') or ep['base_url']} · {ep['model']}（{'转写接口' if kind == 'transcribe' else '多模态大模型'}），"
-        f"{total / 60:.1f} 分钟切成 {len(chunks)} 块上传")
+        f"{total / 60:.1f} 分钟切成 {len(chunks)} 块上传（每块约 {size / 60:g} 分钟）")
     # 取消时还在上传的工作线程可能开着块文件（Windows 删不掉）：清理失败不报错，留给系统临时目录
     tmp = tempfile.TemporaryDirectory(prefix="nyasub-asr-", ignore_cleanup_errors=True)
     state = {"timed": True, "lang": None, "done": 0.0, "hits": 0, "calls": 0}

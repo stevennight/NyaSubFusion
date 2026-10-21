@@ -293,8 +293,24 @@ def test_pipeline_uses_api_backend_and_keeps_local_fingerprint(sample, monkeypat
     cfg, _ = config.load(None, None, {"project": {"source": "ja"}, "ocr": {"enabled": False},
                                       "asr": {"backend": "api", "separate": "off", "api_model": "whisper-1"}})
     r = pipeline.Run(sample, cfg, pipeline.Options(until="asr"))
-    assert r._extra("asr") == {"api": {"kind": "transcribe", "base_url": "https://api.openai.com/v1", "model": "whisper-1"}}
+    assert r._extra("asr") == {"api": {"kind": "transcribe", "base_url": "https://api.openai.com/v1", "model": "whisper-1",
+                                       "chunk": 600.0}}  # 每块时长也算进指纹：改了要重新识别
     r.run()
     out = json.loads((sample.with_name("sample.nyasub") / "stages" / "asr.json").read_text(encoding="utf-8"))
     assert out["segments"][0]["text"] == "テスト" and out["language"] == "ja"
     assert calls and calls[0][:3] == ("api", "whisper-1", "ja") and calls[0][3].endswith("llm_cache")
+
+
+def test_chunk_length_setting():
+    from nyasub.sources.asr_api import chunk_seconds, plan_chunks
+
+    orouter = {"base_url": "https://openrouter.ai/api/v1"}
+    openai = {"base_url": "https://api.openai.com/v1"}
+    assert chunk_seconds({}, orouter) == 180.0       # 自动：OpenRouter 上游 60 秒超时，切短
+    assert chunk_seconds({}, openai) == 600.0
+    assert chunk_seconds({"api_chunk_seconds": 120}, openai) == 120.0   # 手动设置优先
+    assert chunk_seconds({"api_chunk_seconds": 5}, openai) == 30.0      # 太短 / 太长都夹到范围里
+    assert chunk_seconds({"api_chunk_seconds": 99999}, openai) == 1500.0
+    # 30 分钟的音频按 3 分钟切：10 块左右，每块不超过 3 分钟（加重叠）
+    chunks = plan_chunks(1800.0, lambda lo, hi: hi, 180.0, None, 45.0)
+    assert 10 <= len(chunks) <= 11 and all(b - a <= 182.0 for a, b, _, _ in chunks)
