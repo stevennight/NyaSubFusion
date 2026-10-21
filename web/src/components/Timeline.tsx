@@ -145,8 +145,11 @@ export function Timeline(p: Props) {
     if (busy.current) return;
     busy.current = true;
     const zone = zoneAt(e, c);
-    const i = p.cues.findIndex((x) => x.id === c.id);
-    const prev = p.cues[i - 1], next = p.cues[i + 1];
+    // 相邻条只看同一类：说明类（贴在画面字旁边）和台词本来就会时间重叠，不能互相挡住
+    const isInfo = (x: Cue) => ["info", "name", "title"].includes(x.type);
+    const same = p.cues.filter((x) => isInfo(x) === isInfo(c));
+    const i = same.findIndex((x) => x.id === c.id);
+    const prev = same[i - 1], next = same[i + 1];
     const o = { start: c.start, end: c.end, parts: partsOf(c)?.map(([a, b]): Span => [a, b]) ?? null };
     const first = o.parts ? o.parts[0] : [o.start, o.end];
     const last = o.parts ? o.parts[o.parts.length - 1] : [o.start, o.end];
