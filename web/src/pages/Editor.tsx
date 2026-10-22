@@ -11,6 +11,13 @@ type Filter = "all" | "todo" | "asr" | "ocr";
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
+// 审校页布局：视频高度（占窗口高度的百分比）和要不要显示参考轨，记在本机
+const LAYOUTS: [string, number, string][] = [["视频大", 56, "视频为主：画面大，列表少几行"], ["均衡", 40, "视频和列表差不多"], ["列表大", 22, "列表为主：一屏多看几条字幕"]];
+const LAYOUT_KEY = "nyasub.edLayout";
+function loadLayout(): { pv: number; ref: boolean } {
+  try { return { pv: 40, ref: true, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}") }; } catch { return { pv: 40, ref: true }; }
+}
+
 /** 读“时:分:秒.毫秒”，也接受“分:秒”或者直接写秒；格式不对返回 null。 */
 function parseHms(v: string): number | null {
   const parts = v.trim().replace(/：/g, ":").replace(/[，,]/g, ".").split(":");
@@ -110,6 +117,14 @@ export function EditorPage() {
 
   // 播放倍速：记在本机，下次打开还是这个速度
   const [playing, setPlaying] = useState(false);
+  const [layout, setLayoutState] = useState(loadLayout);
+  const setLayout = useCallback((v: { pv: number; ref: boolean } | ((l: { pv: number; ref: boolean }) => { pv: number; ref: boolean })) => {
+    setLayoutState((l) => {
+      const n = typeof v === "function" ? v(l) : v;
+      try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(n)); } catch { /* 存不了就只在这次有效 */ }
+      return n;
+    });
+  }, []);
   const [rate, setRateState] = useState(() => { try { return Number(localStorage.getItem("nyasub.rate")) || 1; } catch { return 1; } });
   const setRate = useCallback((r: number) => {
     setRateState(r);
@@ -148,7 +163,7 @@ export function EditorPage() {
   const selected = cues.find((c) => c.id === sel) ?? null;
 
   return (
-    <div className="editor">
+    <div className="editor" style={{ "--pv": `${layout.pv}vh` } as React.CSSProperties}>
       <div className="player">
         <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying} />
         <div className="pctl">
@@ -168,12 +183,27 @@ export function EditorPage() {
           </select>
         </div>
       </div>
-      <Timeline duration={duration} time={time} pps={pps} subs={d.subs} ocr={d.ocr} asr={d.asr} fused={d.fused.items} cues={cues}
+      <Timeline refLanes={layout.ref} onToggleRef={() => setLayout((l) => ({ ...l, ref: !l.ref }))} duration={duration} time={time} pps={pps} subs={d.subs} ocr={d.ocr} asr={d.asr} fused={d.fused.items} cues={cues}
                 target={target} peaks={peaks} selected={sel} hint={hint} onSeek={(t) => player.current?.seek(t)} onSelect={(id) => select(id)}
                 onCueTime={(id, t) => edit(() => api.editCue(s.pid!, id, t), "时间已保存")}
                 onCueSplit={(id, at) => edit(() => api.splitCue(s.pid!, id, at), "已拆成两条")}
                 onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
                 onDropped={(c: Candidate) => { s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`); player.current?.seek(c.start); }} />
+      <div className="splitter" title="上下拖动：调整视频和字幕列表的大小" onMouseDown={(e) => {
+        // 往下拖 = 视频变大
+        e.preventDefault();
+        const y0 = e.clientY, pv0 = layout.pv, vh = window.innerHeight / 100;
+        const move = (ev: MouseEvent) => setLayout((l) => ({ ...l, pv: Math.min(70, Math.max(14, Math.round(pv0 + (ev.clientY - y0) / vh))) }));
+        const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); document.body.classList.remove("rowresize"); };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+        document.body.classList.add("rowresize");
+      }}>
+        <span className="grip" />
+        <div className="seg" onMouseDown={(e) => e.stopPropagation()}>
+          {LAYOUTS.map(([l, v, tip]) => <button key={l} title={tip} className={layout.pv === v ? "on" : ""} onClick={() => setLayout((l) => ({ ...l, pv: v }))}>{l}</button>)}
+        </div>
+      </div>
       <div className="cuelist">
         {(d.orphans?.length ?? 0) > 0 && (
           <details className="orphans">

@@ -112,14 +112,15 @@ table.tb { width: 100%; border-collapse: collapse }
 .stat .d { font-size: 11.5px; color: var(--tx3) }
 
 /* 审校 */
-.editor { display: grid; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto 214px minmax(150px, 1fr); gap: 10px; height: 100%; padding: 12px; overflow: hidden }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto auto 14px minmax(150px, 1fr); gap: 8px; height: 100%; padding: 12px; overflow: hidden; --pv: 40vh }
 .player { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0 }
-.player .frame, .pctl { width: min(100%, calc(40vh * 16 / 9)) }
+.player .frame { width: min(100%, calc(var(--pv) * 16 / 9)) }
+.pctl { width: 100% }
 .pctl { display: flex; align-items: center; gap: 8px }
 .pctl .time { font-variant-numeric: tabular-nums; color: var(--tx2); min-width: 116px }
 .iconbtn { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line2); background: var(--panel2); display: grid; place-items: center; padding: 0; flex: none }
 .iconbtn.big { width: 36px; height: 36px; background: var(--acc); border-color: var(--acc); color: #2a0d18 }
-.inspector { grid-column: 2; grid-row: 1/4; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px }
+.inspector { grid-column: 2; grid-row: 1/5; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px }
 .isec { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px }
 .timeline { grid-column: 1; grid-row: 2; display: flex; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); overflow: hidden; min-width: 0 }
 .tl-labels { width: 84px; flex: none; border-right: 1px solid var(--line); background: var(--bg2) }
@@ -138,7 +139,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .blk2.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff }
 .blk2.flag::after { content: ""; position: absolute; right: 3px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn) }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--acc); pointer-events: none; z-index: 3 }
-.cuelist { grid-column: 1; grid-row: 3; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-height: 0 }
+.cuelist { grid-column: 1; grid-row: 4; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-height: 0 }
 .cuelist .hd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line) }
 .cuelist .bd { overflow: auto; flex: 1; min-height: 0 }
 .cuelist tr { cursor: pointer }
@@ -309,3 +310,14 @@ table.tb { width: 100%; border-collapse: collapse }
 .orphans { margin: 0 0 8px; padding: 8px 12px; border: 1px solid #ffc35a66; background: #2a2516; border-radius: 8px; font-size: 12.5px }
 .orphans summary { cursor: pointer; color: var(--warn) }
 .orphans .orphan { gap: 8px; padding: 5px 0; border-top: 1px dashed #ffc35a33 }
+
+/* 审校页：视频 / 列表之间的分隔条（上下拖动调大小，右边三个预设） */
+.splitter { grid-column: 1; grid-row: 3; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: row-resize; position: relative }
+.splitter .grip { width: 48px; height: 4px; border-radius: 2px; background: var(--line2) }
+.splitter:hover .grip { background: var(--acc2) }
+.splitter .seg { position: absolute; right: 0; cursor: default }
+.splitter .seg button { padding: 0 8px; font-size: 11px; line-height: 16px }
+body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: none }
+.tl-labels .rl { padding: 0 2px }
+.tl-ref { font-size: 10.5px; color: var(--tx3); background: none; border: none; padding: 0 4px; cursor: pointer; white-space: nowrap }
+.tl-ref:hover { color: var(--tx) }

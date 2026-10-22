@@ -42,9 +42,12 @@ interface Props {
   onCueTime?: (cueId: string, t: CueTimes) => Promise<void>;
   onCueSplit?: (cueId: string, at: number) => void;
   onCueCut?: (cueId: string, t: number) => void;
+  refLanes?: boolean;                      // 显示参考轨（字幕 / 画面字 / 语音 / 原文）；false = 只留波形和译文
+  onToggleRef?: () => void;
 }
 
 export function Timeline(p: Props) {
+  const showRef = p.refLanes ?? true;
   const W = Math.max(200, p.duration * p.pps + 30);
   const scroll = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -298,12 +301,17 @@ export function Timeline(p: Props) {
   return (
     <div className="timeline" ref={root}>
       <div className="tl-labels">
-        <div className="rl" />
+        <div className="rl">
+          {p.onToggleRef && <button className="tl-ref" title={showRef ? "收起参考轨（字幕 / 画面字 / 语音 / 原文），只留波形和译文" : "展开参考轨"}
+                                    onClick={p.onToggleRef}>{showRef ? "▾ 参考轨" : "▸ 参考轨"}</button>}
+        </div>
         <div className="wv"><i style={{ background: "#666" }} />波形</div>
-        <div><i style={{ background: "var(--c-sub)" }} />字幕</div>
-        <div><i style={{ background: "var(--c-ocr)" }} />画面字</div>
-        <div><i style={{ background: "var(--c-asr)" }} />语音</div>
-        <div><i style={{ background: "var(--c-fuse)" }} />原文</div>
+        {showRef && <>
+          <div><i style={{ background: "var(--c-sub)" }} />字幕</div>
+          <div><i style={{ background: "var(--c-ocr)" }} />画面字</div>
+          <div><i style={{ background: "var(--c-asr)" }} />语音</div>
+          <div><i style={{ background: "var(--c-fuse)" }} />原文</div>
+        </>}
         <div><i style={{ background: "var(--c-tr)" }} />译文</div>
       </div>
       <div className="tl-scroll" ref={scroll}>
@@ -314,12 +322,14 @@ export function Timeline(p: Props) {
           <div className="lane wv" style={{ width: W }} onMouseDown={(e) => onDown(e, "seek")}>
             <canvas ref={canvas} style={{ position: "absolute", top: 0, left: view.left, width: view.width, height: 36 }} />
           </div>
-          {lane("sc", p.subs)}
-          {lane("so", p.ocr)}
-          {lane("sa", p.asr)}
-          <div className="lane" style={{ width: W }}>
-            {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.orig.text}</div>)}
-          </div>
+          {showRef && <>
+            {lane("sc", p.subs)}
+            {lane("so", p.ocr)}
+            {lane("sa", p.asr)}
+            <div className="lane" style={{ width: W }}>
+              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.orig.text}</div>)}
+            </div>
+          </>}
           <div className="lane" style={{ width: W }}>
             {p.cues.map((c) => {
               const lv = live?.id === c.id ? live : null;
