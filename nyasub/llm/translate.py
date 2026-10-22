@@ -485,10 +485,11 @@ def add_quality_flags(cues):
     return cues
 
 
-def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruction="", sources=()):
+def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruction="", sources=(), orig_edited=False):
     """整句重译：给出 3 个候选 [{"orig": 分好段的原文, "tr": 分好段的译文}]。
     分段可以保持，也可以按来源字幕的时间、停顿和每屏长度重新分（原文文字不变，只动“｜”的位置）。
-    context 是前后几条字幕（含当前条）；sources 是这条字幕的来源条目（带时间）。"""
+    context 是前后几条字幕（含当前条）；sources 是这条字幕的来源条目（带时间）。
+    orig_edited：用户手动改过原文——按改后的原文翻译，来源只用来看时间和语境，原文里删掉的不能从来源里加回来。"""
     from ..core import segments
     from .client import LLM
 
@@ -503,7 +504,10 @@ def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruc
               "分段要对应来源里原来的换屏和说话的停顿（看来源的时间），每屏一眼读得完、不超过 2 行；"
               "一屏放得下又没有明显停顿的不要分。原文和译文必须分成同样多段、一一对应，"
               "原文只能调整“｜”的位置，文字一个字都不能改。不同候选的分段可以不同。\n"
-              f"{tgt.prompt_target_rules(cfg.render.lang_options.get(tgt_code, {}))}\n"
+              + ("这条字幕的原文是用户手动改过的：严格按“本条当前分段”里的原文翻译。来源是改之前识别到的内容，"
+                 "只用来参考时间、停顿和语境；原文里没有的内容（被删掉的说话人标注、语气词、半句话等）不要从来源里加回来。\n"
+                 if orig_edited else "")
+              + f"{tgt.prompt_target_rules(cfg.render.lang_options.get(tgt_code, {}))}\n"
               '输出 JSON：{"alts": [{"orig": "用｜分好段的原文", "tr": "用｜分好同样多段的译文"}, ...]}')
     parts = cue.get("parts") or [[cue["start"], cue["end"]]]
     o_ps = segments.pieces(cur_orig) if len(parts) > 1 else [cur_orig]
@@ -517,7 +521,8 @@ def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruc
         mark = "→ 本条" if c["id"] == cue["id"] else "　 "
         ctx.append(f"{mark} {c['orig']['text'].replace(chr(10), ' / ')}　〔当前译文：{c.get('tr', {}).get(tgt_code, {}).get('text', '')}〕")
     user = (f"## 术语表\n{prompts.glossary_text(terms)}\n\n## 本条当前分段\n" + "\n".join(seg_lines)
-            + ("\n\n## 本条的来源\n" + "\n".join(src_lines) if src_lines else "")
+            + ((("\n\n## 本条改之前的来源（只看时间和语境，内容以原文为准）\n" if orig_edited else "\n\n## 本条的来源\n")
+                + "\n".join(src_lines)) if src_lines else "")
             + "\n\n## 前后文\n" + "\n".join(ctx))
     if instruction:
         user += f"\n\n## 额外要求\n{instruction}"

@@ -799,8 +799,13 @@ def create_app(token: str | None = None) -> FastAPI:
         tgt = lang.canonical(body.get("lang") or run.cfg.project.targets[0])
         terms = ((run.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
         items = {it["id"]: it for it in (run.results.get("fuse") or {}).get("items", [])}
+        # 用户手动改过原文（这一条，或者拆分前的那一条）：重译以改后的原文为准，来源只看时间和语境
+        fields = EditStore(run.proj).load()["cues"]
+        base = rebase.split_id(cid)[0]
+        edited = "orig" in fields.get(cid, {}) or (base is not None and "orig" in fields.get(base, {}))
         alts = do(run.cfg, run.proj / "llm_cache", cues[i], cues[max(0, i - 3): i + 4], run.src, tgt, terms,
-                  body.get("instruction", ""), [items[x] for x in cues[i].get("sources", []) if x in items])
+                  body.get("instruction", ""), [items[x] for x in cues[i].get("sources", []) if x in items],
+                  orig_edited=edited)
         return {"alts": alts, "lang": tgt}
 
     @app.post("/api/projects/{pid}/export")

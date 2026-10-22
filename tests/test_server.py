@@ -132,6 +132,20 @@ def test_media_and_retranslate(client, sample):
     assert r["alts"][0] == {"orig": flat[:4] + "｜" + flat[4:], "tr": "甲｜乙"}
     assert r["alts"][1] == {"orig": orig, "tr": "丙 丁"}
 
+    # 用户手动改过原文：重译以改后的原文为准，来源只当时间和语境参考
+    seen = {}
+
+    def call(self, s, u, images=None):
+        seen["system"], seen["user"] = s, u
+        return {"alts": ["甲"]}
+    llm_client.LLM._call = call
+    client.post(f"/api/projects/{pid}/cues/q1/retranslate", json={"instruction": "不改原文时"})
+    assert "手动改过" not in seen["system"] and "## 本条的来源" in seen["user"]
+    client.patch(f"/api/projects/{pid}/cues/q1", json={"orig": "改过的原文"})
+    client.post(f"/api/projects/{pid}/cues/q1/retranslate", json={"instruction": "改了原文后"})
+    assert "原文是用户手动改过的" in seen["system"] and "改过的原文" in seen["user"]
+    assert "## 本条改之前的来源（只看时间和语境，内容以原文为准）" in seen["user"]
+
 
 def test_token_required(sample):
     with TestClient(create_app("secret")) as c:
