@@ -5,7 +5,7 @@ import { api, TOKEN } from "../api";
 import { useStore } from "../store";
 import type { Candidate, MediaInfo, Preview } from "../types";
 import { fmt, pct } from "../util";
-import { SubtitleOverlay, useSize } from "./SubtitleOverlay";
+import { SubtitleOverlay, useSize, type OnMoveSub } from "./SubtitleOverlay";
 
 export interface PlayerHandle { seek: (t: number) => void; toggle: () => void; playing: boolean }
 
@@ -14,7 +14,8 @@ export const Player = forwardRef<PlayerHandle, {
   controls?: boolean;   // 在画面下方显示播放 / 进度条（审校页有自己的时间轴，不用）
   rate?: number;        // 播放倍速（声音保持原来的音调）
   onPlaying?: (playing: boolean) => void;   // 开始 / 暂停播放时通知（外面自己画的播放按钮用）
-}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false, rate = 1, onPlaying }, ref) {
+  onMoveSub?: OnMoveSub;                    // 传了就能在画面上拖字幕改位置（审校页）
+}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false, rate = 1, onPlaying, onMoveSub }, ref) {
   const s = useStore();
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
@@ -127,7 +128,7 @@ export const Player = forwardRef<PlayerHandle, {
         )}
         {failed && <div className="wait"><div>无法播放这个视频
           {src?.error && <div className="dim" style={{ fontSize: 11.5, marginTop: 6, maxWidth: 480, wordBreak: "break-all" }}>{src.error}</div>}</div></div>}
-        {showSubs && <SubtitleOverlay preview={preview} time={time} width={size.w} height={size.h} boxes={boxes} />}
+        {showSubs && <SubtitleOverlay preview={preview} time={time} width={size.w} height={size.h} boxes={boxes} onMove={onMoveSub} />}
       </div>
       {controls && (
         <div className="pctl" style={{ width: "100%" }}>

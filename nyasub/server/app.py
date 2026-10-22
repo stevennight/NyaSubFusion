@@ -553,12 +553,13 @@ def create_app(token: str | None = None) -> FastAPI:
         out = []
         for p in placed:
             it = p["item"]
-            base = {"kind": p["kind"], "start": it["start"], "end": it["end"], "sources": it.get("sources", [])}
+            base = {"kind": p["kind"], "start": it["start"], "end": it["end"], "sources": it.get("sources", []),
+                    "cue": it.get("cue"), "moved": bool(it.get("pos"))}
             if p["kind"] == "info":
                 base.update(style=prof.info_style, lines=[layout.plain(l) for l in it["layers"][0][2]],
                             top=bool(p.get("top")), an=p.get("an"), x=p.get("x"), y=p.get("y"))
             else:
-                base.update(margin_v=p["margin_v"], type=it.get("type"), rows=[
+                base.update(margin_v=p["margin_v"], type=it.get("type"), x=p.get("x"), y=p.get("y"), rows=[
                     {"style": r["ly"].style, "role": r["ly"].role, "chunks": [[t, rt] for t, rt, _, _ in r["chunks"]],
                      "rsize": r["rsize"], "rcolor": r["ly"].annotate.color, "height": r["height"]} for r in p["rows"]])
             out.append(base)

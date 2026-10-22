@@ -143,6 +143,7 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     返回 (px, py, 用到的样式, 位置列表)：
       说明类 {"kind": "info", "item", "an", "x", "y"} 或 {"kind": "info", "item", "top": True}
       台词   {"kind": "main", "item", "margin_v", "rows", "ruby"}（margin_v 是底边到画面底部的距离）
+             手动拖过位置的再带 "x", "y"（底边中点，像素）
     """
     py = 1080
     px = int(round(py * aspect))
@@ -163,7 +164,9 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     info_st = used.get(profile.info_style)
     for it in (i for i in items if i["kind"] == "info"):
         lines = [plain(l) for l in it["layers"][0][2]]
-        if profile.info_mode == "near" and it.get("rect"):
+        if it.get("pos"):  # 手动拖过：底边中点放在拖到的地方
+            placed.append({"kind": "info", "item": it, "an": 2, "x": round(it["pos"][0] * px), "y": round(it["pos"][1] * py)})
+        elif profile.info_mode == "near" and it.get("rect"):
             m = fonts.metrics(info_st.font)
             w = max(m.width(l, info_st.size) for l in lines)
             h = len(lines) * info_st.size * 1.25
@@ -176,10 +179,15 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
 
     for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: i["start"]):
         rows = _rows(it, used)
+        ruby = any(r["ruby"] for r in rows)
+        if it.get("pos"):  # 手动拖过：不再自动避让硬字幕
+            x, y = round(it["pos"][0] * px), round(it["pos"][1] * py)
+            placed.append({"kind": "main", "item": it, "margin_v": py - y, "rows": rows, "ruby": ruby, "x": x, "y": y})
+            continue
         w = max((r["width"] for r in rows), default=0) + 12
         h = sum(r["height"] for r in rows)
         mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
-        placed.append({"kind": "main", "item": it, "margin_v": mv, "rows": rows, "ruby": any(r["ruby"] for r in rows)})
+        placed.append({"kind": "main", "item": it, "margin_v": mv, "rows": rows, "ruby": ruby})
     return px, py, used, placed
 
 
@@ -195,7 +203,7 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             out.append(f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{tag}{text}")
             continue
         if p["ruby"]:
-            out += _positioned(it, p["rows"], px, py - p["margin_v"])
+            out += _positioned(it, p["rows"], px, py - p["margin_v"], p.get("x"))
             continue
         first = it["layers"][0][0].style
         parts = []
@@ -203,6 +211,8 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
             seg = esc("\n".join(plain(l) for l in lines))
             parts.append(seg if k == 0 else f"{{\\r{ly.style}}}{seg}")
         body = "\\N".join(parts)
+        if p.get("x") is not None:
+            body = f"{{\\an2\\pos({p['x']},{p['y']})}}" + body
         out.append(f"Dialogue: 0,{ts(it['start'])},{ts(it['end'])},{first},,0,0,{p['margin_v']},,{body}")
     _save(path, out)
 
@@ -243,7 +253,7 @@ def _rows(it, used):
     return rows
 
 
-def _positioned(it, rows, px, bottom):
+def _positioned(it, rows, px, bottom, cx=None):
     """逐块定位：底字和注音都用 \\an2 以同一个中心 x 定位，注音一定正好在底字上方；
     宽度只影响块与块之间的间距。没有注音的块用 \\an1 从左边定位。"""
     out = []
@@ -251,7 +261,7 @@ def _positioned(it, rows, px, bottom):
     y = bottom
     for r in reversed(rows):
         ly, st = r["ly"], r["st"]
-        x = px / 2 - r["width"] / 2
+        x = (px / 2 if cx is None else cx) - r["width"] / 2
         ruby_y = y - st.size - st.size * RUBY_GAP
         col = _inline_color(ly.annotate.color) if ly.annotate.color else ""
         bord = st.outline * ly.annotate.size

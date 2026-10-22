@@ -165,7 +165,8 @@ export function EditorPage() {
   return (
     <div className="editor" style={{ "--pv": `${layout.pv}vh` } as React.CSSProperties}>
       <div className="player">
-        <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying} />
+        <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying}
+                onMoveSub={(cid, pos) => { setSel(cid); edit(() => api.editCue(s.pid!, cid, { pos }), "位置已保存（右栏可以恢复自动）"); }} />
         <div className="pctl">
           <button className="iconbtn" title="上一条 (J)" onClick={() => step(-1)}>⏮</button>
           <button className="iconbtn big" title={playing ? "暂停（空格）" : "播放（空格）"} onClick={() => player.current?.toggle()}>{playing ? "❚❚" : "▶"}</button>
@@ -364,13 +365,17 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
           <h3 style={{ margin: 0 }}>#{index + 1}</h3><span className={`dot ${cue.review}`} /><span className="dim">{cue.review === "ok" ? "已审" : "待审校"}</span>
           <span className="sp" /><button className="btn sm" onClick={() => onStep(-1)}>↑</button><button className="btn sm" onClick={() => onStep(1)}>↓</button>
         </div>
-        <div className="kv" style={{ gridTemplateColumns: "44px 1fr" }}>
+        <div className="kv" style={{ gridTemplateColumns: "56px 1fr" }}>
           <span className="lbl">时间</span>
           <span className="dim">{fmt(cue.start)} → {fmt(cue.end)} · {(cue.end - cue.start).toFixed(1)}s{multi ? ` · 分 ${segs.length} 段显示` : ""}</span>
           <span className="lbl">类型</span>
           <select className="inp" value={cue.type} onChange={(e) => patch({ type: e.target.value })}>
             {Object.entries(TYPE_LBL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          <span className="lbl">画面位置</span>
+          {cue.pos
+            ? <div className="row">已手动放置<span className="sp" /><button className="btn sm" onClick={() => patch({ pos: null }, "已恢复自动位置")}>恢复自动</button></div>
+            : <span className="dim" style={{ fontSize: 12 }}>自动（可以在视频上直接拖动这条字幕）</span>}
           {!["info", "name", "title"].includes(cue.type) && (() => {
             // 原文要不要显示：默认画面上已经有这句硬字幕时不显示；审校时可以强制显示 / 不显示
             const onSegs = (cue.parts_onscreen ?? []).flatMap((on, i) => (on ? [i + 1] : []));
@@ -393,8 +398,8 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
             const srcs = cue.sources.map((id) => items[id]).filter((it) => it?.rect);
             const value = same(cue.rect, TOP) ? "top" : srcs.find((it) => same(it.rect, cue.rect))?.id ?? "auto";
             return (<>
-              <span className="lbl">位置</span>
-              <select className="inp" value={value} title="显示在画面上哪里（输出时译文贴在这处画面字旁边）"
+              <span className="lbl">跟随</span>
+              <select className="inp" value={value} disabled={!!cue.pos} title={cue.pos ? "已经在画面上手动放过位置，这一项不起作用（恢复自动后才按这里）" : "显示在画面上哪里（输出时译文贴在这处画面字旁边）"}
                       onChange={(e) => {
                         const v = e.target.value;
                         patch({ rect: v === "auto" ? null : v === "top" ? TOP : items[v].rect }, "位置已更改");

@@ -321,3 +321,7 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .tl-labels .rl { padding: 0 2px }
 .tl-ref { font-size: 10.5px; color: var(--tx3); background: none; border: none; padding: 0 4px; cursor: pointer; white-space: nowrap }
 .tl-ref:hover { color: var(--tx) }
+
+/* 审校页：画面上的字幕可以拖 */
+.subs .drag { pointer-events: auto; cursor: move }
+.subs .drag:hover { outline: 1px dashed #ffffff88; outline-offset: 2px }

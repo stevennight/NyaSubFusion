@@ -72,8 +72,18 @@ def build(cues, profile, cfg, src_code, tokens=None):
                     info.append(item)
             continue
         main += _expand(cue, layers, profile, cfg, (tokens or {}).get(cue.get("id"), {}), seen)
-    main = _extend_short(_resolve_overlaps(main), profile.min_duration)
-    return main + info
+    # 手动放过位置的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
+    fixed = [m for m in main if m.get("pos")]
+    main = _extend_short(_resolve_overlaps([m for m in main if not m.get("pos")]), profile.min_duration)
+    return main + fixed + info
+
+
+def _pos(cue):
+    """手动拖过的位置：[x, y]（相对画面宽高 0~1，是字幕块底边中点）；没有或不合法返回 None。"""
+    p = cue.get("pos")
+    if isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, (int, float)) for v in p):
+        return [min(max(float(p[0]), 0.0), 1.0), min(max(float(p[1]), 0.0), 1.0)]
+    return None
 
 
 def _source_of(cue, ly, code):
@@ -92,7 +102,7 @@ def _info_item(cue, layers, cfg):
             opts = _opts(cfg, code)
             lines = pack.wrap(pack.display(text, opts), _max_chars(ly, pack, opts) + 4)
             return {"start": cue["start"], "end": cue["end"], "kind": "info", "layers": [(ly, code, [[(l, None)] for l in lines])],
-                    "rect": cue.get("rect"), "sources": cue.get("sources", [])}
+                    "rect": cue.get("rect"), "sources": cue.get("sources", []), "cue": cue.get("id"), "pos": _pos(cue)}
     return None
 
 
@@ -190,7 +200,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         lys = [x for x in lys if x[2]]
         if lys:
             typ = (seg_type[groups[gi][0]] if seg_type and n_seg else None) or cue.get("type")  # 这一段单独设了类型就用它
-            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ,
+            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ, "cue": cue.get("id"), "pos": _pos(cue),
                         "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
         t0 += d
     return out

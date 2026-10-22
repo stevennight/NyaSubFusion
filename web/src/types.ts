@@ -42,7 +42,8 @@ export interface Cue {
   tr: Record<string, { text: string }>;
   flags: string[]; review: "ok" | "todo";
   parts?: [number, number][];  // 用“｜”分段时每段的时间（输出时每段单独一屏）
-  parts_onscreen?: boolean[];  // 每段的原文是不是画面上已经有了（有就不再显示原文）
+  parts_onscreen?: boolean[];
+  pos?: [number, number] | null;   // 手动拖过的位置：字幕块底边中点（相对画面 0~1）  // 每段的原文是不是画面上已经有了（有就不再显示原文）
   show_orig?: "on" | "off" | null;  // 手动指定原文显示 / 不显示（null = 自动）
   parts_type?: (string | null)[] | null;        // 每段单独的类型（null = 跟随整条）
   parts_show?: ("on" | "off" | null)[] | null;  // 每段单独指定原文显示 / 不显示
@@ -78,7 +79,8 @@ export interface PreviewRow { style: string; role: string; chunks: [string, stri
 export interface PreviewItem {
   kind: "main" | "info"; start: number; end: number; sources: string[];
   margin_v?: number; rows?: PreviewRow[]; type?: string;
-  style?: string; lines?: string[]; top?: boolean; an?: number; x?: number; y?: number;
+  style?: string; lines?: string[]; top?: boolean; an?: number; x?: number | null; y?: number | null;
+  cue?: string; moved?: boolean;   // 属于哪条字幕；是不是手动拖过位置
 }
 export interface Preview { profile: string | null; profiles: string[]; px: number; py: number; styles: Record<string, Style>; items: PreviewItem[] }
 

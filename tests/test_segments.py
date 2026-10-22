@@ -149,3 +149,24 @@ def test_undo_redo_describes_what_changed():
     # 重做删除：那一条没了，只给时间
     deleted = {"cues": {"q9": {"delete": True, "start": 50.0}}, "ops": []}
     assert describe_change({"cues": {"q9": {"start": 50.0}}, "ops": []}, deleted, undone=False)["id"] is None
+
+
+def test_manual_position_everywhere():
+    from nyasub.core import config as cfgmod
+    from nyasub.render import ass
+
+    cfg, _ = cfgmod.load(None, None, {"project": {"targets": ["zh-Hans"]}})
+    prof = next(p for p in cfg.render.profiles if p.name == "bilingual")
+    a = _cue("今日は", "今天", 0.0, 6.0)
+    b = dict(_cue("散歩", "散步", 2.0, 8.0), id="q2", pos=[0.5, 0.2])  # 手动放到画面上方
+    items = layout.build([a, b], prof, cfg, "ja")
+    mains = sorted((x for x in items if x["kind"] == "main"), key=lambda x: x["start"])
+    # 手动放过的不参与“后一句开始时前一句结束”：两句可以同时显示
+    assert [(x["cue"], x["start"], x["end"]) for x in mains] == [("q1", 0.0, 6.0), ("q2", 2.0, 8.0)]
+    px, py, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [])
+    p2 = next(p for p in placed if p["item"]["cue"] == "q2")
+    assert (p2["x"], p2["y"]) == (960, 216)
+    # 说明类也能手动放
+    info = dict(_cue("ワニ", "鲨鱼", 0.0, 3.0, type="info", rect=[0.0, 0.8, 0.3, 1.0]), id="q3", pos=[0.25, 0.5])
+    _, _, _, placed = ass.place(layout.build([info], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])
+    assert (placed[0]["an"], placed[0]["x"], placed[0]["y"]) == (2, 480, 540)
