@@ -170,3 +170,16 @@ def test_manual_position_everywhere():
     info = dict(_cue("ワニ", "鲨鱼", 0.0, 3.0, type="info", rect=[0.0, 0.8, 0.3, 1.0]), id="q3", pos=[0.25, 0.5])
     _, _, _, placed = ass.place(layout.build([info], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])
     assert (placed[0]["an"], placed[0]["x"], placed[0]["y"]) == (2, 480, 540)
+
+
+def test_swap_segments():
+    from nyasub.core.edits import piece_swap_fields
+
+    cue = _cue("いやもう｜なんでも｜大変｜やっていかないと｜広報活動ですよ", "唉｜什么事｜很难｜必须做下去｜就是宣传", 0.0, 10.0,
+               parts=[[0, 2], [2, 4], [4, 6], [6, 7], [7, 10]], parts_show=[None, None, None, "off", None])
+    f = piece_swap_fields(cue, 3, 4)
+    assert f["orig"] == "いやもう｜なんでも｜大変｜広報活動ですよ｜やっていかないと"
+    assert f["tr"] == {"zh-Hans": "唉｜什么事｜很难｜就是宣传｜必须做下去"}
+    assert f["parts_show"] == [None, None, None, None, "off"]   # 各段的设置跟着内容走
+    assert "parts" not in f                                      # 每屏的时间位置不动
+    assert piece_swap_fields(cue, 4, 5) is None

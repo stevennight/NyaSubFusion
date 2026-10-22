@@ -617,12 +617,18 @@ def create_app(token: str | None = None) -> FastAPI:
         {"action": "type", "seg": i, "type": 类型} / {"action": "show", "seg": i, "show": "on" | "off" | null}
         单独设第 i 段（从 0 起）的类型 / 原文显不显示；设成说明类的，那一段拆出来单独成一条（说明要单独定位置）。"""
         from ..core import segments
-        from ..core.edits import piece_cut_fields, piece_isolate_ops, piece_join_fields, piece_split_ops
+        from ..core.edits import piece_cut_fields, piece_isolate_ops, piece_join_fields, piece_split_ops, piece_swap_fields
 
         run, cues = _current_cues(pid)
         cue = next((c for c in cues if c["id"] == cid), None)
         if not cue:
             raise HTTPException(404, "没有这条字幕")
+        if body.get("action") == "swap":  # {"action": "swap", "seg": i, "with": j}：两段互换内容（改顺序）
+            fields = piece_swap_fields(cue, int(body.get("seg", -1)), int(body.get("with", -1)))
+            if not fields:
+                raise HTTPException(400, "这条字幕没有这两段")
+            EditStore(run.proj).set_fields(cid, fields)
+            return _edit_result(pid, cid)
         if body.get("action") in ("type", "show"):
             n = len(segments.pieces(cue["orig"]["text"]))
             seg = int(body.get("seg", -1))

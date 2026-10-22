@@ -42,7 +42,8 @@ export const api = {
   editCue: (pid: string, cid: string, body: Cfg) => call<EditResult>(`/api/projects/${pid}/cues/${cid}`, json("PATCH", body)),
   splitCue: (pid: string, cid: string, at: number) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/split`, json("POST", { at })),
   cuePieces: (pid: string, cid: string, body: { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number }
-    | { action: "type"; seg: number; type: string | null } | { action: "show"; seg: number; show: "on" | "off" | null }) =>
+    | { action: "type"; seg: number; type: string | null } | { action: "show"; seg: number; show: "on" | "off" | null }
+    | { action: "swap"; seg: number; with: number }) =>
     call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", body)),
   mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
   insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),

@@ -9,6 +9,8 @@
 //   拖中间（光标是手）       整条平移，各段跟着一起移
 //   双击                     在双击处拆成两条字幕（同「在播放头拆成两条」）
 //   Alt + 双击               在双击处分段：还是同一条字幕，多一屏（同「在播放头分段」）
+//   分了段的字幕             每段单独显示自己的文字；点某一段 = 选中并跳到这一段；
+//                            右键某一段：和前一段 / 后一段交换内容（改顺序）、从这里拆成单独的字幕
 //   拖动时                   吸附到其他译文条的边、字幕 / 语音轨的边、播放头（6 像素以内），按住 Shift 不吸附；
 //                            条上方显示当前时间，Esc 取消，松手才保存
 //   限制                     每段至少 0.2 秒；开始、结束都不越过相邻条的开始、结束（不和相邻条颠倒）
@@ -37,11 +39,13 @@ interface Props {
   peaks: { per_second: number; peaks: number[] } | null;
   selected: string | null;
   hint?: string | null;   // 将被合并进来的那一条（高亮）
-  onSeek: (t: number) => void; onSelect: (cueId: string) => void; onDropped: (c: Candidate) => void;
+  onSeek: (t: number) => void; onSelect: (cueId: string, at?: number) => void; onDropped: (c: Candidate) => void;
   // 不传就是只读（「译文」轨也不能拖）
   onCueTime?: (cueId: string, t: CueTimes) => Promise<void>;
   onCueSplit?: (cueId: string, at: number) => void;
   onCueCut?: (cueId: string, t: number) => void;
+  onSegSwap?: (cueId: string, seg: number, other: number) => void;   // 两段互换内容（改顺序）
+  onSegSplit?: (cueId: string, boundary: number) => void;            // 在第 boundary 个分界处拆成两条字幕
   refLanes?: boolean;                      // 显示参考轨（字幕 / 画面字 / 语音 / 原文）；false = 只留波形和译文
   onToggleRef?: () => void;
 }
@@ -122,6 +126,14 @@ export function Timeline(p: Props) {
   // ---- 「译文」轨：拖边缘 / 分界线 / 整条 ----
   const root = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; cue: string; seg: number; n: number } | null>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); };
+  }, [menu]);
   const busy = useRef(false);   // 正在拖或正在保存：不接新的拖动
   const editable = !!p.onCueTime;
   const partsOf = (c: { parts?: Span[] | null }) => (c.parts && c.parts.length > 1 ? c.parts : null);
@@ -277,6 +289,21 @@ export function Timeline(p: Props) {
     if (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 40) sc.scrollLeft = Math.max(0, x - 80);
   }, [p.time, p.pps]);
 
+  // 分了段的字幕：每段一块，放在这一段自己的时间上，显示自己的文字；点一下跳到这一段，右键有改顺序 / 拆开的菜单
+  const segsOf = (c: Cue, ps: Span[] | null, text: string, x: { start: number }) => {
+    if (!ps) return null;
+    const pieces = text.split("｜").filter((t) => t.trim());
+    if (pieces.length !== ps.length) return null;
+    return ps.map(([a, b], k) => (
+      <span key={k} className="segp" style={{ left: (a - x.start) * p.pps, width: Math.max(4, (b - a) * p.pps - 1) }}
+            onClick={(e) => { e.stopPropagation(); if (!dragged()) p.onSelect(c.id, a + 0.05); }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setMenu({ x: e.clientX, y: e.clientY, cue: c.id, seg: k, n: ps.length });
+            }}>{pieces[k]}</span>
+    ));
+  };
   const blk = (x: { start: number; end: number }) => ({ left: x.start * p.pps, width: Math.max(6, (x.end - x.start) * p.pps - 2) });
   const sel = (srcId: string) => (cueOf.current[srcId] === p.selected ? "sel" : "");
   const clickCand = (c: Candidate) => {
@@ -300,6 +327,14 @@ export function Timeline(p: Props) {
 
   return (
     <div className="timeline" ref={root}>
+      {menu && (
+        <div className="tl-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="dim">第 {menu.seg + 1} 段（共 {menu.n} 段）</div>
+          <button disabled={menu.seg === 0 || !p.onSegSwap} onClick={() => { p.onSegSwap?.(menu.cue, menu.seg, menu.seg - 1); setMenu(null); }}>← 和前一段交换</button>
+          <button disabled={menu.seg === menu.n - 1 || !p.onSegSwap} onClick={() => { p.onSegSwap?.(menu.cue, menu.seg, menu.seg + 1); setMenu(null); }}>和后一段交换 →</button>
+          <button disabled={menu.seg === 0 || !p.onSegSplit} onClick={() => { p.onSegSplit?.(menu.cue, menu.seg); setMenu(null); }}>✂ 从这一段开头拆成单独的字幕</button>
+        </div>
+      )}
       <div className="tl-labels">
         <div className="rl">
           {p.onToggleRef && <button className="tl-ref" title={showRef ? "收起参考轨（字幕 / 画面字 / 语音 / 原文），只留波形和译文" : "展开参考轨"}
@@ -327,7 +362,9 @@ export function Timeline(p: Props) {
             {lane("so", p.ocr)}
             {lane("sa", p.asr)}
             <div className="lane" style={{ width: W }}>
-              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>{c.orig.text}</div>)}
+              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
+                {segsOf(c, partsOf(c), c.orig.text, c) ?? c.orig.text}
+              </div>)}
             </div>
           </>}
           <div className="lane" style={{ width: W }}>
@@ -344,7 +381,7 @@ export function Timeline(p: Props) {
                      onDoubleClick={editable ? (e) => onCueDouble(e, c) : undefined}
                      onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
                   {ps?.slice(1).map(([a], k) => <i key={k} className="seam" style={{ left: (a - x.start) * p.pps }} />)}
-                  {c.tr[p.target]?.text ?? ""}
+                  {segsOf(c, ps, c.tr[p.target]?.text ?? "", x) ?? c.tr[p.target]?.text ?? ""}
                 </div>
               );
             })}

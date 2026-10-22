@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Player, type PlayerHandle } from "../components/Player";
 import { Timeline } from "../components/Timeline";
@@ -25,19 +25,86 @@ function parseHms(v: string): number | null {
   return parts.reduce((acc, x) => acc * 60 + Number(x), 0);
 }
 
-/** 时间输入框：显示 时:分:秒.毫秒，回车或离开时保存，Esc 取消。 */
-function TimeInput({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+/** 时间输入框（时:分:秒.毫秒）：像剪辑软件一样是“覆盖输入”——光标点在哪一位，输入的数字就盖掉那一位，自动跳过“:”“.”；
+ *  ↑ / ↓ 加减 0.1 秒（Shift 1 秒，Alt 0.01 秒）；回车或离开时保存，Esc 取消；也可以粘贴“分:秒”或秒数。
+ *  now 给了就在旁边显示“取当前播放位置”的按钮。 */
+function TimeInput({ value, onCommit, now }: { value: number; onCommit: (v: number) => void; now?: number }) {
+  const [text, setText] = useState(() => fmtHms(value));
+  const ref = useRef<HTMLInputElement>(null);
+  const pending = useRef<number | null>(null);   // 改完文字后光标要放的位置（React 更新输入框时会把光标挪到最后）
+  useEffect(() => { setText(fmtHms(value)); }, [value]);
+  useLayoutEffect(() => {
+    if (pending.current !== null && document.activeElement === ref.current) ref.current!.setSelectionRange(pending.current, pending.current);
+    pending.current = null;
+  });
+  const SEP = new Set([2, 5, 8]);  // "00:00:00.000" 里分隔符的位置
+  const caret = (p: number) => { pending.current = p; ref.current?.setSelectionRange(p, p); };
+  const commit = (t: string) => {
+    const v = parseHms(t);
+    if (v === null) { setText(fmtHms(value)); return; }  // 格式不对：恢复原来的
+    if (Math.abs(v - value) >= 0.0005) onCommit(v);
+    else setText(fmtHms(value));
+  };
+  const nudge = (d: number) => {
+    const v = parseHms(text);
+    const t = fmtHms(Math.max(0, (v ?? value) + d));
+    const p = ref.current?.selectionStart ?? 0;
+    setText(t);
+    caret(p);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const el = e.currentTarget;
+    let p = el.selectionStart ?? 0;
+    if (e.key === "Enter") { el.blur(); return; }
+    if (e.key === "Escape") { setText(fmtHms(value)); requestAnimationFrame(() => el.blur()); return; }
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      nudge((e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 1 : e.altKey ? 0.01 : 0.1));
+      return;
+    }
+    if (text.length !== 12) return;  // 粘贴了别的格式：按普通文本框编辑，离开时再解析
+    if (/^\d$/.test(e.key)) {
+      e.preventDefault();
+      if (SEP.has(p)) p += 1;
+      if (p >= 12) return;
+      const t = text.slice(0, p) + e.key + text.slice(p + 1);
+      setText(t);
+      let q = p + 1;
+      if (SEP.has(q)) q += 1;
+      caret(q);
+      return;
+    }
+    if (e.key === ":" || e.key === ".") {  // 跳到下一节
+      e.preventDefault();
+      const q = [3, 6, 9].find((x) => x > p);
+      if (q !== undefined) caret(q);
+      return;
+    }
+    if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      if (e.key === "Backspace") { p -= 1; if (SEP.has(p)) p -= 1; }
+      if (p < 0 || p >= 12 || SEP.has(p)) return;
+      setText(text.slice(0, p) + "0" + text.slice(p + 1));
+      caret(e.key === "Backspace" ? p : p + 1);
+      return;
+    }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) e.preventDefault();  // 其它字符不让输入
+  };
   return (
-    <input className="inp tm" defaultValue={fmtHms(value)} title="时:分:秒.毫秒（也可以写 分:秒 或 秒数）"
-           onKeyDown={(e) => {
-             if (e.key === "Enter") e.currentTarget.blur();
-             if (e.key === "Escape") { e.currentTarget.value = fmtHms(value); e.currentTarget.blur(); }
-           }}
-           onBlur={(e) => {
-             const v = parseHms(e.currentTarget.value);
-             if (v === null) { e.currentTarget.value = fmtHms(value); return; }  // 格式不对：恢复原来的
-             onCommit(v);
-           }} />
+    <span className="tmwrap">
+      <input ref={ref} className="inp tm" value={text} spellCheck={false}
+             title="时:分:秒.毫秒。点到哪一位直接输入数字覆盖；↑↓ 加减 0.1 秒（Shift 1 秒，Alt 0.01 秒）；回车保存，Esc 取消"
+             onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} onBlur={() => commit(text)}
+             onPaste={(e) => {
+               const v = parseHms(e.clipboardData.getData("text"));
+               if (v !== null) { e.preventDefault(); setText(fmtHms(v)); }
+             }} />
+      {now !== undefined && (
+        <button className="iconbtn tmnow" title={`取当前播放位置（${fmtHms(now)}）`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { setText(fmtHms(now)); onCommit(Math.round(now * 1000) / 1000); }}>⌖</button>
+      )}
+    </span>
   );
 }
 
@@ -185,7 +252,9 @@ export function EditorPage() {
         </div>
       </div>
       <Timeline refLanes={layout.ref} onToggleRef={() => setLayout((l) => ({ ...l, ref: !l.ref }))} duration={duration} time={time} pps={pps} subs={d.subs} ocr={d.ocr} asr={d.asr} fused={d.fused.items} cues={cues}
-                target={target} peaks={peaks} selected={sel} hint={hint} onSeek={(t) => player.current?.seek(t)} onSelect={(id) => select(id)}
+                target={target} peaks={peaks} selected={sel} hint={hint} onSeek={(t) => player.current?.seek(t)} onSelect={(id, at) => { if (at === undefined) select(id); else { select(id, false); player.current?.seek(at); } }}
+                onSegSwap={(id, a, b) => edit(() => api.cuePieces(s.pid!, id, { action: "swap", seg: a, with: b }), "已交换两段的顺序")}
+                onSegSplit={(id, k) => edit(() => api.cuePieces(s.pid!, id, { action: "split", at: k }), "已拆成两条字幕")}
                 onCueTime={(id, t) => edit(() => api.editCue(s.pid!, id, t), "时间已保存")}
                 onCueSplit={(id, at) => edit(() => api.splitCue(s.pid!, id, at), "已拆成两条")}
                 onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
@@ -261,6 +330,7 @@ export function EditorPage() {
                                onSplit={() => edit(() => api.splitCue(s.pid!, selected.id, time), "已拆成两条")}
                                onPieces={(body) => edit(() => api.cuePieces(s.pid!, selected.id, body),
                                  body.action === "join" ? "已合成一段" : body.action === "cut" ? "已分成两段"
+                                   : body.action === "swap" ? "已交换两段的顺序"
                                    : body.action === "show" ? "已更改这一段的原文显示"
                                    : body.action === "type" ? (["info", "name", "title"].includes(body.type ?? "") ? "这一段已拆成单独的说明" : "已更改这一段的类型")
                                    : body.at === "all" ? "已全部拆成单独的字幕" : "已拆成两条字幕")}
@@ -280,6 +350,7 @@ function Pieces({ cue, text }: { cue: Cue; text: string }) {
 }
 
 type PieceAction = { action: "split" | "join"; at: number | "all" } | { action: "cut"; t: number }
+  | { action: "swap"; seg: number; with: number }
   | { action: "type"; seg: number; type: string | null } | { action: "show"; seg: number; show: "on" | "off" | null };
 
 const splitBars = (text: string) => text.split("｜").filter((p) => p.trim());
@@ -433,9 +504,14 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
             <div className={`piece-card ${i === curSeg ? "cur" : ""}`}>
               <div className="row piece-time">
                 <b>第 {i + 1} 段</b>
-                <TimeInput value={a} onCommit={(v) => saveTime(i, 0, v)} />→
-                <TimeInput value={b} onCommit={(v) => saveTime(i, 1, v)} />
+                <TimeInput value={a} now={time} onCommit={(v) => saveTime(i, 0, v)} />→
+                <TimeInput value={b} now={time} onCommit={(v) => saveTime(i, 1, v)} />
                 <span className="dim">{(b - a).toFixed(1)}s</span>
+                {multi && <span className="sp" />}
+                {multi && <button className="iconbtn" disabled={busy || i === 0} title="和上一段交换内容（改顺序；每屏的时间按来源重新算，手动调过的时间不变）"
+                                  onClick={() => onPieces({ action: "swap", seg: i, with: i - 1 })}>↑</button>}
+                {multi && <button className="iconbtn" disabled={busy || i === segs.length - 1} title="和下一段交换内容（改顺序）"
+                                  onClick={() => onPieces({ action: "swap", seg: i, with: i + 1 })}>↓</button>}
               </div>
               {multi && (() => {
                 // 这一段单独的类型 / 原文显示；不设就跟随整条（上面的“类型”“原文”）

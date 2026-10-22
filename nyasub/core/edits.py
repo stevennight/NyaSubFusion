@@ -231,6 +231,33 @@ def piece_cut_fields(cue, t):
     return out
 
 
+def piece_swap_fields(cue, i, j):
+    """第 i 段和第 j 段（从 0 起）互换文字（原文、各译文，以及各段单独的类型 / 原文显示）。
+    每段的时间位置不动：第 i 屏还是原来的时间，只是换成另一段的内容。返回字段修改；段号不对返回 None。"""
+    from . import segments
+
+    n = len(segments.pieces(cue["orig"]["text"]))
+    if not (0 <= i < n and 0 <= j < n) or i == j:
+        return None
+
+    def swap(text):
+        ps = segments.pieces(text)
+        if len(ps) != n:
+            return None
+        ps[i], ps[j] = ps[j], ps[i]
+        return "｜".join(p.strip() for p in ps)
+
+    out = {"orig": swap(cue["orig"]["text"]),
+           "tr": {code: t for code, v in cue.get("tr", {}).items() if v.get("text") and (t := swap(v["text"])) is not None}}
+    for key in SEG_KEYS:
+        lst = cue.get(key)
+        if lst and len(lst) == n:
+            lst = list(lst)
+            lst[i], lst[j] = lst[j], lst[i]
+            out[key] = lst
+    return out
+
+
 def piece_isolate_ops(cue, seg):
     """把第 seg 段（从 0 起）单独拆成一条：返回 (操作列表, 那一条的 id)。"""
     from . import segments
