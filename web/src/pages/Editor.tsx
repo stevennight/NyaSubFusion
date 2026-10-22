@@ -175,6 +175,28 @@ export function EditorPage() {
                 onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
                 onDropped={(c: Candidate) => { s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`); player.current?.seek(c.start); }} />
       <div className="cuelist">
+        {(d.orphans?.length ?? 0) > 0 && (
+          <details className="orphans">
+            <summary>重新翻译后，有 {d.orphans!.length} 处之前的手动修改对不上新的字幕，没有套用（点开看，需要的话重新改一下）</summary>
+            {d.orphans!.map((o, i) => {
+              const tr = (o.fields.tr ?? {}) as Record<string, string>;
+              const detail = [o.fields.orig ? `原文改成「${o.fields.orig}」` : "", Object.values(tr)[0] ? `译文改成「${Object.values(tr)[0]}」` : "",
+                o.fields.type ? `类型改成${TYPE_LBL[String(o.fields.type)] ?? o.fields.type}` : "", o.fields.delete ? "删除" : ""].filter(Boolean).join("，");
+              return (
+                <div key={i} className="row orphan">
+                  <span className="chip">{o.what}</span>
+                  <span>{o.where ? `「${o.where}」` : "（原来那句的文字没记下）"}</span>
+                  <span className="dim">{detail}</span>
+                  <span className="sp" />
+                  {o.at != null && <button className="btn sm" onClick={() => player.current?.seek(o.at!)}>跳到 {fmt(o.at)}</button>}
+                </div>
+              );
+            })}
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button className="btn sm" onClick={async () => { await api.clearOrphans(s.pid!); await s.reload(); s.toast("已清除"); }}>知道了，清除这个列表</button>
+            </div>
+          </details>
+        )}
         <div className="hd">
           <b>字幕</b>
           <div className="seg">{([["all", "全部"], ["todo", "待审校"], ["asr", "仅语音"], ["ocr", "含画面字"]] as [Filter, string][]).map(([f, l]) =>

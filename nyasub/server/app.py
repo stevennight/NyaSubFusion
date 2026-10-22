@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__, env, lang
 from ..core import config as config_mod
 from ..core import pipeline
+from ..core import rebase
 from ..core.edits import Store as EditStore
 from ..core.store import ProjectDir, load_json, save_json
 
@@ -531,6 +532,8 @@ def create_app(token: str | None = None) -> FastAPI:
             "fused": {"items": fused.get("items", []), "stats": fused.get("stats")},
             "cues": cues, "tokens": tokens, "glossary": (res.get("translate") or {}).get("glossary"),
             "edits": EditStore(run.proj).load(), "history": EditStore(run.proj).depth(),
+            # 重新翻译后对不上、没有套用的手动修改（审校页列出来让用户重做）
+            "orphans": [rebase.describe(o) for o in EditStore(run.proj).load().get("orphans", [])],
         }
 
     @app.get("/api/projects/{pid}/preview")
@@ -679,6 +682,16 @@ def create_app(token: str | None = None) -> FastAPI:
         store.add_op({"op": "insert", "id": nid, "start": float(body["start"]), "end": float(body["end"]),
                       "type": body.get("type", "dialogue"), "orig": body.get("orig", ""), "tr": body.get("tr") or {}})
         return _edit_result(pid, nid)
+
+    @app.delete("/api/projects/{pid}/edits/orphans")
+    def clear_orphans(pid: str):
+        """用户看过了：清掉对不上的修改列表。"""
+        _, proj = project_paths(pid)
+        store = EditStore(proj)
+        e = store.load()
+        e.pop("orphans", None)
+        store.write_quiet(e)
+        return {"ok": True}
 
     @app.post("/api/projects/{pid}/edits/{action}")
     def undo_redo(pid: str, action: str):

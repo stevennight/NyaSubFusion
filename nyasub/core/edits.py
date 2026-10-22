@@ -21,9 +21,15 @@ HISTORY_MAX = 100
 
 
 def normalize(edits):
+    """统一成 {"cues", "ops", ...}。另外几项（见 rebase.py）：anchors（被修改条目的锚点）、
+    base（记锚点时翻译结果的指纹）、orphans（重新翻译后对不上、没有套用的修改）。"""
     edits = edits or {}
     if "cues" in edits or "ops" in edits:
-        return {"cues": dict(edits.get("cues") or {}), "ops": list(edits.get("ops") or [])}
+        out = {"cues": dict(edits.get("cues") or {}), "ops": list(edits.get("ops") or [])}
+        for k in ("anchors", "base", "orphans"):
+            if edits.get(k):
+                out[k] = edits[k]
+        return out
     return {"cues": {k: v for k, v in edits.items() if not k.startswith("_")}, "ops": []}
 
 
@@ -312,6 +318,16 @@ class Store:
         save_json(self.hist, h)
         save_json(self.path, new)
         return new
+
+    def write_quiet(self, new):
+        """不进撤销栈地保存（记锚点、重新翻译后对编号这类程序自己做的整理）。"""
+        save_json(self.path, new)
+
+    def map_history(self, fn):
+        """撤销 / 重做栈里的每一个状态都用 fn 整理一遍（重新翻译后编号变了，撤销回去也要是新的编号）。"""
+        h = load_json(self.hist, {"past": [], "future": []})
+        if h["past"] or h["future"]:
+            save_json(self.hist, {k: [fn(normalize(x)) for x in h[k]] for k in ("past", "future")})
 
     def _move(self, src, dst):
         h = load_json(self.hist, {"past": [], "future": []})

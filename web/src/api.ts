@@ -46,6 +46,7 @@ export const api = {
     call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", body)),
   mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
   insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),
+  clearOrphans: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/edits/orphans`, { method: "DELETE" }),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
     call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),

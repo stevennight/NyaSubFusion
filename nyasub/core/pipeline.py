@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=4),  # v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=5),  # v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -125,7 +125,8 @@ class Run:
                 models = [r["det_model"], r["rec_model"]]
             return {"lang": lang.get(self.src).ocr_lang if self.src else None, "models": models}
         if name == "annotate":
-            return {"src": self.src, "edits": digest(load_json(self.proj / "edits.json", {})),
+            ed = normalize_edits(load_json(self.proj / "edits.json", {}))  # 锚点、对不上的修改不影响结果，不算进指纹
+            return {"src": self.src, "edits": digest({"cues": ed["cues"], "ops": ed["ops"]}),
                     "readings": digest(self._user_readings())}
         if name == "fuse":
             return {"src": self.src}
@@ -328,6 +329,7 @@ class Run:
         translated = self.results.get("translate")
         if translated is None:
             raise RuntimeError("还没有翻译结果，先运行一次")
+        self._sync_edits(translated)  # 先对好修改记录再算指纹，免得刚做完又显示“将重做”
         self.results["annotate"] = self.stage("annotate", lambda: self._annotate(translated))
         return self
 
@@ -437,6 +439,7 @@ class Run:
         if self._stop("translate"):
             return self._done(t_all)
 
+        self._sync_edits(translated)
         annotated = self.stage("annotate", lambda: self._annotate(translated))
         if self._stop("annotate"):
             return self._done(t_all)
@@ -796,8 +799,38 @@ class Run:
                 out.append(e)
         return out
 
+    def _sync_edits(self, translated):
+        """修改记录对上这一版翻译结果（见 rebase.py）：重新翻译过就按锚点 / 内容把修改挪到新编号上；
+        对不上的不套用（记进 orphans）。最后给被修改的条目记好锚点。返回整理后的修改记录。"""
+        from . import rebase
+        from .edits import Store
+
+        store = Store(self.proj)
+        e = store.load()
+        cues = translated["cues"]
+        base = rebase.base_of(cues)
+        if not (e["cues"] or e["ops"]) or e.get("base") == base:
+            pass
+        else:
+            # 旧版本的修改没有 base：修改比翻译结果新，说明是对着这一版改的，编号是对的；否则当成重新翻译过
+            edited, translated_at = self.proj / "edits.json", self._out_path("translate")
+            stale = bool(e.get("base")) or (translated_at.exists() and edited.exists()
+                                             and translated_at.stat().st_mtime > edited.stat().st_mtime)
+            if stale:
+                e, moved, lost = rebase.rebase(e, cues)
+                store.map_history(lambda x: rebase.rebase(x, cues)[0])
+                log(f"重新翻译后：{moved} 处手动修改对到了新的字幕上" + (f"，{len(lost)} 处对不上、没有套用（审校页里能看到）" if lost else ""))
+        by_id = {c["id"]: c for c in cues}
+        anchors = {b: rebase.anchor(by_id[b]) for b in rebase.referenced(e) if b in by_id}
+        e = {**e, "base": base, "anchors": anchors}
+        if not anchors:
+            e.pop("anchors")
+        if e != store.load():
+            store.write_quiet(e)
+        return e
+
     def _annotate(self, translated):
-        edits = load_json(self.proj / "edits.json", {})
+        edits = load_json(self.proj / "edits.json", {})  # 已经由 _sync_edits 对好了这一版翻译结果
         cues = apply_edits(translated["cues"], edits, self.src)
         edits = normalize_edits(edits)["cues"]
         cues = self._tidy(cues, edits)

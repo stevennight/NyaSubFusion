@@ -65,6 +65,8 @@ export interface ProjectData {
   cues: Cue[]; tokens: Record<string, Tokens>;
   glossary: { summary: string; terms: { src: string; reading?: string; tr: string; type?: string }[] } | null;
   history: { undo: number; redo: number };
+  // 重新翻译后对不上新字幕、没有套用的手动修改：where = 原来改的是哪句，what = 改了什么
+  orphans?: { where: string; what: string; fields: Record<string, unknown>; at: number | null }[];
 }
 
 export interface Style {

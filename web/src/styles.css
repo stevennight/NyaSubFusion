@@ -304,3 +304,8 @@ table.tb { width: 100%; border-collapse: collapse }
 @keyframes rowflash { 0%, 60% { background: #ffc35a40 } 100% { background: transparent } }
 .tb tr.flash td { animation: rowflash 1.6s ease-out }
 .toast { display: flex; align-items: center }
+
+/* 重新翻译后对不上的手动修改 */
+.orphans { margin: 0 0 8px; padding: 8px 12px; border: 1px solid #ffc35a66; background: #2a2516; border-radius: 8px; font-size: 12.5px }
+.orphans summary { cursor: pointer; color: var(--warn) }
+.orphans .orphan { gap: 8px; padding: 5px 0; border-top: 1px dashed #ffc35a33 }
