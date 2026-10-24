@@ -25,7 +25,7 @@ AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 @dataclass
 class Options:
     until: str = "render"
-    redo: set = field(default_factory=set)
+    redo: set = field(default_factory=set)  # 步骤名或 "all"；另可加 "no_cache"（不用请求缓存）、"clear_edits"（清掉手动修改）
     subs_path: str | None = None     # None = 按配置；"none" = 不用字幕
     translate: str | None = None     # 覆盖 llm.mode
     config_path: str | None = None
@@ -383,6 +383,7 @@ class Run:
         log(f"=== {p.video.name}")
         log(f"工作目录：{p.root}")
         t_all = time.time()
+        self._fresh_start()
         from ..sources import media
 
         info = self.stage("probe", lambda: media.probe(str(p.video)))
@@ -798,6 +799,24 @@ class Run:
                 seen.add(k)
                 out.append(e)
         return out
+
+    def _fresh_start(self):
+        """全部重做时可选：不用以前的请求缓存（大模型、云端语音识别全部重新请求）、清掉审校时的手动修改。
+        作品的术语表不动。手动修改先备份到 backup/，清掉后撤销记录也一起清掉。"""
+        import shutil
+
+        p, redo = self.proj, self.opts.redo
+        if "no_cache" in redo and (p / "llm_cache").exists():
+            shutil.rmtree(p / "llm_cache", ignore_errors=True)
+            log("不用以前的缓存：大模型和云端语音识别这次全部重新请求")
+        if "clear_edits" in redo:
+            files = [f for f in (p / "edits.json", p / "edits_history.json") if f.exists()]
+            if files:
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                (p / "backup").mkdir(exist_ok=True)
+                for f in files:
+                    shutil.move(str(f), str(p / "backup" / f"{f.stem}-{stamp}.json"))
+                log(f"已清掉审校时的手动修改（备份在 backup/edits-{stamp}.json）")
 
     def _sync_edits(self, translated):
         """修改记录对上这一版翻译结果（见 rebase.py）：重新翻译过就按锚点 / 内容把修改挪到新编号上；

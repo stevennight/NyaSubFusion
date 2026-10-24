@@ -166,3 +166,25 @@ def test_plan_marks_disabled_steps_and_output_files(sample, api_config, fake):
     sample.with_name("sample.zh-Hans.ass").unlink()
     sample.with_name("sample.zh-Hans.srt").unlink()
     assert r.render_status()["status"] == "missing"
+
+
+def test_redo_all_without_cache_and_edits(sample, api_config, fake):
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    proj = sample.with_name("sample.nyasub")
+    (proj / "edits.json").write_text(json.dumps({"q1": {"tr": {"zh-Hans": "手改的译文"}}}, ensure_ascii=False),
+                                     encoding="utf-8")
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0  # 套用修改、记下锚点（和审校页改完一样）
+    calls = len(fake.CALLS)
+
+    # 只全部重做：请求有缓存，不再调大模型；手动修改还在
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "all") == 0
+    assert len(fake.CALLS) == calls
+    assert "手改的译文" in sample.with_name("sample.zh-Hans.srt").read_text(encoding="utf-8-sig")
+
+    # 不用缓存 + 清掉手动修改：重新请求，手动修改备份后清掉
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "all,no_cache,clear_edits") == 0
+    assert len(fake.CALLS) > calls
+    left = json.loads((proj / "edits.json").read_text(encoding="utf-8"))
+    assert not left.get("cues") and not left.get("ops")
+    assert list((proj / "backup").glob("edits-*.json"))
+    assert "手改的译文" not in sample.with_name("sample.zh-Hans.srt").read_text(encoding="utf-8-sig")

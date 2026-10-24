@@ -245,7 +245,7 @@ def main(argv=None):
                    help="输出视频：mux 封装 MKV（字幕轨 + 字体）/ burn 压制硬字幕 MP4")
     r.add_argument("--translate", choices=["api", "export", "off"], help="翻译方式，覆盖配置")
     r.add_argument("--until", help="做到哪一步为止：probe / subs / asr / ocr / fuse / translate / render")
-    r.add_argument("--redo", default="", help="强制重做的步骤，逗号分隔，例如 ocr,fuse；all = 全部")
+    r.add_argument("--redo", default="", help="强制重做的步骤，逗号分隔，例如 ocr,fuse；all = 全部；另可加 no_cache（不用请求缓存）、clear_edits（清掉手动修改）")
     r.add_argument("--workdir", help="工作目录（只处理单个文件时可用）")
     r.set_defaults(fn=cmd_run)
 

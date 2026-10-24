@@ -31,6 +31,8 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const [draft, setDraft] = useState<Cfg>({});
   const [until, setUntil] = useState("render");
   const [redoAll, setRedoAll] = useState(false);
+  const [noCache, setNoCache] = useState(false);       // 全部重做时：大模型、云端语音识别不用以前的缓存
+  const [clearEdits, setClearEdits] = useState(false); // 全部重做时：清掉审校时的手动修改
   const [saving, setSaving] = useState(false);
   // 服务器上的配置变了（保存、运行结束后刷新）：只有没在改的时候才跟着换；正在改、还没保存的不能被冲掉
   // 刚保存完：一定换成服务器上的（服务器会整理一下再写：去掉空值、调整顺序，和草稿逐字比较会一直显示“未保存”）
@@ -94,9 +96,18 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
           {["subs", "asr", "ocr", "fuse", "translate", "annotate", "render"].map((x) => <option key={x} value={x}>做到：{STAGE_LBL[x]}</option>)}
         </select>
         <label className="row dim"><input type="checkbox" checked={redoAll} onChange={(e) => setRedoAll(e.target.checked)} />全部重做</label>
+        {redoAll && <label className="row dim" title="大模型翻译、视觉复核、云端语音识别全部重新请求，不用以前存下的结果（会再花一次钱）。不勾的话，内容没变的请求直接用上次的结果。">
+          <input type="checkbox" checked={noCache} onChange={(e) => setNoCache(e.target.checked)} />不用缓存</label>}
+        {redoAll && <label className="row dim" style={clearEdits ? { color: "var(--warn)" } : undefined} title="清掉审校时的所有手动修改（改的文字、时间、类型、位置、拆分合并），完全按这次识别和翻译的结果来。会先备份到项目文件夹的 backup 里。作品的术语表不受影响。">
+          <input type="checkbox" checked={clearEdits} onChange={(e) => setClearEdits(e.target.checked)} />清掉手动修改</label>}
         {s.running && <button className="btn" onClick={s.cancel}>■ 停止</button>}
         <button className="btn pri" disabled={s.running || dirty} title={dirty ? "先保存配置" : ""}
-                onClick={() => s.run({ until, redo: redoAll ? ["all"] : [] })}>{s.running ? "运行中…" : "▶ 运行"}</button>
+                onClick={() => {
+                  const redo = redoAll ? ["all", ...(noCache ? ["no_cache"] : []), ...(clearEdits ? ["clear_edits"] : [])] : [];
+                  setNoCache(false);
+                  setClearEdits(false);  // 只对这一次运行有效，免得下次不小心又清一遍
+                  s.run({ until, redo });
+                }}>{s.running ? "运行中…" : "▶ 运行"}</button>
       </div>
       {stale.length > 0 && !s.running && (
         <div className="banner">⚠ 以下 {stale.length} 个步骤需要运行：{stale.map((p) => STAGE_LBL[p.stage]).join(" → ")}</div>
