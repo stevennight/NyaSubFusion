@@ -23,7 +23,7 @@ const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"
   ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
-const ENCODERS: [string, string][] = [["auto", "自动（先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
+const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编码，先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
   ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
 export function PipelinePage({ onReview }: { onReview: () => void }) {
@@ -377,7 +377,7 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
             {ENCODERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
           <span className="lbl">画质</span>
           <div className="row"><input type="range" min={14} max={32} step={1} value={Number(val("render.video.quality"))} onChange={(e) => set("render.video.quality", Number(e.target.value))} />
-            <span className="dim">{String(val("render.video.quality"))}（越小越清晰，常用 18~23）</span></div>
+            <span className="dim" title="码率最多和原片一样（按缩小的比例折算），压出来不会比原片大很多">{String(val("render.video.quality"))}（越小越清晰，常用 18~23）</span></div>
           <span className="lbl">尺寸</span>
           <select className="inp" style={{ width: "auto" }} value={String(val("render.video.height"))} onChange={(e) => set("render.video.height", Number(e.target.value))}>
             {[[0, "原尺寸"], [2160, "2160p"], [1080, "1080p"], [720, "720p"], [480, "480p"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>

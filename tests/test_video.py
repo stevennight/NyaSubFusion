@@ -237,3 +237,17 @@ def test_direct_playable_needs_no_preview(sample):
         pid = c.post("/api/projects", json={"path": str(sample)}).json()["id"]
         assert c.get(f"/api/projects/{pid}/media/source").json() == {"kind": "direct"}
         assert c.get(f"/api/projects/{pid}/media/video").status_code == 200
+
+
+def test_auto_encoder_follows_source_codec_and_rate_is_capped():
+    from nyasub.render.video import pick_encoders, rate_cap
+
+    assert pick_encoders("auto", "hevc") == ["hevc_nvenc", "libx265"]
+    assert pick_encoders("auto", "h264") == ["h264_nvenc", "libx264"]
+    assert pick_encoders("libx264", "hevc") == ["libx264"]
+    uhd, fhd = (3840, 2160), (1920, 1080)
+    assert rate_cap(25_000_000, "hevc", uhd, uhd, "hevc_nvenc") == 25_000_000
+    assert rate_cap(25_000_000, "hevc", uhd, fhd, "hevc_nvenc") == 6_250_000      # 缩到 1080p：按面积折算
+    assert rate_cap(25_000_000, "hevc", uhd, uhd, "h264_nvenc") == 37_500_000     # H.265 → H.264 放宽 1.5 倍
+    assert rate_cap(8_000_000, "h264", fhd, fhd, "libx264") == 8_000_000
+    assert rate_cap(0, "hevc", uhd, uhd, "hevc_nvenc") is None

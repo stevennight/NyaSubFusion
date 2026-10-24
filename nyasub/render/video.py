@@ -37,6 +37,26 @@ ENCODERS = {
 }
 
 
+HEVC_LIKE = {"hevc", "h265", "av1", "vp9"}  # 压缩率比 H.264 高的编码
+
+
+def pick_encoders(encoder, src_codec):
+    """自动：原片是 H.265（或更新的编码）就压 H.265，否则 H.264；都是先试显卡再用 CPU。"""
+    if encoder != "auto":
+        return [encoder]
+    return ["hevc_nvenc", "libx265"] if (src_codec or "").lower() in HEVC_LIKE else ["h264_nvenc", "libx264"]
+
+
+def rate_cap(src_bps, src_codec, src_size, out_size, enc):
+    """压制码率上限：不超过原片（按画面缩小的比例折算）。画面里的信息不会比原片多，码率再高只是把原片的噪点再存一遍。
+    原片是 H.265、压成 H.264 时放宽到 1.5 倍（同样画质 H.264 要多 50% 左右）。原片码率不知道时不限。"""
+    if not src_bps or src_bps <= 0:
+        return None
+    ratio = (out_size[0] * out_size[1]) / max(1, src_size[0] * src_size[1])
+    k = 1.5 if enc.startswith(("h264", "libx264")) and (src_codec or "").lower() in HEVC_LIKE else 1.0
+    return max(500_000, int(src_bps * min(1.0, ratio) * k))
+
+
 def lang3(code):
     return LANG3.get((code or "").split("-")[0].lower(), "und")
 
@@ -255,14 +275,21 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
     audio = [s.get("codec_name") for s in streams(video) if s.get("codec_type") == "audio"]
     acodec = ["-c:a", "copy"] if all(c in MP4_COPY_AUDIO for c in audio) else ["-c:a", "aac", "-b:a", "192k"]
     part = _part(Path(out).resolve())
-    encs = ["h264_nvenc", "libx264"] if encoder == "auto" else [encoder]
+    encs = pick_encoders(encoder, vinfo.get("codec"))
     tried = [(e, d) for e in encs for d in ((gpu, cpu) if e.endswith("_nvenc") else (cpu,))]
+    # 原片码率：整个文件的平均码率（含音频，差得不多；很多 TS / M2TS 的视频流不标码率）
+    try:
+        src_bps = Path(video).stat().st_size * 8 / duration if duration else 0
+    except OSError:
+        src_bps = 0
     for i, (enc, (pre, vf)) in enumerate(tried):
         how = f"{enc}{'，显卡解码' if pre else ''}"
+        cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
+        limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
         cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}",
-               "-map", "0:a?", "-vf", ",".join(vf), *ENCODERS[enc](quality), "-pix_fmt", "yuv420p", *acodec,
+               "-map", "0:a?", "-vf", ",".join(vf), *ENCODERS[enc](quality), *limit, "-pix_fmt", "yuv420p", *acodec,
                "-movflags", "+faststart", str(part)]
-        env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}")
+        env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}" + (f"，码率不超过 {cap / 1e6:.1f} Mbps" if cap else ""))
         rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part)
         if rc != 0 and done < 1 and i + 1 < len(tried):  # 一开始就失败（没有 N 卡、显卡不支持这种编码）：换下一种
             env.log(f"{how} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
