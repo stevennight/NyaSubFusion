@@ -3,6 +3,7 @@
 整片都扫，不只扫字幕的空档：一句话可能半句在字幕、半句在画面字上。
 识别区域可以有多个识别区和排除区（台标、固定角标）。
 """
+import math
 import os
 import shutil
 import statistics
@@ -91,13 +92,21 @@ def _iou(a, b):
     return inter / ua
 
 
+def _shift(a, b):
+    """文字从框 a 到框 b 移了多少像素。进出画面时贴着边的那一侧被截掉、不动，取动得多的那一侧边沿。"""
+    dx0, dx1, dy0, dy1 = b[0] - a[0], b[2] - a[2], b[1] - a[1], b[3] - a[3]
+    return (dx0 if abs(dx0) >= abs(dx1) else dx1), (dy0 if abs(dy0) >= abs(dy1) else dy1)
+
+
 class Track:
-    __slots__ = ("id", "first", "last", "rects", "obs", "vertical", "snapshot", "rect", "snap_len", "snap_rect", "snap_t")
+    __slots__ = ("id", "first", "last", "rects", "times", "obs", "vertical", "snapshot", "rect", "snap_len",
+                 "snap_rect", "snap_t", "v")
 
     def __init__(self, tid, t, d):
         self.id = tid
         self.first = self.last = t
         self.rects = [d["rect"]]
+        self.times = [t]
         self.rect = d["rect"]
         self.obs = [(d["text"], d["score"])]
         self.vertical = d["vertical"]
@@ -105,12 +114,40 @@ class Track:
         self.snap_len = 0
         self.snap_rect = None  # 截图那一帧里文字的框（逐字出现的字幕，最完整时的框比中位数的框宽）
         self.snap_t = None
+        self.v = (0.0, 0.0)  # 移动速度（像素/秒），滚动字幕用来预测下一帧的位置
 
     def add(self, t, d):
+        dt = t - self.last
+        if dt > 0:
+            dx, dy = _shift(self.rect, d["rect"])
+            v = (dx / dt, dy / dt)
+            self.v = v if len(self.rects) == 1 else ((self.v[0] + v[0]) / 2, (self.v[1] + v[1]) / 2)
         self.last = t
         self.rects.append(d["rect"])
+        self.times.append(t)
         self.rect = d["rect"]
         self.obs.append((d["text"], d["score"]))
+
+    def predict(self, t):
+        dt = t - self.last
+        r = self.rect
+        return (r[0] + self.v[0] * dt, r[1] + self.v[1] * dt, r[2] + self.v[0] * dt, r[3] + self.v[1] * dt)
+
+    def rect_at(self, t):
+        if t > self.last:
+            return self.predict(t)
+        return self.rects[min(range(len(self.times)), key=lambda i: abs(self.times[i] - t))]
+
+    def absorb(self, o):
+        """把同一段文字断开的另一条轨迹并进来（滚动字幕识别框时整时断，会断成几条）。"""
+        seq = sorted(zip(self.times + o.times, self.rects + o.rects, self.obs + o.obs), key=lambda x: x[0])
+        self.times, self.rects, self.obs = [x[0] for x in seq], [x[1] for x in seq], [x[2] for x in seq]
+        self.first, self.last = self.times[0], self.times[-1]
+        self.rect = self.rects[-1]
+        if o.v != (0.0, 0.0) and (self.v == (0.0, 0.0) or o.last > self.last):
+            self.v = o.v
+        if o.snapshot and (self.snapshot is None or o.snap_len > self.snap_len):
+            self.snapshot, self.snap_len, self.snap_rect, self.snap_t = o.snapshot, o.snap_len, o.snap_rect, o.snap_t
 
     def best_text(self):
         # 同一文字出现越多、越长、置信度越高越优先（避免取到渐入时的半截文字）
@@ -126,20 +163,37 @@ class Track:
         return sum(s for _, s in self.obs) / len(self.obs)
 
 
-def _match(tracks, dets):
+def _near(a, b):
+    """两个框在同一行（或同一列）上，相隔不到三个字。"""
+    h = min(a[3] - a[1], b[3] - b[1])
+    w = min(a[2] - a[0], b[2] - b[0])
+    size = min(h, w)
+    if min(a[3], b[3]) - max(a[1], b[1]) >= 0.6 * h:
+        return max(a[0], b[0]) - min(a[2], b[2]) <= 3 * size
+    if min(a[2], b[2]) - max(a[0], b[0]) >= 0.6 * w:
+        return max(a[1], b[1]) - min(a[3], b[3]) <= 3 * size
+    return False
+
+
+def _match(tracks, dets, t=0.0):
     """贪心匹配：位置重叠 + 文字相似。返回 [(det, track or None)]。"""
     pairs = []
     for di, d in enumerate(dets):
         nd = norm(d["text"])
         for ti, tr in enumerate(tracks):
+            # 滚动的字按速度预测这一帧在哪（帧间移动的距离和字差不多宽时，跟上一帧的框几乎不重叠）
             iou = _iou(d["rect"], tr.rect)
-            if iou < 0.3:
-                continue
+            if tr.v != (0.0, 0.0):
+                iou = max(iou, _iou(d["rect"], tr.predict(t)))
             nt = norm(tr.obs[-1][0])
             s = fuzz.ratio(nd, nt)
             if s < 60 and not (nd in nt or nt in nd):
                 continue
-            pairs.append((iou + s / 100, di, ti))
+            if iou >= 0.3:
+                pairs.append((iou + s / 100, di, ti))
+            elif tr.v == (0.0, 0.0) and (s >= 80 or nd in nt or nt in nd) and _near(d["rect"], tr.rect):
+                # 刚出现的滚动字还不知道速度，滚得快时两帧的框不重叠：同一行 / 同一列上挨着、文字一样也算
+                pairs.append((0.1 + s / 100, di, ti))
     pairs.sort(reverse=True)
     used_d, used_t, res = set(), set(), {}
     for _, di, ti in pairs:
@@ -207,7 +261,7 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
             n_ocr += 1
 
         snap_path = None
-        for d, tr in _match(active, dets):
+        for d, tr in _match(active, dets, t):
             if tr is None:
                 tr = Track(next_id, t, d)
                 next_id += 1
@@ -236,7 +290,7 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
     closed += active
     log(f"  共 {n_frames} 帧，实际 OCR {n_ocr} 帧，跟踪到 {len(closed)} 条文字轨迹")
 
-    events = _build_events(closed, c, fps, W, H, duration)
+    events = _build_events(closed, c, fps, W, H, duration, roi)
     crops_dir = os.path.join(workdir, "crops")
     os.makedirs(crops_dir, exist_ok=True)
     for ev in events:
@@ -292,16 +346,72 @@ def _zone(rect, vertical):
     return "middle"
 
 
-def _build_events(tracks, c, fps, W, H, duration):
+def _motion(tr, bounds):
+    """滚动字幕（片尾字幕、跑马灯）：整段时间里文字明显移动过。返回 (vx, vy) 像素/秒，不动返回 None。
+    进出画面时一侧贴着画面边被截掉、不动，这时只看另一侧。"""
+    dt = tr.last - tr.first
+    if dt <= 0 or len(tr.rects) < 2:
+        return None
+    a, b = tr.rects[0], tr.rects[-1]
+    size = statistics.median(min(r[2] - r[0], r[3] - r[1]) for r in tr.rects)  # 字的大小
+
+    def axis(i, lo, hi):
+        d0, d1 = b[i] - a[i], b[i + 2] - a[i + 2]
+        if d0 * d1 > 0 and min(abs(d0), abs(d1)) > 1.5 * size:
+            return (d0 + d1) / 2
+        if a[i + 2] >= hi - 3 and b[i + 2] >= hi - 3 and abs(d0) > 3 * size:
+            return d0
+        if a[i] <= lo + 3 and b[i] <= lo + 3 and abs(d1) > 3 * size:
+            return d1
+        return 0.0
+
+    vx, vy = axis(0, bounds[0], bounds[2]), axis(1, bounds[1], bounds[3])
+    return (vx / dt, vy / dt) if vx or vy else None
+
+
+def _stitch(tracks, max_gap, bounds):
+    """滚动的字识别框时整时断（整行 / 拆成两段），同一段文字会断成前后几条轨迹：按位置和文字接回去。
+    只接真的在动的（不动的字抖一两个像素也会算出一点速度，不能算）。"""
+    out = []
+    for tr in sorted(tracks, key=lambda tr: tr.first):
+        nt = norm(tr.best_text())
+        r = tr.rects[0]
+        pad = max(8.0, min(r[2] - r[0], r[3] - r[1]))
+        host = None
+        for o in reversed(out):
+            if not (o.first < tr.first <= o.last + max_gap) or o.vertical != tr.vertical:
+                continue
+            if _motion(o, bounds) is None and _motion(tr, bounds) is None:
+                continue
+            no = norm(o.best_text())
+            if fuzz.ratio(nt, no) < 70 and not (nt in no or no in nt):
+                continue
+            p = o.rect_at(tr.first)
+            if _iou((p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad), r) > 0:
+                host = o
+                break
+        if host:
+            host.absorb(tr)
+        else:
+            out.append(tr)
+    return out
+
+
+def _build_events(tracks, c, fps, W, H, duration, roi=None):
     half = 0.5 / fps
+    bounds = roi or (0, 0, W, H)
     items = []
-    for tr in tracks:
+    for tr in _stitch(tracks, float(c["max_gap"]), bounds):
         start, end = tr.first - half, tr.last + half
         if end - start < float(c["min_duration"]) or len(tr.obs) < 2:
             continue
-        items.append({"tr": tr, "start": max(0.0, start), "end": end, "rect": tr.median_rect(),
-                      "text": tr.best_text(), "vertical": tr.vertical})
-    # 台标/角标：持续过长，或同一位置同一文字反复出现、累计时长占比很高
+        motion = _motion(tr, bounds)
+        moving = motion is not None
+        # 滚动的字没有固定位置，取字最完整那一帧的框（译文显示、截图复核都用它）
+        rect = tr.snap_rect if moving and tr.snap_rect else tr.median_rect()
+        items.append({"tr": tr, "start": max(0.0, start), "end": end, "rect": rect,
+                      "text": tr.best_text(), "vertical": tr.vertical, "moving": moving, "motion": motion})
+    # 台标/角标：持续过长，或同一位置同一文字反复出现、累计时长占比很高（滚动的字不会是台标）
     acc = defaultdict(float)
     for it in items:
         r = it["rect"]
@@ -310,8 +420,8 @@ def _build_events(tracks, c, fps, W, H, duration):
         acc[key] += it["end"] - it["start"]
     max_len = min(float(c["persistent_seconds"]), duration * 0.6)
     items = [it for it in items
-             if it["end"] - it["start"] <= max_len
-             and acc[it["_key"]] <= duration * 0.25 and acc[it["_key"]] <= max(60.0, duration * 0.1)]
+             if it["moving"] or (it["end"] - it["start"] <= max_len
+                                 and acc[it["_key"]] <= duration * 0.25 and acc[it["_key"]] <= max(60.0, duration * 0.1))]
 
     # 并查集：同一时间、空间相邻的行合成一条
     parent = list(range(len(items)))
@@ -344,10 +454,44 @@ def _build_events(tracks, c, fps, W, H, duration):
     return events
 
 
+def _moving_pair(a, b):
+    """两段字一起移动、同一时刻紧挨着：往上滚的片尾字幕「职务　姓名」被拆成两个框，
+    或者镜头横移时招牌 / 字幕的上下几行。只拼和移动方向垂直的方向：顺着移动方向的前后两段
+    （跑马灯、横着走的片尾字幕）是一条接一条的，间隔也就一两个字，拼起来会把整段连成一大条。"""
+    va, vb = a["motion"], b["motion"]
+    if math.hypot(va[0] - vb[0], va[1] - vb[1]) > 0.15 * max(math.hypot(*va), math.hypot(*vb)) + 10:
+        return False
+    # 字的走向：横排 x、竖排 y。字往垂直于走向的方向移动（横排往上滚）时拼同一行的几段，顺着走向移动时拼上下行
+    i = 1 if a["vertical"] else 0
+    if abs(va[i]) < 0.5 * abs(va[1 - i]):
+        pass
+    elif abs(va[1 - i]) < 0.5 * abs(va[i]):
+        i = 1 - i
+    else:
+        return False
+    common = set(a["tr"].times) & set(b["tr"].times)
+    if not common:
+        return False
+    mid = (max(a["start"], b["start"]) + min(a["end"], b["end"])) / 2
+    t = min(common, key=lambda x: abs(x - mid))
+    ra, rb = a["tr"].rect_at(t), b["tr"].rect_at(t)
+    j = 1 if a["vertical"] else 0
+    size = max(ra[3 - j] - ra[1 - j], rb[3 - j] - rb[1 - j])  # 字的大小（横排是字高）
+    across = min(ra[3 - i], rb[3 - i]) - max(ra[1 - i], rb[1 - i])
+    gap = max(ra[i], rb[i]) - min(ra[i + 2], rb[i + 2])
+    if i == j:  # 同一行的几段
+        return across >= 0.5 * size and gap <= 1.2 * size
+    shorter = min(ra[3 - i] - ra[1 - i], rb[3 - i] - rb[1 - i])  # 上下行：要对得齐、行距不大
+    return across >= 0.5 * shorter and -0.3 * size <= gap <= 0.8 * size
+
+
 def _same_group(a, b):
     ov = min(a["end"], b["end"]) - max(a["start"], b["start"])
     if ov < 0.5 * min(a["end"] - a["start"], b["end"] - b["start"]):
         return False
+    # 滚动的字位置一直在变，按框拼行会把整段片尾字幕连同背景里的字拼成一大条：只拼一起移动、同一行紧挨着的
+    if a.get("moving") or b.get("moving"):
+        return bool(a.get("moving") and b.get("moving")) and a["vertical"] == b["vertical"] and _moving_pair(a, b)
     if a["vertical"] != b["vertical"]:
         return False
     ra, rb = a["rect"], b["rect"]
@@ -401,6 +545,15 @@ def _dedupe_pieces(members):
 
 
 def _compose(members, W, H):
+    moving = any(m.get("moving") for m in members)
+    if moving:
+        # 滚动的字：各段换成同一时刻（最后一段字最完整的那一帧）的位置再拼，截图也用这一帧
+        latest = max(members, key=lambda m: m["tr"].snap_t if m["tr"].snap_t is not None else m["tr"].last)
+        ref = latest["tr"].snap_t if latest["tr"].snap_t is not None else latest["tr"].last
+        clip = lambda r: (min(max(r[0], 0.0), W), min(max(r[1], 0.0), H), min(max(r[2], 0.0), W), min(max(r[3], 0.0), H))
+        members = [dict(m, rect=clip(m["tr"].rect_at(ref))) for m in members]
+    else:
+        latest = max(members, key=lambda m: m["start"])
     members = _dedupe_pieces(members)
     vertical = members[0]["vertical"]
     if not vertical:
@@ -425,8 +578,9 @@ def _compose(members, W, H):
     x1 = max(m["rect"][2] for m in members) / W
     y1 = max(m["rect"][3] for m in members) / H
     rect = [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
-    latest = max(members, key=lambda m: m["start"])
-    snaps = [m["tr"].snap_rect for m in members if m["tr"].snap_rect] + [m["rect"] for m in members]
+    snaps = [m["rect"] for m in members]
+    if not moving:
+        snaps += [m["tr"].snap_rect for m in members if m["tr"].snap_rect]
     crop_rect = [round(min(r[0] for r in snaps) / W, 4), round(min(r[1] for r in snaps) / H, 4),
                  round(max(r[2] for r in snaps) / W, 4), round(max(r[3] for r in snaps) / H, 4)]
     return {
@@ -441,4 +595,5 @@ def _compose(members, W, H):
         "_snapshot": latest["tr"].snapshot,
         "crop_rect": crop_rect,
         "snap_t": latest["tr"].snap_t,
+        **({"moving": True} if moving else {}),
     }

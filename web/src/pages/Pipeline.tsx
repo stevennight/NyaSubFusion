@@ -222,7 +222,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                 <label className="row src-head"><input type="checkbox" checked={!!val("ocr.enabled")} onChange={(e) => set("ocr.enabled", e.target.checked)} /><span className="badge b-o">画面字</span>画面字识别</label>
                 <div className="kv">
                   <span className="lbl">每秒看几帧</span>
-                  <div className="row" title="画面字识别每秒检查几帧画面。数值越大，画面字出现 / 消失的时间越准、越不容易漏掉一闪而过的字，但扫描越慢。台词类画面字建议 2~3"><input type="range" min={1} max={6} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} />
+                  <div className="row" title="画面字识别每秒检查几帧画面。数值越大，画面字出现 / 消失的时间越准、越不容易漏掉一闪而过的字，但扫描越慢（扫描时间和帧数成正比）。台词类画面字建议 2~3；片尾滚动字幕、跑马灯滚得快时可以调到 6~10"><input type="range" min={1} max={10} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} />
                     <span className="dim">{String(val("ocr.fps"))} 帧/秒 · 时间误差约 ±{(0.5 / Number(val("ocr.fps") || 1)).toFixed(2)} 秒</span></div>
                   <span className="lbl">视觉复核</span>
                   <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
