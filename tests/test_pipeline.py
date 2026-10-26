@@ -219,3 +219,25 @@ def test_translate_sends_frames_and_falls_back_without_images(sample, api_config
     assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "all,no_cache") == 0
     assert seen.count(0) >= 2 and sum(1 for n in seen if n) == 1  # 只试了一次带图
     assert "译:" in sample.with_name("sample.zh-Hans.srt").read_text(encoding="utf-8-sig")
+
+
+def test_stage_stopped_midway_is_not_saved_as_done(sample, api_config):
+    """步骤里把取消当成一次普通失败吞掉、照样返回了结果（比如复核某一批失败就保留本地结果）：不能存成完成。"""
+    import threading
+
+    from nyasub.core import config, pipeline
+
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    r = pipeline.Run(sample, cfg, pipeline.Options())
+    r.cancel = threading.Event()
+
+    def swallow():
+        r.cancel.set()
+        try:
+            raise pipeline.Cancelled()
+        except Exception:
+            return {"partial": True}
+
+    with pytest.raises(pipeline.Cancelled):
+        r.stage("probe", swallow, force=True)
+    assert not sample.with_name("sample.nyasub").joinpath("stages", "probe.fp").exists()

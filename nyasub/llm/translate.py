@@ -8,7 +8,7 @@ import re
 from difflib import SequenceMatcher
 
 from .. import lang
-from ..env import log, progress
+from ..env import Cancelled, log, progress
 from ..textutil import fmt_time, full_sim, norm, sim
 from . import prompts
 
@@ -393,6 +393,8 @@ def enforce_terms(llm, cues, terms, src, tgt_code, cfg, batch=30):
                          f"　译文：{c['tr'][tgt_code]['text']}\n　指定译名：{names}")
         try:
             res = llm.chat_json(system, "\n\n".join(lines))
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception as e:
             log(f"  统一译名失败，保持原样：{e}")
             continue
@@ -435,6 +437,8 @@ def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
             blocks.append(f"[{c['id']}]\n来源：\n{src_lines}\n原文：{c['orig']['text']}\n译文：{c['tr'][tgt_code]['text']}")
         try:
             res = llm.chat_json(system, "\n\n".join(blocks))
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception as e:
             log(f"  重新分段失败，保持原样：{e}")
             continue
@@ -459,6 +463,8 @@ def translate_missing(llm, cues, src, tgt_code, gl_text, cfg, batch=30):
         group = todo[k:k + batch]
         try:
             res = llm.chat_json(system, prompts.missing_prompt(cues, group, gl_text, tgt_code))
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception as e:
             log(f"  补翻失败，保留原文：{e}")
             continue

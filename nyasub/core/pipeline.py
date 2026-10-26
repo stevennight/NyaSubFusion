@@ -199,6 +199,10 @@ class Run:
         finally:
             self._save_stage_log(name, t)
             env.set_stage(outer)
+        if self.cancel is not None and self.cancel.is_set():
+            # 中途按了停止：有的地方会把取消当成一次失败接着往下做（结果不完整），不能存成“完成”，下次还要重做
+            emit({"type": "stage", "name": name, "status": "cancelled"})
+            raise Cancelled()
         save_json(self._out_path(name), result)
         rec = {"in": fp_in, "out": digest(result), "seconds": round(time.time() - t, 1)}
         save_json(self._fp_path(name), rec)

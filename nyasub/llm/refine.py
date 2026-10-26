@@ -3,7 +3,7 @@ import os
 import re
 from difflib import SequenceMatcher
 
-from ..env import check_cancel, log, progress
+from ..env import Cancelled, check_cancel, log, progress
 from ..textutil import full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -59,6 +59,8 @@ def _ask(llm, group, paths):
         # （也可能根本没串：几张图拍的是同一段字、本地识别又认错了，比如片名动画的几帧）
         try:
             again = _ask_once(llm, [group[j]], [paths[j]])[0] if len(group) > 1 else {}
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception:
             again = {}
         if (again.get("text") or "").strip():
@@ -113,6 +115,8 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None):
             log(f"  {ex}")
             log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
             return events
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception as ex:
             log(f"  第 {i // batch + 1} 批复核失败，保留本地结果：{ex}")
             continue
@@ -153,6 +157,8 @@ def _retry_short(llm, short, workdir, video, batch, fps):
         group = ready[i:i + batch]
         try:
             got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
         except Exception as ex:
             log(f"  重新复核失败：{ex}")
             continue
