@@ -8,7 +8,8 @@ from ..textutil import full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
-VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张截图（按顺序编号），每张是画面上一处文字及其周围一小圈背景。
+VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张截图，每张前面标着「第 n 张」，每张是画面上一处文字及其周围一小圈背景。
+各张图互不相关：每张只转写这一张图里的字，不要把别的图上的字写进来。
 对每张图做两件事：
 1. text：准确、完整地转写图中的原文，每一行、每一个字都要转写，不能漏行、漏掉行尾。
    横排多行用 " / " 分隔；竖排按从右到左的列顺序，每列用 " / " 分隔。看不清就输出空字符串。
@@ -18,7 +19,7 @@ VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张�
      特征：字体规整清晰，通常有描边或阴影，横平竖直，不随镜头透视变形，不受画面光影影响。
    - "scene"：拍摄到的实物上本来就有的字，比如招牌、海报、地图、古文书、日历、商品包装和标签、手写字、车身文字、电视台台标。
      特征：跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。
-输出 JSON：{"items": [{"text": "第1张原文", "kind": "caption"}, ...]}，数量必须和图片数量一致。"""
+输出 JSON：{"items": [{"no": 1, "text": "第1张原文", "kind": "caption"}, ...]}，no 是图前面标的编号，数量必须和图片数量一致。"""
 
 
 def truncated(vlm, local):
@@ -33,19 +34,39 @@ def truncated(vlm, local):
     return len(_CJK.findall(missing)) >= 3  # “一”被认成“―”这种一两个字的差别不算
 
 
-def _ask(llm, group, paths):
+def _ask_once(llm, group, paths):
     hint = "\n".join(f"第{j + 1}张（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
                      for j, e in enumerate(group))
-    res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=paths)
+    # 每张图前面标上编号：只靠顺序时模型容易把相邻两张图的字搞混
+    images = [{"path": p, "label": f"第 {j + 1} 张"} for j, p in enumerate(paths)]
+    res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=images)
     got = res.get("items")
     if got is None:
         got = [{"text": t} for t in res.get("texts", [])]
     if len(got) != len(group):
         raise ValueError(f"返回 {len(got)} 条，应为 {len(group)} 条")
     got = [g if isinstance(g, dict) else {"text": g} for g in got]
+    nos = [g.get("no") for g in got]
+    if sorted(n for n in nos if isinstance(n, int)) == list(range(1, len(group) + 1)):
+        got = [dict(g) for g in sorted(got, key=lambda g: g["no"])]  # 按编号对回去（模型输出顺序可能乱）
+    return got
+
+
+def _ask(llm, group, paths):
+    got = _ask_once(llm, group, paths)
     for j in borrowed(group, got):
-        log(f"  {group[j]['id']}：复核结果和同一批另一张图的字一样、和本地识别对不上（串图了），保留本地结果")
-        got[j] = {}
+        # 像是串图了：这一张单独再问一次。只有一张图就不可能串，单独问的结果直接用
+        # （也可能根本没串：几张图拍的是同一段字、本地识别又认错了，比如片名动画的几帧）
+        try:
+            again = _ask_once(llm, [group[j]], [paths[j]])[0] if len(group) > 1 else {}
+        except Exception:
+            again = {}
+        if (again.get("text") or "").strip():
+            got[j] = again
+            log(f"  {group[j]['id']}：和同一批另一张图的字一样、和本地识别对不上，单独重新复核")
+        else:
+            log(f"  {group[j]['id']}：复核结果和同一批另一张图的字一样、和本地识别对不上（串图了），保留本地结果")
+            got[j] = {}
     return got
 
 

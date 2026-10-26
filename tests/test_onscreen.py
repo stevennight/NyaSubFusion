@@ -148,6 +148,32 @@ def test_refine_rejects_reading_copied_from_another_image():
     assert borrowed(group, got) == [0]  # 只认出一个字的补全不算串图
 
 
+def test_refine_asks_suspect_image_alone(tmp_path):
+    from nyasub.llm import refine
+
+    paths = []
+    for i in range(3):
+        f = tmp_path / f"{i}.jpg"
+        f.write_bytes(b"x%d" % i)
+        paths.append(str(f))
+    group = [{"id": "o28", "text": "冬を食べる\nあの手この手の物語"}, {"id": "o29", "text": "冬生食饭冬里食品"},
+             {"id": "o31", "text": "語り柴田祐規子"}]
+    calls = []
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            calls.append([i["label"] for i in images])
+            if len(images) == 1:  # 单独问：片名动画的另一帧，字确实一样
+                return {"items": [{"no": 1, "text": "冬を食べる / あの手この手の物語", "kind": "caption"}]}
+            # 一批里返回顺序打乱了，按编号对回去
+            return {"items": [{"no": 3, "text": "語り 柴田祐規子"}, {"no": 1, "text": "冬を食べる / あの手この手の物語"},
+                              {"no": 2, "text": "冬を食べる / あの手この手の物語"}]}
+
+    got = refine._ask(Fake(), group, paths)
+    assert calls == [["第 1 张", "第 2 张", "第 3 张"], ["第 1 张"]]
+    assert [g["text"] for g in got] == ["冬を食べる / あの手この手の物語"] * 2 + ["語り 柴田祐規子"]
+
+
 def test_subs_wording_kept_and_names_checked():
     from nyasub.llm.translate import keep_subs_wording, term_misses
 
