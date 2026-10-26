@@ -384,7 +384,7 @@ def stitch(parts):
 # ---------------- 入口 ----------------
 def _cached(cache_dir, key, fn):
     path = Path(cache_dir) / "asr_api" / f"{key}.json" if cache_dir else None
-    if path and path.exists():
+    if path and path.exists() and not env.fresh():
         return json.loads(path.read_text(encoding="utf-8")), True
     out = fn()
     if path:
@@ -398,9 +398,11 @@ def _run_parallel(jobs, fn, on_done):
     取消或出错时，工作线程在下一次检查时停下（正在传的那一块传完为止），排队的不再开始。"""
     user = env.cancel_event()
     stop = threading.Event()
+    fresh = env.fresh()
 
     def work(job):
         env.set_cancel(stop)
+        env.set_fresh(fresh)
         return fn(job)
 
     pool = ThreadPoolExecutor(max_workers=PARALLEL)

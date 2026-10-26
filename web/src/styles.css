@@ -341,3 +341,21 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .tmwrap { display: inline-flex; align-items: center; gap: 2px }
 .tmwrap .tmnow { width: 22px; height: 22px; font-size: 13px; padding: 0 }
 .piece-time .iconbtn { width: 24px; height: 24px; padding: 0 }
+
+/* 流程页：选要重做的步骤 */
+.redo-pick { position: relative }
+.redo-pick > .btn { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.redo-pick > .btn.on { border-color: var(--acc); color: var(--acc) }
+.redo-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; width: 340px; padding: 10px 12px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 8px 24px #0006; display: flex; flex-direction: column; gap: 6px }
+.redo-menu .redo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding-left: 4px }
+.redo-menu hr { border: none; border-top: 1px solid var(--line); margin: 2px 0; width: 100% }
+
+/* 步骤图上勾选要重做的步骤 */
+.node .redo-tog { position: absolute; right: 5px; bottom: 5px; width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid var(--line2);
+  background: var(--panel2); color: var(--tx3); font-size: 12px; line-height: 1; cursor: pointer; opacity: .55 }
+.node:hover .redo-tog, .node .redo-tog.on { opacity: 1 }
+.node .redo-tog:hover { color: var(--tx); border-color: var(--acc) }
+.node .redo-tog.on { background: var(--acc); border-color: var(--acc); color: #1b1b22 }
+.node.redo-sel { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc) inset }
+.node.redo-sel small { color: var(--acc) }

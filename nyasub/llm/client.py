@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from ..core.store import digest, load_json, save_json
-from ..env import check_cancel, log
+from ..env import check_cancel, fresh, log
 
 
 class FatalLLMError(RuntimeError):
@@ -38,7 +38,7 @@ class LLM:
                       for p in images or []]
         key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes})
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
-        if cache and cache.exists():
+        if cache and cache.exists() and not fresh():
             return load_json(cache)
         result = self._call(system, user, images)
         if cache:

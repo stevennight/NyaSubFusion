@@ -241,3 +241,29 @@ def test_stage_stopped_midway_is_not_saved_as_done(sample, api_config):
     with pytest.raises(pipeline.Cancelled):
         r.stage("probe", swallow, force=True)
     assert not sample.with_name("sample.nyasub").joinpath("stages", "probe.fp").exists()
+
+
+def test_redo_request_survives_stop_and_can_pick_steps(sample, api_config, fake):
+    from nyasub.core import config, pipeline
+
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+
+    # 要求全部重做、刚开始就停了：没做的步骤都显示“将重做”，下次普通运行接着重做
+    r = pipeline.Run(sample, cfg, pipeline.Options(redo={"all"}))
+    r._fresh_start()
+    plan = {p["stage"]: p for p in pipeline.Run(sample, cfg, pipeline.Options()).plan()}
+    assert plan["fuse"]["status"] == "stale" and plan["fuse"]["note"] == "要求重做"
+    assert plan["translate"]["status"] == "stale"
+    calls = len(fake.CALLS)
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    assert len(fake.CALLS) == calls  # 重做了，但请求有缓存，不花钱
+    plan = {p["stage"]: p["status"] for p in pipeline.Run(sample, cfg, pipeline.Options()).plan()}
+    assert plan["translate"] == "done" and plan["fuse"] == "done"
+
+    # 只重做翻译、不用缓存：只有翻译重新请求，前面的步骤复用
+    before = fp(sample, "fuse")
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "translate,no_cache") == 0
+    assert len(fake.CALLS) > calls
+    assert fp(sample, "fuse") == before
+    assert not pipeline.Run(sample, cfg, pipeline.Options())._pending()

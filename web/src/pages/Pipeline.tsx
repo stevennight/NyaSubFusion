@@ -30,9 +30,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const s = useStore();
   const [draft, setDraft] = useState<Cfg>({});
   const [until, setUntil] = useState("render");
-  const [redoAll, setRedoAll] = useState(false);
-  const [noCache, setNoCache] = useState(false);       // 全部重做时：大模型、云端语音识别不用以前的缓存
-  const [clearEdits, setClearEdits] = useState(false); // 全部重做时：清掉审校时的手动修改
+  const [redo, setRedo] = useState<string[]>([]);    // 要重做的步骤（"all" = 全部）
+  const [noCache, setNoCache] = useState(false);       // 重做的步骤不用以前的缓存（大模型、云端语音识别重新请求）
+  const [clearEdits, setClearEdits] = useState(false); // 清掉审校时的手动修改
   const [saving, setSaving] = useState(false);
   // 服务器上的配置变了（保存、运行结束后刷新）：只有没在改的时候才跟着换；正在改、还没保存的不能被冲掉
   // 刚保存完：一定换成服务器上的（服务器会整理一下再写：去掉空值、调整顺序，和草稿逐字比较会一直显示“未保存”）
@@ -95,25 +95,25 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         <select className="inp" style={{ width: "auto" }} value={until} onChange={(e) => setUntil(e.target.value)}>
           {["subs", "asr", "ocr", "fuse", "translate", "annotate", "render"].map((x) => <option key={x} value={x}>做到：{STAGE_LBL[x]}</option>)}
         </select>
-        <label className="row dim"><input type="checkbox" checked={redoAll} onChange={(e) => setRedoAll(e.target.checked)} />全部重做</label>
-        {redoAll && <label className="row dim" title="大模型翻译、视觉复核、云端语音识别全部重新请求，不用以前存下的结果（会再花一次钱）。不勾的话，内容没变的请求直接用上次的结果。">
-          <input type="checkbox" checked={noCache} onChange={(e) => setNoCache(e.target.checked)} />不用缓存</label>}
-        {redoAll && <label className="row dim" style={clearEdits ? { color: "var(--warn)" } : undefined} title="清掉审校时的所有手动修改（改的文字、时间、类型、位置、拆分合并），完全按这次识别和翻译的结果来。会先备份到项目文件夹的 backup 里。作品的术语表不受影响。">
-          <input type="checkbox" checked={clearEdits} onChange={(e) => setClearEdits(e.target.checked)} />清掉手动修改</label>}
+        <RedoPicker redo={redo} setRedo={setRedo} noCache={noCache} setNoCache={setNoCache} clearEdits={clearEdits} setClearEdits={setClearEdits} />
         {s.running && <button className="btn" onClick={s.cancel}>■ 停止</button>}
         <button className="btn pri" disabled={s.running || dirty} title={dirty ? "先保存配置" : ""}
                 onClick={() => {
-                  const redo = redoAll ? ["all", ...(noCache ? ["no_cache"] : []), ...(clearEdits ? ["clear_edits"] : [])] : [];
+                  const body = [...redo, ...(redo.length && noCache ? ["no_cache"] : []), ...(clearEdits ? ["clear_edits"] : [])];
+                  setRedo([]);  // 只对这一次运行有效（没做完的步骤会记着，下次运行接着重做），免得下次不小心又重做 / 又清一遍
                   setNoCache(false);
-                  setClearEdits(false);  // 只对这一次运行有效，免得下次不小心又清一遍
-                  s.run({ until, redo });
+                  setClearEdits(false);
+                  s.run({ until, redo: body });
                 }}>{s.running ? "运行中…" : "▶ 运行"}</button>
       </div>
       {stale.length > 0 && !s.running && (
         <div className="banner">⚠ 以下 {stale.length} 个步骤需要运行：{stale.map((p) => STAGE_LBL[p.stage]).join(" → ")}</div>
       )}
-      <div className="card"><h3>步骤</h3><StageGraph status={status} seconds={seconds} notes={notes} prog={s.stageProg} video={vmode === "off" ? null : vmode}
-                  onOpen={setLogStage} /></div>
+      <div className="card"><h3>步骤 <span className="dim" style={{ fontSize: 12, fontWeight: 400 }}>点步骤右下角的 ↻ 勾选这次要重做的步骤；点步骤看日志</span></h3>
+        <StageGraph status={status} seconds={seconds} notes={notes} prog={s.stageProg} video={vmode === "off" ? null : vmode}
+                    onOpen={setLogStage} redo={redo} running={s.running}
+                    onToggleRedo={(x) => setRedo(redo.includes("all") ? REDO_STAGES.filter((y) => y !== x)
+                      : redo.includes(x) ? redo.filter((y) => y !== x) : [...redo, x])} /></div>
       <div className="gap" />
 
       <div className="pl-body">
@@ -427,9 +427,10 @@ function LangChips({ value, onChange }: { value: string[]; onChange: (v: string[
   );
 }
 
-function StageGraph({ status, seconds, notes, prog, video, onOpen }: {
+function StageGraph({ status, seconds, notes, prog, video, onOpen, redo, running, onToggleRedo }: {
   status: Record<string, StageStatus>; seconds: Record<string, number | null | undefined>; notes: Record<string, string | undefined>;
   prog: Record<string, Progress>; video: string | null; onOpen: (stage: string) => void;
+  redo: string[]; running: boolean; onToggleRedo: (stage: string) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [paths, setPaths] = useState<{ d: string; label?: string; x: number; y: number }[]>([]);
@@ -461,16 +462,21 @@ function StageGraph({ status, seconds, notes, prog, video, onOpen }: {
         </g>)}</svg>
       {nodes.map((n) => {
         const st = status[n.id] ?? "missing";
+        const canRedo = REDO_STAGES.includes(n.id) && st !== "off";
+        const sel = canRedo && (redo.includes("all") || redo.includes(n.id));
         return (
-          <div key={n.id} data-n={n.id} className={`node ${st} clickable`} style={{ gridColumn: n.c, gridRow: n.r }}
+          <div key={n.id} data-n={n.id} className={`node ${st} clickable${sel ? " redo-sel" : ""}`} style={{ gridColumn: n.c, gridRow: n.r }}
                title={(notes[n.id] ? notes[n.id] + "\n" : "") + "点击看这一步的日志"} onClick={() => onOpen(n.id)}>
             <span className="st" /><b><span className="ord">{ORDER.indexOf(n.id) + 1}</span>{STAGE_LBL[n.id]}</b>
             {st === "running" && prog[n.id] && prog[n.id].total > 0 ? (<>
               <small>{prog[n.id].label || "运行中"} {pct(prog[n.id])}%</small>
               <div className="nbar"><i style={{ width: `${pct(prog[n.id])}%` }} /></div>
-            </>) : <small>{(st === "off" || st === "empty") && notes[n.id] ? notes[n.id] : STATUS_LBL[st] ?? st}
+            </>) : <small>{sel && !running ? "勾选重做" : (st === "off" || st === "empty" || (st === "stale" && notes[n.id]?.startsWith("要求重做"))) && notes[n.id] ? notes[n.id] : STATUS_LBL[st] ?? st}
               {st !== "off" && st !== "running" && seconds[n.id] ? ` · ${seconds[n.id]}s` : ""}
               {n.id === "render" && st === "done" && notes.render ? ` · ${notes.render.split("、").length} 个文件` : ""}</small>}
+            {canRedo && !running && (
+              <button className={`redo-tog${sel ? " on" : ""}`} title={sel ? "已勾选：这次运行一定重做这一步（再点取消）" : "勾选：这次运行重做这一步"}
+                      onClick={(e) => { e.stopPropagation(); onToggleRedo(n.id); }}>↻</button>)}
           </div>
         );
       })}
@@ -500,4 +506,49 @@ function LogView({ lines, empty = "（运行后显示日志）" }: { lines: stri
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
   return <div className="log" ref={ref}>{lines.length ? lines.join("\n") : empty}</div>;
+}
+
+
+const REDO_STAGES = ["subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate"];
+
+/** 选要重做的步骤：全部，或者勾其中几步。勾了的一定重做；后面的步骤输入变了才会跟着重做。 */
+function RedoPicker({ redo, setRedo, noCache, setNoCache, clearEdits, setClearEdits }: {
+  redo: string[]; setRedo: (v: string[]) => void; noCache: boolean; setNoCache: (v: boolean) => void;
+  clearEdits: boolean; setClearEdits: (v: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const all = redo.includes("all");
+  const toggle = (x: string) => setRedo(redo.includes(x) ? redo.filter((y) => y !== x) : [...redo.filter((y) => y !== "all"), x]);
+  const label = all ? "全部" : redo.length ? REDO_STAGES.filter((x) => redo.includes(x)).map((x) => STAGE_LBL[x]).join("、") : "不重做";
+  const extra = [noCache && redo.length ? "不用缓存" : "", clearEdits ? "清掉手动修改" : ""].filter(Boolean);
+  return (
+    <div className="redo-pick" ref={box}>
+      <button className={`btn ${redo.length || clearEdits ? "on" : ""}`} onClick={() => setOpen(!open)}
+              title="平时不用选：改了参数，受影响的步骤会自动重做">
+        重做：{label}{extra.length ? `（${extra.join("、")}）` : ""} ▾</button>
+      {open && (
+        <div className="redo-menu">
+          <label className="row"><input type="checkbox" checked={all} onChange={() => setRedo(all ? [] : ["all"])} /><b>全部步骤</b></label>
+          <div className="redo-grid">
+            {REDO_STAGES.map((x) => (
+              <label key={x} className="row"><input type="checkbox" checked={all || redo.includes(x)} disabled={all} onChange={() => toggle(x)} />{STAGE_LBL[x]}</label>
+            ))}
+          </div>
+          <div className="dim" style={{ fontSize: 12 }}>勾了的步骤一定重做；后面的步骤输入变了才会跟着重做。中途停止的话，没做完的下次运行接着重做。</div>
+          <hr />
+          <label className="row" title="勾选重做的步骤里，大模型翻译、视觉复核、云端语音识别重新请求，不用以前存下的结果（会再花一次钱）。不勾的话，内容没变的请求直接用上次的结果。">
+            <input type="checkbox" checked={noCache} disabled={!redo.length} onChange={(e) => setNoCache(e.target.checked)} />这些步骤不用缓存（重新请求，会再花钱）</label>
+          <label className="row" style={clearEdits ? { color: "var(--warn)" } : undefined} title="清掉审校时的所有手动修改（改的文字、时间、类型、位置、拆分合并），完全按这次识别和翻译的结果来。会先备份到项目文件夹的 backup 里。作品的术语表不受影响。">
+            <input type="checkbox" checked={clearEdits} onChange={(e) => setClearEdits(e.target.checked)} />清掉审校时的手动修改（先备份）</label>
+        </div>
+      )}
+    </div>
+  );
 }

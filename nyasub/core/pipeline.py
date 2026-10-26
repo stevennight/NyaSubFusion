@@ -25,7 +25,7 @@ AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 @dataclass
 class Options:
     until: str = "render"
-    redo: set = field(default_factory=set)  # 步骤名或 "all"；另可加 "no_cache"（不用请求缓存）、"clear_edits"（清掉手动修改）
+    redo: set = field(default_factory=set)  # 要重做的步骤名或 "all"；另可加 "no_cache"（这些步骤不用请求缓存）、"clear_edits"（清掉手动修改）
     subs_path: str | None = None     # None = 按配置；"none" = 不用字幕
     translate: str | None = None     # 覆盖 llm.mode
     config_path: str | None = None
@@ -71,6 +71,9 @@ DEFS = {
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
 }
 VIDEO_STAGES = ("mux", "burn")
+STAGE_NAMES = {"probe": "读取视频信息", "audio": "提取音频", "subs": "读取字幕", "asr": "语音识别", "ocr": "画面字识别",
+               "ocr_refine": "VLM 复核", "align": "字幕对时", "fuse": "规则融合", "translate": "融合 + 翻译",
+               "annotate": "注音", "render": "输出字幕文件", "mux": "封装 MKV", "burn": "压制硬字幕"}
 
 
 def collect_inputs(paths):
@@ -162,9 +165,16 @@ class Run:
         return digest({"v": d.version, "cfg": self.cfg.pick(*d.keys), "extra": self._extra(name),
                        "deps": [self.fps.get(x, {}).get("out") for x in d.deps]})
 
+    def _pending_path(self):
+        return self.proj.stage("redo_pending.json")
+
+    def _pending(self):
+        """要求重做、还没做完的步骤：{步骤: {"fresh": 不用缓存}}。中途停止的话下次运行接着重做，界面上也显示“将重做”。"""
+        return load_json(self._pending_path(), {})
+
     def _cached(self, name, fp_in):
         rec = load_json(self._fp_path(name))
-        if name in self.opts.redo or "all" in self.opts.redo or not rec or rec.get("in") != fp_in:
+        if name in self.opts.redo or "all" in self.opts.redo or name in self._pending() or not rec or rec.get("in") != fp_in:
             return None
         if not self._out_path(name).exists():
             return None
@@ -185,6 +195,7 @@ class Run:
         t = time.time()
         outer = env.current_stage()
         env.set_stage(name)
+        env.set_fresh((self._pending().get(name) or {}).get("fresh"))
         try:
             result = fn()
         except Waiting:
@@ -199,6 +210,7 @@ class Run:
         finally:
             self._save_stage_log(name, t)
             env.set_stage(outer)
+            env.set_fresh(False)
         if self.cancel is not None and self.cancel.is_set():
             # 中途按了停止：有的地方会把取消当成一次失败接着往下做（结果不完整），不能存成“完成”，下次还要重做
             emit({"type": "stage", "name": name, "status": "cancelled"})
@@ -206,6 +218,9 @@ class Run:
         save_json(self._out_path(name), result)
         rec = {"in": fp_in, "out": digest(result), "seconds": round(time.time() - t, 1)}
         save_json(self._fp_path(name), rec)
+        pending = self._pending()
+        if pending.pop(name, None) is not None:
+            save_json(self._pending_path(), pending)
         self.results[name] = result
         self.fps[name] = rec
         self.ran.append(name)
@@ -231,6 +246,7 @@ class Run:
         subs = load_json(self._out_path("subs"), [])
         self.src = self._resolve_source(asr, subs, quiet=True)
         status = {}
+        pending = self._pending()
         for name in self._stage_names():
             rec = load_json(self._fp_path(name))
             if not rec or not self._out_path(name).exists():
@@ -241,7 +257,7 @@ class Run:
                 continue
             for d in DEFS[name].deps:
                 self.fps[d] = load_json(self._fp_path(d))
-            status[name] = "done" if rec.get("in") == self.input_fp(name) else "stale"
+            status[name] = "done" if rec.get("in") == self.input_fp(name) and name not in pending else "stale"
         out = []
         for n in self._stage_names():
             item = {"stage": n, "status": status[n], "seconds": (load_json(self._fp_path(n)) or {}).get("seconds")}
@@ -250,6 +266,8 @@ class Run:
                 item.update(status="off", note=off)
             elif status[n] == "done" and (empty := self._empty_note(n)):
                 item.update(status="empty", note=empty)
+            elif n in pending:
+                item["note"] = "要求重做" + ("（不用缓存）" if pending[n].get("fresh") else "")
             out.append(item)
         return out
 
@@ -824,14 +842,20 @@ class Run:
         return out
 
     def _fresh_start(self):
-        """全部重做时可选：不用以前的请求缓存（大模型、云端语音识别全部重新请求）、清掉审校时的手动修改。
-        作品的术语表不动。手动修改先备份到 backup/，清掉后撤销记录也一起清掉。"""
+        """记下这次要求重做的步骤（做完一步去掉一步，中途停止的下次接着重做）；可选这些步骤不用以前的请求缓存、
+        清掉审校时的手动修改。作品的术语表不动。手动修改先备份到 backup/，清掉后撤销记录也一起清掉。"""
         import shutil
 
         p, redo = self.proj, self.opts.redo
-        if "no_cache" in redo and (p / "llm_cache").exists():
-            shutil.rmtree(p / "llm_cache", ignore_errors=True)
-            log("不用以前的缓存：大模型和云端语音识别这次全部重新请求")
+        # 只记会存结果的步骤（输出视频按这一次的要求做，不记）
+        asked = [n for n in self._round_stages() if n in DEFS and n not in VIDEO_STAGES and ("all" in redo or n in redo)]
+        if asked:
+            pending = self._pending()
+            for n in asked:
+                pending[n] = {"fresh": "no_cache" in redo or (pending.get(n) or {}).get("fresh", False)}
+            save_json(self._pending_path(), pending)
+            names = "全部步骤" if "all" in redo else "、".join(STAGE_NAMES.get(n, n) for n in asked)
+            log(f"要求重做：{names}" + ("（不用以前的缓存，大模型和云端语音识别重新请求）" if "no_cache" in redo else ""))
         if "clear_edits" in redo:
             files = [f for f in (p / "edits.json", p / "edits_history.json") if f.exists()]
             if files:

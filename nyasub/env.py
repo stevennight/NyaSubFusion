@@ -183,6 +183,15 @@ def cancel_event():
     return getattr(_local, "cancel", None)
 
 
+def set_fresh(on):
+    """当前线程这一步不读以前的请求缓存（大模型、云端语音识别重新请求；新结果照样存进缓存）。"""
+    _local.fresh = bool(on)
+
+
+def fresh():
+    return getattr(_local, "fresh", False)
+
+
 def check_cancel():
     """长循环里调用：当前线程的取消标志已设置就抛 Cancelled。语音识别每段、画面字每帧、大模型每次请求前都会检查。"""
     ev = getattr(_local, "cancel", None)
