@@ -188,3 +188,34 @@ def test_redo_all_without_cache_and_edits(sample, api_config, fake):
     assert not left.get("cues") and not left.get("ops")
     assert list((proj / "backup").glob("edits-*.json"))
     assert "手改的译文" not in sample.with_name("sample.zh-Hans.srt").read_text(encoding="utf-8-sig")
+
+
+def test_translate_sends_frames_and_falls_back_without_images(sample, api_config, fake, monkeypatch):
+    from nyasub.llm import client
+
+    seen = []
+
+    def with_images(self, system, user, images=None):
+        seen.append(len(images or []))
+        return fake.respond(system, user)
+
+    monkeypatch.setattr(client.LLM, "_call", with_images)
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    assert max(seen) > 0  # 融合翻译那一步每条都附了截图
+    assert list((sample.with_name("sample.nyasub") / "media" / "frames").glob("*.jpg"))
+
+    # 接口不收图片：报 400 后这一集都不带图，翻译照样完成
+    seen.clear()
+
+    def no_images(self, system, user, images=None):
+        seen.append(len(images or []))
+        if images:
+            err = client.FatalLLMError("大模型接口报错（400）：image input is not supported")
+            err.status = 400
+            raise err
+        return fake.respond(system, user)
+
+    monkeypatch.setattr(client.LLM, "_call", no_images)
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "all,no_cache") == 0
+    assert seen.count(0) >= 2 and sum(1 for n in seen if n) == 1  # 只试了一次带图
+    assert "译:" in sample.with_name("sample.zh-Hans.srt").read_text(encoding="utf-8-sig")

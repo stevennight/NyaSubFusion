@@ -156,6 +156,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                   {((deepGet(s.config?.effective, "llm.providers") as { name: string; model: string }[]) ?? []).map((p) =>
                     <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
                 </select>
+                <span className="lbl">参考画面</span>
+                <label className="row" title="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网）。翻译的输入用量大约多一倍；接口不支持图片时自动改为不带图。">
+                  <input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />翻译时附上画面截图</label>
               </div>
               <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
                 {val("llm.mode") === "export" ? "导出任务：把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次。"

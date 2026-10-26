@@ -14,7 +14,8 @@ from ..env import check_cancel, log
 
 
 class FatalLLMError(RuntimeError):
-    """配置类错误（模型不存在、key 无效等），不重试。"""
+    """配置类错误（模型不存在、key 无效等），不重试。status：接口返回的状态码。"""
+    status = None
 
 
 class LLM:
@@ -31,7 +32,10 @@ class LLM:
         self.cache_dir = Path(cache_dir) if cache_dir else None
 
     def chat_json(self, system, user, images=None):
-        img_hashes = [hashlib.sha1(Path(p).read_bytes()).hexdigest() for p in images or []]
+        """images：图片路径，或 {"path", "label"（图前面的说明文字）, "detail"（low / high）}。"""
+        img_hashes = [hashlib.sha1(Path(p).read_bytes()).hexdigest() if not isinstance(p, dict)
+                      else [p.get("label"), hashlib.sha1(Path(p["path"]).read_bytes()).hexdigest(), p.get("detail")]
+                      for p in images or []]
         key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes})
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
         if cache and cache.exists():
@@ -45,9 +49,13 @@ class LLM:
         content = user
         if images:
             content = [{"type": "text", "text": user}]
-            for path in images:
-                b64 = base64.b64encode(Path(path).read_bytes()).decode()
-                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            for img in images:
+                img = img if isinstance(img, dict) else {"path": img}
+                if img.get("label"):
+                    content.append({"type": "text", "text": img["label"]})
+                b64 = base64.b64encode(Path(img["path"]).read_bytes()).decode()
+                url = {"url": f"data:image/jpeg;base64,{b64}", **({"detail": img["detail"]} if img.get("detail") else {})}
+                content.append({"type": "image_url", "image_url": url})
         messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
         last_err = None
         json_mode = self.c.json_mode
@@ -66,8 +74,10 @@ class LLM:
                     json_mode = False  # 有些中转不支持 JSON 模式
                     continue
                 status = getattr(e, "status_code", None)
-                if status in (400, 401, 403, 404):
-                    raise FatalLLMError(f"大模型接口报错（{status}）：{msg[:300]}") from e
+                if status in (400, 401, 403, 404, 415, 422):
+                    err = FatalLLMError(f"大模型接口报错（{status}）：{msg[:300]}")
+                    err.status = status
+                    raise err from e
                 if attempt == int(self.c.max_retries):
                     break
                 wait = min(60, 3 * 2 ** attempt)

@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 
 from .. import env, lang
-from ..env import emit, log
+from ..env import emit, log, progress
 from . import config as config_mod
 from .store import ProjectDir, digest, file_stamp, load_json, save_json
 from .edits import normalize as normalize_edits
@@ -151,8 +151,10 @@ class Run:
             jobs = None
             if mode == "export":  # 外部助手改了结果文件，就重新导入
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
+            # 参考画面默认开着：只有关掉时才记进指纹（开关加进来之前翻好的不会因此全部重翻）
             return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
-                    "model": self.cfg.endpoint()["model"] if mode == "api" else None}
+                    "model": self.cfg.endpoint()["model"] if mode == "api" else None,
+                    **({} if self._use_frames(mode) else {"frames": False})}
         return None
 
     def input_fp(self, name):
@@ -698,6 +700,22 @@ class Run:
         name = self.cfg.project.series
         return config_mod.series_dir(name) / "glossary.json" if name else self.proj / "glossary.json"
 
+    def _use_frames(self, mode):
+        info = self.results.get("probe") or {}
+        return bool(self.cfg.llm.frames) and mode == "api" and bool(info.get("video", True))
+
+    def _frames(self, items):
+        """每条候选字幕出现时的画面小图（取中间时刻），存在 media/frames/，再翻译时直接用。返回 {条目 id: 路径}。"""
+        from ..sources import media
+
+        mid = {it["id"]: (it["start"] + it["end"]) / 2 for it in items}
+        t0 = time.time()
+        got = media.grab_frames(str(self.proj.video), mid.values(), self.proj.media("frames"),
+                                on_progress=lambda n, total: progress(n, total, "截取画面"))
+        out = {i: got[round(t * 2) / 2] for i, t in mid.items() if round(t * 2) / 2 in got}
+        log(f"翻译参考画面：{len(set(out.values()))} 张截图（用时 {time.time() - t0:.0f}s）")
+        return out
+
     def _series_terms(self):
         """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍）。"""
         terms = load_json(self.glossary_path(), {"terms": []})["terms"]
@@ -713,7 +731,8 @@ class Run:
         if not items:
             return {"cues": [], "glossary": {"summary": "", "terms": known, "new": 0}}
         if mode == "api":
-            cues, glossary = translate.run_api(items, self.cfg, self.proj / "llm_cache", self.src, known)
+            frames = self._frames(items) if self._use_frames(mode) else None
+            cues, glossary = translate.run_api(items, self.cfg, self.proj / "llm_cache", self.src, known, frames)
         else:
             job_dir = self.proj / "jobs"
             cues, missing, glossary = jobs.import_jobs(job_dir, self.cfg, self.src, known)

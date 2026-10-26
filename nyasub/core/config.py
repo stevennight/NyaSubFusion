@@ -105,6 +105,7 @@ class LlmCfg(_M):
     temperature: float = 0.3
     chunk_seconds: float = 150
     chunk_max_items: int = 60
+    frames: bool = True                      # 翻译时每条候选字幕附一张画面小图（看场景判断多义词，比如「揚げる」是炸还是收网）；接口不支持图片时自动不带
     json_mode: bool = True
     timeout: float = 180
     max_retries: int = 3

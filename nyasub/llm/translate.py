@@ -269,8 +269,8 @@ def merge_terms(known, new):
     return out
 
 
-def run_api(items, cfg, cache_dir, src_code, known_terms):
-    """返回 (cues, glossary)。"""
+def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
+    """返回 (cues, glossary)。frames：{条目 id: 画面截图路径}，有的话每段翻译都附上截图。"""
     from .client import LLM
 
     llm = LLM(cfg, cache_dir=cache_dir)
@@ -289,11 +289,30 @@ def run_api(items, cfg, cache_dir, src_code, known_terms):
     system = prompts.chunk_system(src, tgt, cfg.project.context, opts.get(tgt_code, {}))
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
+    use_frames = bool(frames)
+
+    def ask(prompt, chunk):
+        """这一段翻译请求：带截图问；接口不收图片（模型不支持看图）就这一集剩下的都不带图。"""
+        nonlocal use_frames
+        from .client import FatalLLMError
+
+        imgs = [it["id"] for it in chunk if (frames or {}).get(it["id"])] if use_frames else []
+        if imgs:
+            images = [{"path": str(frames[x]), "label": f"图 {n} · {x}", "detail": "low"} for n, x in enumerate(imgs, 1)]
+            try:
+                return llm.chat_json(system, prompt + prompts.FRAMES_NOTE, images)
+            except FatalLLMError as e:
+                if e.status in (401, 403):
+                    raise
+                use_frames = False
+                log(f"  翻译接口不接受图片（{str(e)[:120]}），这一集改为不带画面截图翻译")
+        return llm.chat_json(system, prompt)
+
     for i, chunk in enumerate(chunks, 1):
         progress(i - 1, len(chunks), f"翻译 {i}/{len(chunks)} 段", every=0)
         log(f"融合翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
         prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code)
-        res = llm.chat_json(system, prompt)
+        res = ask(prompt, chunk)
         cues, missing = apply_result(chunk, res, tgt_code, src.code)
         # 这一段新定下的译名（术语表里没有的人名等）记下来，后面各段沿用，前后统一
         learned = [dict(t, type=t.get("type") or "人名", note=t.get("note") or "翻译时补充")
@@ -304,7 +323,7 @@ def run_api(items, cfg, cache_dir, src_code, known_terms):
             gl_text = prompts.glossary_text(terms)
         if missing:
             log(f"  模型漏了 {len(missing)} 条，补问一次")
-            retry = llm.chat_json(system, prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(missing)}。请重新完整输出。")
+            retry = ask(prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(missing)}。请重新完整输出。", chunk)
             cues2, missing2 = apply_result(chunk, retry, tgt_code, src.code)
             if len(missing2) < len(missing):
                 cues, missing = cues2, missing2

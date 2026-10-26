@@ -173,3 +173,11 @@ def extra_target_prompt(cues, gl_text, src_code, ref_code) -> str:
     lines = [f"[{c['id']}] {c['orig']['text'].replace(chr(10), ' / ')}　〔参考：{c['tr'].get(ref_code, {}).get('text', '')}〕"
              for c in cues]
     return f"## 术语表\n{gl_text}\n\n## 字幕\n" + "\n".join(lines) + "\n\n请按要求输出 JSON。"
+
+
+FRAMES_NOTE = """
+
+## 画面截图
+每条候选字幕附了一张它出现时的画面（「图 n · id」标在每张图前面）。
+截图只用来弄清场景：画面里的人在做什么、说的是什么东西，帮你判断多义词（比如「揚げる」是油炸还是把网 / 东西拉上来）、补出省略的主语和宾语。
+不要把画面里看到、但原文没说的内容加进译文。"""
