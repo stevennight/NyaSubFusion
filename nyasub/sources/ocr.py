@@ -9,6 +9,7 @@ import shutil
 import statistics
 import time
 from collections import defaultdict
+from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
@@ -601,5 +602,102 @@ def _compose(members, W, H):
         "crop_rect": crop_rect,
         "snap_t": latest["tr"].snap_t,
         "snap_rect": snap_rect,
+        # 并进来的每块字各自的框和文字：旁边招牌上的字被并进来、后来清理掉时，框只算留下的那几块
+        "pieces": [[round(m["rect"][0] / W, 4), round(m["rect"][1] / H, 4), round(m["rect"][2] / W, 4),
+                    round(m["rect"][3] / H, 4), m["text"]] for m in members],
         **({"moving": True} if moving else {}),
     }
+
+
+def find_pieces(video, events, c, ocr_lang, cache_file, width=1280):
+    """扫描时没记下每块字框的（旧版本扫描的）：在截图那一帧重新检测这条画面字，补出每块字的框和文字。
+    只认中心落在原来框里的；结果存进 cache_file，下次直接用。返回 {画面字 id: pieces}。"""
+    from ..core.store import load_json, save_json
+
+    cache = load_json(cache_file, {})
+    out, todo = {}, []
+    for e in events:
+        t = e.get("snap_t") if e.get("snap_t") is not None else (e["start"] + e["end"]) / 2
+        key = [round(t, 3), e["rect"]]
+        hit = cache.get(e["id"])
+        if hit and hit["key"] == key:
+            out[e["id"]] = hit["pieces"]
+        else:
+            todo.append((e, t, key))
+    if not todo:
+        return out
+    t0 = time.time()
+    tmp = os.path.join(os.path.dirname(cache_file), "piece_frames")
+    frames = media.grab_frames(video, [t for _, t, _ in todo], tmp, width=width, exact=True)
+    eng = make_engine(c, ocr_lang)
+    try:
+        for n, (e, t, key) in enumerate(todo, 1):
+            check_cancel()
+            progress(n, len(todo), "重新量画面字的位置")
+            img = _imread(str(frames[round(t, 3)])) if round(t, 3) in frames else None
+            if img is None:
+                continue
+            H, W = img.shape[:2]
+            x0, y0, x1, y1 = e["rect"]
+            pad = 0.02
+            X0, Y0 = max(0, int((x0 - pad) * W)), max(0, int((y0 - pad) * H))
+            X1, Y1 = min(W, int((x1 + pad) * W)), min(H, int((y1 + pad) * H))
+            pieces = []
+            for d in _detect(eng, np.ascontiguousarray(img[Y0:Y1, X0:X1]), float(c["min_score"])):
+                r = d["rect"]
+                bx0, by0, bx1, by1 = (r[0] + X0) / W, (r[1] + Y0) / H, (r[2] + X0) / W, (r[3] + Y0) / H
+                if x0 <= (bx0 + bx1) / 2 <= x1 and y0 <= (by0 + by1) / 2 <= y1:
+                    pieces.append([round(bx0, 4), round(by0, 4), round(bx1, 4), round(by1, 4), d["text"]])
+            out[e["id"]] = pieces
+            cache[e["id"]] = {"key": key, "pieces": pieces}
+    finally:
+        save_json(cache_file, cache)
+        shutil.rmtree(tmp, ignore_errors=True)
+    log(f"重新量了 {len(todo)} 条画面字的位置（用时 {time.time() - t0:.0f}s）")
+    return out
+
+
+def _same_block(p, keep):
+    """没进原文的这块字是不是和留下的字幕同一块：注音小字（紧贴在某行上面、左右不出那一行），
+    或者大小差不多、上下紧挨着、左 / 中 / 右对齐的另一行（大模型漏翻的一行，画面上照样有）。
+    旁边招牌上的字对不齐，不算。"""
+    h = p[3] - p[1]
+    for k in keep:
+        kh = k[3] - k[1]
+        gap = max(k[1] - p[3], p[1] - k[3])
+        if h < 0.65 * kh and gap < 0.5 * kh and p[0] >= k[0] - 0.01 and p[2] <= k[2] + 0.01:
+            return True
+        aligned = min(abs(p[0] - k[0]), abs(p[2] - k[2]), abs((p[0] + p[2]) / 2 - (k[0] + k[2]) / 2)) < 0.03
+        if 0.7 * kh < h < 1.4 * kh and gap < 0.6 * kh and aligned:
+            return True
+    return False
+
+
+def tight_rect(pieces, text, final):
+    """这条画面字（识别出的文字 text）里只留最终原文 final 里有的那几块字（再加上和它们同一块的注音、漏翻的行），
+    返回外接框。长的先认领原文里的字，短的（招牌上的“わに”）不能再认领已经被认领的。
+    留下的字凑不齐这条画面字用进原文的字（重新检测时漏了真字幕的一行）就返回 None，照旧用整个框。"""
+    left, keep, got = norm(final), [], 0
+    for p in sorted(pieces, key=lambda p: -len(norm(p[4]))):
+        a = norm(p[4])
+        if not a:
+            continue
+        blocks = [b for b in SequenceMatcher(None, a, left, autojunk=False).get_matching_blocks() if b.size >= min(2, len(a))]
+        n = sum(b.size for b in blocks)
+        if n >= 0.6 * len(a):
+            keep.append(p)
+            got += n
+            for b in blocks:
+                left = left[:b.b] + "\0" * b.size + left[b.b + b.size:]
+    want = sum(b.size for b in SequenceMatcher(None, norm(text), norm(final), autojunk=False).get_matching_blocks()
+               if b.size >= 2)
+    if not keep or got < 0.85 * want:
+        return None
+    rest = [p for p in pieces if p not in keep]
+    while True:
+        add = [p for p in rest if _same_block(p, keep)]
+        if not add:
+            break
+        keep += add
+        rest = [p for p in rest if p not in add]
+    return [min(p[0] for p in keep), min(p[1] for p in keep), max(p[2] for p in keep), max(p[3] for p in keep)]

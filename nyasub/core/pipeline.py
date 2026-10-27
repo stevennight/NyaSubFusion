@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=7),  # v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=8),  # v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -348,10 +348,10 @@ class Run:
         info = res.get("probe") or {}
         aspect = (info.get("video") or {}).get("aspect") or 16 / 9
         fused = res.get("fuse")
-        boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused) if fused else []
         from ..llm.translate import shown
 
         ann = res.get("annotate") or {"cues": shown((res.get("translate") or {}).get("cues", [])), "tokens": {}}
+        boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused, ann.get("rects")) if fused else []
         return ann["cues"], ann["tokens"], aspect, boxes
 
     def reannotate(self):
@@ -479,7 +479,8 @@ class Run:
         emit({"type": "stage", "name": "render", "status": "running"})
         t = time.time()
         try:
-            self._render(annotated["cues"], annotated["tokens"], aspect, boxes)
+            self._render(annotated["cues"], annotated["tokens"], aspect,
+                         self._hardsub_boxes(refined, fused, annotated.get("rects")))
         except Exception as e:
             emit({"type": "stage", "name": "render", "status": "failed", "error": str(e)})
             raise
@@ -723,11 +724,12 @@ class Run:
             f"实物上的字 {s['ocr_scene']}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
             f"语音 {s['asr_total']} 段（无字幕覆盖 {s['asr_uncovered']}，作为参考附到字幕上 {s['asr_hint']}）")
 
-    def _hardsub_boxes(self, ocr_events, fused):
-        """真正的硬字幕框（排除台标、背景文字），渲染时用来让开位置。"""
+    def _hardsub_boxes(self, ocr_events, fused, rects=None):
+        """真正的硬字幕框（排除台标、背景文字），渲染时用来让开位置。rects：注音时收紧了的框（_text_rects）。"""
         keep = {it["id"] for it in fused["items"] if it["src"] in ("telop", "info")}
         marks = fused.get("ocr_marks", {})
-        return [{"start": e["start"], "end": e["end"], "rect": e["rect"], "vertical": e.get("vertical")}
+        rects = rects or {}
+        return [{"start": e["start"], "end": e["end"], "rect": rects.get(e["id"], e["rect"]), "vertical": e.get("vertical")}
                 for e in ocr_events if e["id"] in keep or marks.get(e["id"], {}).get("dup_of")]
 
     # ---------- 翻译 ----------
@@ -918,7 +920,8 @@ class Run:
         edits = load_json(self.proj / "edits.json", {})  # 已经由 _sync_edits 对好了这一版翻译结果
         cues = apply_edits(shown(translated["cues"]), edits, self.src)
         edits = normalize_edits(edits)["cues"]
-        cues = self._tidy(cues, edits)
+        rects = self._text_rects(cues)
+        cues = self._tidy(cues, edits, rects)
         readings = self._readings(translated.get("glossary"))
         warned = set()
 
@@ -950,9 +953,43 @@ class Run:
                 n_guess += 1
         if any(tokens.values()):
             log(f"注音完成：{len(cues)} 条；读音词典 / 术语表 {len(readings)} 条；{n_guess} 条有读音待确认的专有名词")
-        return {"cues": cues, "tokens": tokens}
+        return {"cues": cues, "tokens": tokens, "rects": rects}
 
-    def _tidy(self, cues, edits):
+    def _text_rects(self, cues):
+        """画面字的框只算最终原文里有的那几块字：扫描时旁边招牌上的字被并进同一条画面字、翻译时又清理掉了，
+        框还是包着招牌的大框，译文会被推得离字很远。返回 {画面字 id: 收紧后的框}，只含收紧了的。"""
+        from ..llm.translate import covered
+
+        events = {e["id"]: e for e in self.results.get("ocr_refine") or []}
+        kinds = {i["id"] for i in (self.results.get("fuse") or {}).get("items", []) if i["src"] in ("telop", "info")}
+        final = {}
+        for c in cues:
+            for s in c.get("sources", []):
+                if s in kinds and s in events:
+                    final[s] = final.get(s, "") + "\n" + c["orig"]["text"]
+        # 原文把这条画面字的字全用上了的，框本来就对，不用看
+        need = [events[i] for i, t in final.items() if not events[i].get("moving") and covered(events[i]["text"], t) < 0.95]
+        pieces = {e["id"]: e["pieces"] for e in need if "pieces" in e}
+        old = [e for e in need if "pieces" not in e]
+        if old and (self.results.get("probe") or {}).get("video", True):
+            from ..sources import ocr
+
+            try:
+                pieces.update(ocr.find_pieces(str(self.proj.video), old, self.cfg.ocr.model_dump(), lang.get(self.src).ocr_lang,
+                                              self.proj.media("ocr_pieces.json")))
+            except Exception as e:  # 缺识别组件、截不出画面：照旧用整个框
+                log(f"重新量画面字的位置失败，照旧用整个框：{e}")
+        from ..sources.ocr import tight_rect
+
+        area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
+        out = {}
+        for i, ps in pieces.items():
+            r = tight_rect(ps, events[i]["text"], final[i])
+            if r and area(r) < 0.9 * area(events[i]["rect"]):
+                out[i] = r
+        return out
+
+    def _tidy(self, cues, edits, rects=None):
         """去掉不要的符号（➡ 等）；整理“｜”分段：
         - 原文和译文段数对不上（大模型拿它当换行用）、或者本来就是一屏（只有一条来源）的，去掉“｜”，排版时按长度自己断；
           手动改过文字的条目不动。
@@ -962,7 +999,7 @@ class Run:
 
         marks = [m for m in self.cfg.render.strip_marks if m]
         fused = self.results.get("fuse") or load_json(self._out_path("fuse"), {}) or {}
-        items = {i["id"]: i for i in fused.get("items", [])}
+        items = {i["id"]: dict(i, rect=rects[i["id"]]) if i["id"] in (rects or {}) else i for i in fused.get("items", [])}
 
         def clean(t):
             for m in marks:
