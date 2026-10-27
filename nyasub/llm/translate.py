@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 
 from .. import lang
 from ..env import Cancelled, log, progress
-from ..textutil import fmt_time, full_sim, norm, sim
+from ..textutil import covered, fmt_time, full_sim, norm, sim
 from . import prompts
 
 SPEECH, SCREEN = ("subs", "asr"), ("telop", "info")
@@ -163,17 +163,6 @@ def split_unspoken(srcs, orig, tr):
         return srcs, orig, tr, []
     gone = {id(s) for s, _, _ in split}
     return [s for s in srcs if id(s) not in gone], "｜".join(o_parts), "｜".join(t_parts), split
-
-
-def covered(text, by):
-    """text 有多少比例的字出现在 by 里（按至少两个字连续相同的片段算）。"""
-    a, b = norm(text), norm(by)
-    if not a:
-        return 1.0
-    if len(a) <= 2:  # 一两个字（“桶”）：直接看在不在里面
-        return 1.0 if a in b else 0.0
-    blocks = SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
-    return sum(x.size for x in blocks if x.size >= 2) / len(a)
 
 
 def keep_subs_wording(srcs, orig):

@@ -83,12 +83,15 @@ def _info_spot(it, vertical, w, h, px, py, boxes):
         an, x, _ = first
         flip = {1: 7, 2: 8, 3: 9, 7: 1, 8: 2, 9: 3}[an]
         cands.append((flip, x, int(y1 * py) + 10 if flip in (7, 8, 9) else int(y0 * py) - 10))
+        # 上下都没地方（上面是标题卡的另一行、下面到画面边了）：放在原文右边 / 左边，和原文一样高
+        cy = int((y0 + y1) / 2 * py)
+        cands += [(4, int(x1 * px) + 12, cy), (6, int(x0 * px) - 12, cy)]
     cands += [(8, px // 2, 24), (2, px // 2, py - 24)]
 
     def rect_of(an, x, y):
-        bx0 = x if an in (1, 7) else x - w / 2 if an in (2, 8) else x - w
+        bx0 = x if an % 3 == 1 else x - w / 2 if an % 3 == 2 else x - w
         bx0 = max(8, min(px - w - 8, bx0))  # 不出画面左右
-        by0 = y - h if an in (1, 2, 3) else y
+        by0 = y - h if an <= 3 else y - h / 2 if an <= 6 else y
         return bx0, by0
 
     def clear(bx0, by0):
@@ -106,11 +109,11 @@ def _info_spot(it, vertical, w, h, px, py, boxes):
         bx0, by0 = rect_of(an, x, y)
         if clear(bx0, by0):
             # 左右被挪进画面时，锚点跟着换算
-            x = bx0 if an in (1, 7) else bx0 + w / 2 if an in (2, 8) else bx0 + w
+            x = bx0 if an % 3 == 1 else bx0 + w / 2 if an % 3 == 2 else bx0 + w
             return an, int(x), y, bx0, by0
     an, x, y = first
     bx0, by0 = rect_of(an, x, y)
-    return an, int(bx0 if an in (1, 7) else bx0 + w / 2 if an in (2, 8) else bx0 + w), y, bx0, by0
+    return an, int(bx0 if an % 3 == 1 else bx0 + w / 2 if an % 3 == 2 else bx0 + w), y, bx0, by0
 
 
 def _box(start, end, x0, x1, top, bottom):

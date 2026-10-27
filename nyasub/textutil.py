@@ -1,6 +1,7 @@
 """与语言无关的文本归一化、相似度、时间工具。"""
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 from rapidfuzz import fuzz
 
@@ -33,6 +34,17 @@ def full_sim(a, b):
     if not na or not nb:
         return 0.0
     return fuzz.ratio(na, nb)
+
+
+def covered(text, by):
+    """text 有多少比例的字出现在 by 里（按至少两个字连续相同的片段算）。"""
+    a, b = norm(text), norm(by)
+    if not a:
+        return 1.0
+    if len(a) <= 2:  # 一两个字（“桶”）：直接看在不在里面
+        return 1.0 if a in b else 0.0
+    blocks = SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    return sum(x.size for x in blocks if x.size >= 2) / len(a)
 
 
 def overlap(a0, a1, b0, b1):

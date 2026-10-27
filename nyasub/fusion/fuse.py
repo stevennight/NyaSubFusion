@@ -9,7 +9,7 @@
 """
 import re
 
-from ..textutil import overlap, sim
+from ..textutil import covered, full_sim, overlap, sim
 
 # 字幕里不是“说话”的部分：（笑い声）（競りの声）这类括号说明、♪♬〜 音乐记号、➡ 接续符号
 _NOT_SPEECH = re.compile(r"[（(\[［【][^）)\]］】]*[）)\]］】]|[♪♬〜～➡→]")
@@ -73,16 +73,39 @@ def _is_junk(e, pack):
     return False
 
 
+def _rescued_titles(ocr_events):
+    """视觉复核偶尔把标题卡（打在木纹、水面这类有纹理的背景上）判成实物上的字。同一集里同样的字、差不多的位置
+    别处判成了叠加字幕的，这条也算叠加字幕；和它同时出现、挨着的（标题卡的另一行“ナマコ”）一起算。返回这些 id。"""
+    caps = [e for e in ocr_events if e.get("kind") == "caption"]
+    scene = [e for e in ocr_events if e.get("kind") == "scene"]
+    mid = lambda r: ((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+
+    def same_spot(a, b):
+        (ax, ay), (bx, by) = mid(a["rect"]), mid(b["rect"])
+        return abs(ax - bx) < 0.06 and abs(ay - by) < 0.06
+
+    def touching(a, b):
+        pad = 0.5 * min(a["rect"][3] - a["rect"][1], b["rect"][3] - b["rect"][1])
+        ra, rb = a["rect"], b["rect"]
+        return ra[0] < rb[2] + pad and rb[0] < ra[2] + pad and ra[1] < rb[3] + pad and rb[1] < ra[3] + pad
+
+    saved = [e for e in scene if any(full_sim(e["text"], c["text"]) >= 90 and same_spot(e, c) for c in caps)]
+    saved += [e for e in scene if e not in saved
+              and any(abs(e["start"] - s["start"]) < 1.5 and touching(e, s) for s in saved)]
+    return {e["id"] for e in saved}
+
+
 def prefilter(ocr_events, duration, pack):
     """标记不需要的画面字：台标 / 水印、杂讯、视觉大模型判定的实物上的字（招牌、地图、包装…）。"""
     logos = _logo_ids(ocr_events, duration or max((e["end"] for e in ocr_events), default=0))
+    titles = _rescued_titles(ocr_events)
     for e in ocr_events:
         e.pop("dropped", None)
         if e["id"] in logos:
             e["dropped"] = "logo"
         elif _is_junk(e, pack):
             e["dropped"] = "junk"
-        elif e.get("kind") == "scene":
+        elif e.get("kind") == "scene" and e["id"] not in titles:
             e["dropped"] = "scene"
         e["prefiltered"] = e.get("dropped") in ("logo", "junk")  # 台标和杂讯不用送去视觉复核
 
@@ -104,7 +127,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         e.pop("dup_of", None)
         hit, sub_text = _concat(subs, e["start"], e["end"], slack=1.0)
         best = max((sim(e["text"], c["text"]) for c in hit), default=0)
-        if hit and (best >= dup_th or sim(e["text"], sub_text) >= dup_th):
+        # 还得画面字的字大多出现在字幕里：只共用一个短语（“私 失敗しないので”和“失敗しない清志さんも…”）不算重复
+        if hit and (best >= dup_th or sim(e["text"], sub_text) >= dup_th) and covered(e["text"], sub_text) >= 0.75:
             e["dup_of"] = [c["id"] for c in hit]
             continue
         a_hit, a_text = _concat(asr, e["start"], e["end"])

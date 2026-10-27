@@ -344,3 +344,56 @@ def test_dialogue_slides_aside_from_name_card():
     caption = {"start": 1688.0, "end": 1697.0, "rect": [0.1, 0.85, 0.9, 0.98]}
     _, _, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [caption])
     assert placed[0]["margin_v"] > 46 and placed[0].get("x") is None
+
+
+def test_fuse_dup_needs_most_of_the_caption_in_subs():
+    """“私 失敗しないので”和后面旁白“失敗しない清志さんも…”只共用一个短语：不算重复，照常用；真正重复的照样去掉。"""
+    subs = [{"id": "c498", "start": 3287.1, "end": 3289.3, "text": "（笑い声）"},
+            {"id": "c499", "start": 3289.3, "end": 3293.6, "text": "失敗しない清志さんも　今年６２歳。"},
+            {"id": "c470", "start": 3111.6, "end": 3115.0, "text": "（取材者）百姓たちが作り上げた野菜。\nそう　農家が。"}]
+    ocr = [_ocr("o1115", 3286.1, 3289.0, "私 失敗しないので"),
+           _ocr("o1041", 3109.9, 3116.5, "昔の百姓たちが作り上げた野菜\n農家が")]
+    fuse(subs, ocr, [], FUSION, lang.get("ja"), 3600)
+    assert "dup_of" not in ocr[0] and ocr[1]["dup_of"] == ["c470"]
+
+
+def test_title_card_misjudged_as_scene_is_rescued():
+    """同样的“冬を食べる”在别处判成了叠加字幕：这里判成实物上的字的那张标题卡（连同下面一行“ナマコ”）救回来。"""
+    card = _ocr("o777", 1972.9, 1980.5, "冬を食べる", (0.0211, 0.7472, 0.1922, 0.8514))
+    card["kind"] = "caption"
+    a = dict(_ocr("o932", 2562.5, 2568.0, "冬を食べる", (0.0203, 0.7528, 0.1891, 0.8514)), kind="scene")
+    b = dict(_ocr("o933", 2563.3, 2568.0, "ナマコ", (0.0523, 0.8361, 0.2703, 0.9917)), kind="scene")
+    sign = dict(_ocr("o100", 2562.5, 2568.0, "冬を食べる", (0.7, 0.2, 0.9, 0.3)), kind="scene")  # 别的位置：不算
+    fuse([], [card, a, b, sign], [], FUSION, lang.get("ja"), 3600)
+    assert not a.get("dropped") and not b.get("dropped") and sign["dropped"] == "scene"
+
+
+def test_info_translation_beside_box_when_above_and_below_blocked():
+    """标题卡第二行“鮭とば”：上面是第一行，下面到画面边了，译文放在右边，不跑到画面顶部。"""
+    cfg = config.Config()
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+    cue = {"id": "q449", "start": 1973.9, "end": 1980.5, "type": "info", "onscreen": True, "rect": [0.0492, 0.8306, 0.2742, 0.9931],
+           "orig": {"lang": "ja", "text": "鮭とば"}, "tr": {"zh-Hans": {"text": "鲑鱼干"}}, "sources": ["o778"]}
+    first_line = {"start": 1972.9, "end": 1980.5, "rect": [0.0211, 0.7472, 0.1922, 0.8514]}
+    px, py, _, placed = ass.place(layout.build([cue], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [first_line])
+    p = placed[0]
+    assert p["an"] == 4 and p["x"] > 0.2742 * px and 0.83 * py < p["y"] < 0.99 * py
+
+
+def test_subs_line_also_printed_on_screen_hides_original(sample):
+    """字幕的这句话画面上也打着（画面字当成重复去掉了）：原文不再显示；画面上只打了句子里提到的地名，照常显示。"""
+    from nyasub.core import pipeline
+
+    r = pipeline.Run(sample, config.Config(), pipeline.Options())
+    r.results = {
+        "fuse": {"items": [{"id": "c470", "src": "subs", "start": 3111.6, "end": 3115.0, "text": "（取材者）百姓たちが作り上げた野菜。そう　農家が。"},
+                           {"id": "c33", "src": "subs", "start": 162.4, "end": 166.0, "text": "舞台は日本海に　ほど近い　片野鴨池。"}],
+                 "ocr_marks": {"o1041": {"dup_of": ["c470"]}, "o50": {"dup_of": ["c33"]}}},
+        "ocr_refine": [dict(_ocr("o1041", 3109.9, 3116.5, "昔の百姓たちが作り上げた野菜\n農家が")),
+                       dict(_ocr("o50", 162.0, 167.0, "片野鴨池", (0.6, 0.5, 0.8, 0.58)))],
+    }
+    cue = lambda i, sid, s, e, t: {"id": i, "start": s, "end": e, "type": "dialogue", "sources": [sid], "onscreen": False,
+                                   "orig": {"lang": "ja", "text": t}, "tr": {"zh-Hans": {"text": "译"}}}
+    out = {c["id"]: c for c in r._tidy([cue("q653", "c470", 3111.6, 3115.0, "（取材者）百姓たちが作り上げた野菜。　そう　農家が。"),
+                                        cue("q33", "c33", 162.4, 166.0, "舞台は日本海に　ほど近い　片野鴨池。")], {})}
+    assert out["q653"]["onscreen"] and not out["q33"]["onscreen"]
