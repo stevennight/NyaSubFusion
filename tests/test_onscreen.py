@@ -191,3 +191,57 @@ def test_subs_wording_kept_and_names_checked():
             {"orig": {"text": "蚕のさなぎに イナゴ"}, "tr": {"zh-Hans": {"text": "蚕蛹和蚱蜢"}}}]
     terms = [{"src": "キミイさん", "tr": "纪美", "type": "人名"}, {"src": "イナ", "tr": "伊那", "type": "地名"}]
     assert term_misses(cues, terms, "zh-Hans") == [(0, [("キミイ", "纪美")])]
+
+
+def test_refine_context_frames_shared_by_same_moment():
+    from nyasub.llm.refine import plan_groups
+
+    def ev(i, start, end, snap, rect, crop=None, **kw):
+        return {"id": i, "start": start, "end": end, "snap_t": snap, "rect": rect, "crop_rect": crop or rect, **kw}
+
+    bottle = ev("o18", 64.0, 66.0, 64.4, [0.95, 0.6, 0.97, 0.7])
+    one = ev("o19", 64.2, 65.6, 64.5, [0.98, 0.4, 0.99, 0.44])           # 同一时刻在画面上：共用 o18 那一帧
+    pan = ev("o42", 63.0, 66.0, 64.6, [0.5, 0.1, 0.6, 0.2], [0.3, 0.1, 0.6, 0.2])  # 镜头摇移，别的时刻框不准
+    later = ev("o50", 70.0, 72.0, 70.5, [0.1, 0.8, 0.9, 0.9])
+    groups = plan_groups([later, pan, one, bottle], 4, context=True)
+    assert [[e["id"] for e in g] for g, _ in groups] == [["o18", "o19", "o42", "o50"]]
+    assert groups[0][1] == [64.4, 64.4, 64.6, 70.5]
+    # 不带画面：顺序、分批和以前一样（请求缓存照样命中）
+    assert [[e["id"] for e in g] for g, at in plan_groups([later, pan, one, bottle], 3)] == [["o50", "o42", "o19"], ["o18"]]
+
+
+def test_refine_context_frame_marked(tmp_path):
+    import cv2
+    import numpy as np
+
+    from nyasub.llm.refine import mark_frame
+
+    f = tmp_path / "f.jpg"
+    cv2.imwrite(str(f), np.full((720, 1280, 3), 128, np.uint8))
+    e = {"id": "o19", "start": 64.2, "end": 65.6, "snap_t": 64.5, "rect": [0.98, 0.4, 0.99, 0.44]}
+    out = mark_frame(str(f), [e], [1], 64.5, str(tmp_path / "m"))
+    img = cv2.imread(out)
+    assert img.shape[:2] == (360, 640)
+    assert (np.abs(img.astype(int) - 128).sum(axis=2) > 60).sum() > 50  # 画上了框和编号
+
+
+def test_refine_context_asks_with_frames(tmp_path):
+    from nyasub.llm import refine
+
+    paths = []
+    for i in range(2):
+        f = tmp_path / f"{i}.jpg"
+        f.write_bytes(b"x%d" % i)
+        paths.append(str(f))
+    group = [{"id": "o18", "text": "辛口純米"}, {"id": "o19", "text": "生"}]
+    calls = []
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            calls.append((system, [i["label"] for i in images]))
+            return {"items": [{"no": 1, "text": "辛口純米", "kind": "scene"}, {"no": 2, "text": "生", "kind": "scene"}]}
+
+    got = refine._ask(Fake(), group, paths, lambda idx: [(paths[0], list(range(len(idx))))])
+    assert calls[0][0] == refine.VLM_CTX_SYSTEM
+    assert calls[0][1] == ["画面 A（框出了编号 1、2）", "第 1 张（编号 1 的特写，在画面 A 上）", "第 2 张（编号 2 的特写，在画面 A 上）"]
+    assert [g["kind"] for g in got] == ["scene", "scene"]

@@ -148,7 +148,9 @@ class Run:
                  "sub": digest(t["path"].read_text(encoding="utf-8-sig")) if t["path"].exists() else None}
                 for t in self._video_tracks(name, self._video_profiles)]}
         if name == "ocr_refine":
-            return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None}
+            # 附整帧画面默认开着：开着时记进指纹（加这个之前复核过的会按新做法重新复核一次）
+            return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None,
+                    **({"context": True} if self._refine_context() else {})}
         if name == "translate":
             mode = self._llm_mode()
             jobs = None
@@ -679,7 +681,12 @@ class Run:
         from ..llm.refine import refine_ocr
 
         prefilter(events, self.results["probe"]["duration"], lang.get(self.src))
-        return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video)
+        return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
+                          context=self._refine_context())
+
+    def _refine_context(self):
+        info = self.results.get("probe") or {}
+        return self.cfg.ocr.refine == "vlm" and bool(self.cfg.ocr.refine_context) and bool(info.get("video", True))
 
     def _align(self, subs, asr):
         from ..fusion.align import apply_offset, estimate_offset

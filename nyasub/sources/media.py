@@ -315,8 +315,9 @@ def waveform_peaks(wav_path, per_second=50):
     return {"per_second": rate / step, "peaks": np.clip(peaks * 255 // top, 0, 255).astype(int).tolist()}
 
 
-def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None):
+def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, exact=False):
     """在这些时间点各截一张小图（翻译时给大模型看画面）。按 0.5 秒取整，截过的直接用。
+    exact：按毫秒截（视觉复核要在画面上框出字的位置，差半秒字可能已经挪了）。
     返回 {取整后的时间: 图片路径}；截不出来的（片尾之后、解码失败）不在里面。"""
     from concurrent.futures import ThreadPoolExecutor
     from pathlib import Path
@@ -325,17 +326,17 @@ def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None):
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    keys = sorted({round(t * 2) / 2 for t in times})
+    keys = sorted({round(t, 3) if exact else round(t * 2) / 2 for t in times})
     res, todo = {}, []
     for k in keys:
-        f = out / f"{int(k * 2):07d}.jpg"
+        f = out / (f"{round(k * 1000):09d}.jpg" if exact else f"{int(k * 2):07d}.jpg")
         (res.__setitem__(k, f) if f.exists() and f.stat().st_size else todo.append((k, f)))
 
     def one(job):
         k, f = job
         check_cancel()
         try:
-            subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{k:.2f}", "-i", str(path), "-frames:v", "1",
+            subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{k:.3f}", "-i", str(path), "-frames:v", "1",
                             "-vf", f"scale={width}:-2", "-q:v", "5", str(f)],
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
         except subprocess.TimeoutExpired:

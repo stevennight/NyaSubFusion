@@ -72,6 +72,7 @@ class OcrCfg(_M):
     skip_static: bool = True
     keep_frames: bool = False
     refine: Literal["none", "vlm"] = "none"  # vlm：视觉大模型复核
+    refine_context: bool = True              # 复核时同一时刻的几处字一批，附上框了编号的整帧画面（判断是叠加字幕还是实物上的字准得多）
 
 
 class FusionCfg(_M):

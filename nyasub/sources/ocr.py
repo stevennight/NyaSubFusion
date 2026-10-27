@@ -583,6 +583,11 @@ def _compose(members, W, H):
         snaps += [m["tr"].snap_rect for m in members if m["tr"].snap_rect]
     crop_rect = [round(min(r[0] for r in snaps) / W, 4), round(min(r[1] for r in snaps) / H, 4),
                  round(max(r[2] for r in snaps) / W, 4), round(max(r[3] for r in snaps) / H, 4)]
+    # 截图那一帧里字的位置（视觉复核时在整帧画面上框出来）：截图就是这一帧，同一帧截到的用那一帧的框
+    ref_t = latest["tr"].snap_t
+    at = [m["rect"] if moving or m["tr"].snap_t != ref_t or not m["tr"].snap_rect else m["tr"].snap_rect for m in members]
+    snap_rect = [round(min(r[0] for r in at) / W, 4), round(min(r[1] for r in at) / H, 4),
+                 round(max(r[2] for r in at) / W, 4), round(max(r[3] for r in at) / H, 4)]
     return {
         "start": round(min(m["start"] for m in members), 3),
         "end": round(max(m["end"] for m in members), 3),
@@ -595,5 +600,6 @@ def _compose(members, W, H):
         "_snapshot": latest["tr"].snapshot,
         "crop_rect": crop_rect,
         "snap_t": latest["tr"].snap_t,
+        "snap_rect": snap_rect,
         **({"moving": True} if moving else {}),
     }

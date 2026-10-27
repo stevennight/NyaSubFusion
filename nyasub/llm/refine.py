@@ -1,6 +1,8 @@
 """视觉大模型复核画面字：纠正 OCR 错字，并判断是不是实物上本来就有的字（招牌、包装…）。"""
+import hashlib
 import os
 import re
+import shutil
 from difflib import SequenceMatcher
 
 from ..env import Cancelled, check_cancel, log, progress
@@ -21,6 +23,25 @@ VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张�
      特征：跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。
 输出 JSON：{"items": [{"no": 1, "text": "第1张原文", "kind": "caption"}, ...]}，no 是图前面标的编号，数量必须和图片数量一致。"""
 
+# 带整帧画面的版本：每处文字都给一张它所在时刻的整帧画面（框出位置、标上编号；同一时刻的几处共用一张），再给每处的特写
+VLM_CTX_SYSTEM = """你是影视节目的画面文字校对员。会给你一到几张整帧画面（画面 A、画面 B…）和若干张特写。
+整帧画面上用彩色框框出了文字的位置，框旁标着编号；特写「第 n 张」是编号 n 那处文字（连同周围一小圈背景）放大的样子。
+各处文字互不相关：每处只转写它自己的字，不要把别处的字写进来。
+对每处文字做两件事：
+1. text：看特写，准确、完整地转写原文，每一行、每一个字都要转写，不能漏行、漏掉行尾。
+   横排多行用 " / " 分隔；竖排按从右到左的列顺序，每列用 " / " 分隔。看不清就输出空字符串。
+   附带的“本地 OCR 参考”可能有错字、多出噪点字符，也可能少字；一切以图片为准。
+2. kind：结合整帧画面判断这处文字是哪一类——
+   - "caption"：节目后期叠加在画面上的字幕，比如采访台词字幕、人名条、地名、说明文字、标题、资料来源、片尾字幕。
+     特征：浮在画面最上层，字体规整清晰，通常有描边或阴影，横平竖直，不随镜头透视变形，不受画面光影影响。
+   - "scene"：拍摄到的实物上本来就有的字，比如招牌、海报、地图、古文书、日历、商品包装和瓶子上的标签、手写字、车身文字、电视台台标。
+     特征：印在、写在、挂在画面里的物体上，跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。
+     特写里看起来像字幕的单个字、短词，要看它在整帧画面里的位置：在某个物体（瓶子、包装、招牌…）上就是 scene。
+   没有给整帧画面的那几处，只看特写判断。
+输出 JSON：{"items": [{"no": 1, "text": "第1处原文", "kind": "caption"}, ...]}，no 是编号，数量必须和特写数量一致。"""
+
+_COLORS = [(48, 59, 255), (89, 199, 52), (255, 132, 10), (0, 204, 255), (212, 45, 255), (255, 229, 0)]  # BGR
+
 
 def truncated(vlm, local):
     """复核结果只是本地 OCR 文字的一部分、明显短一截：多半是截图那一帧字还没出全（逐字出现的动画）。"""
@@ -34,12 +55,22 @@ def truncated(vlm, local):
     return len(_CJK.findall(missing)) >= 3  # “一”被认成“―”这种一两个字的差别不算
 
 
-def _ask_once(llm, group, paths):
-    hint = "\n".join(f"第{j + 1}张（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
+def _ask_once(llm, group, paths, frames=None):
+    """frames：[(框好的整帧画面, 画面上框出的是这一批里的第几处)]。"""
+    unit = "处" if frames else "张"
+    hint = "\n".join(f"第{j + 1}{unit}（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
                      for j, e in enumerate(group))
     # 每张图前面标上编号：只靠顺序时模型容易把相邻两张图的字搞混
-    images = [{"path": p, "label": f"第 {j + 1} 张"} for j, p in enumerate(paths)]
-    res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=images)
+    if frames:
+        where = {j: chr(65 + k) for k, (_, idx) in enumerate(frames) for j in idx}
+        images = [{"path": f, "label": f"画面 {chr(65 + k)}（框出了编号 {'、'.join(str(j + 1) for j in idx)}）"}
+                  for k, (f, idx) in enumerate(frames)]
+        images += [{"path": p, "label": f"第 {j + 1} 张（编号 {j + 1} 的特写" + (f"，在画面 {where[j]} 上）" if j in where else "）")}
+                   for j, p in enumerate(paths)]
+        res = llm.chat_json(VLM_CTX_SYSTEM, f"共 {len(group)} 处文字。\n{hint}", images=images)
+    else:
+        images = [{"path": p, "label": f"第 {j + 1} 张"} for j, p in enumerate(paths)]
+        res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=images)
     got = res.get("items")
     if got is None:
         got = [{"text": t} for t in res.get("texts", [])]
@@ -52,13 +83,14 @@ def _ask_once(llm, group, paths):
     return got
 
 
-def _ask(llm, group, paths):
-    got = _ask_once(llm, group, paths)
+def _ask(llm, group, paths, frames_for=None):
+    """frames_for(这一批里第几处的列表) -> 给这几处的整帧画面（见 _ask_once）；不带画面时为 None。"""
+    got = _ask_once(llm, group, paths, frames_for(list(range(len(group)))) if frames_for else None)
     for j in borrowed(group, got):
         # 像是串图了：这一张单独再问一次。只有一张图就不可能串，单独问的结果直接用
         # （也可能根本没串：几张图拍的是同一段字、本地识别又认错了，比如片名动画的几帧）
         try:
-            again = _ask_once(llm, [group[j]], [paths[j]])[0] if len(group) > 1 else {}
+            again = _ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None)[0] if len(group) > 1 else {}
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception:
@@ -98,19 +130,135 @@ def _apply(e, g):
         e["kind"] = g["kind"]
 
 
-def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None):
+def _snap_t(e):
+    return e["snap_t"] if e.get("snap_t") is not None else (e["start"] + e["end"]) / 2
+
+
+def box_at(e, t):
+    """这处字在 t 秒的画面上的框（0~1）。那一刻对不上（不在画面上、字或镜头在移动）返回 None。"""
+    if abs(t - _snap_t(e)) < 0.01:  # 截图那一帧
+        return e.get("snap_rect") or e.get("crop_rect") or e["rect"]
+    if e.get("moving") or not (e["start"] <= t <= e["end"]):
+        return None
+    x0, y0, x1, y1 = e["rect"]
+    X0, Y0, X1, Y1 = e.get("crop_rect") or e["rect"]
+    if (X1 - X0) * (Y1 - Y0) > 1.5 * max(1e-6, (x1 - x0) * (y1 - y0)):
+        return None  # 截图框比字大一圈以上：字在画面上挪过（镜头摇移、逐字出现），别的时刻框不准
+    return e["rect"]
+
+
+def plan_groups(todo, batch, context=False):
+    """分批：每 batch 处一批。带整帧画面时按截图时刻排，再给每处定一个画面时刻（同一批里同一时刻都在画面上的共用一张画面）。
+    返回 [(这一批, 各处的画面时刻 或 None)]。"""
+    if context:
+        todo = sorted(todo, key=lambda e: (_snap_t(e), e["start"]))
+    out = []
+    for i in range(0, len(todo), batch):
+        group = todo[i:i + batch]
+        if not context:
+            out.append((group, None))
+            continue
+        moments, at = [], []
+        for e in group:
+            t = next((m for m in moments if box_at(e, m) is not None), None)
+            if t is None:
+                t = _snap_t(e)  # 自己的截图时刻：框一定准
+                moments.append(t)
+            at.append(t)
+        out.append((group, at))
+    return out
+
+
+def mark_frame(frame, items, nos, t, out_dir, width=640):
+    """整帧画面上框出这几处字、标上编号 nos（编号在框外，不挡字），缩到 width 宽存起来。
+    640 宽一张约 300 token：认字靠特写，整帧画面只用来看字在什么东西上，够了。"""
+    import cv2
+    import numpy as np
+
+    from ..sources.ocr import _imread, _imwrite
+
+    name = hashlib.sha1(f"{frame}|{t}|{[e['id'] for e in items]}|{nos}|{width}".encode()).hexdigest()[:12]
+    path = os.path.join(out_dir, f"{name}.jpg")
+    if os.path.exists(path):
+        return path
+    img = _imread(frame)
+    if img is None:
+        return None
+    H, W = img.shape[:2]
+    if W > width:
+        img = cv2.resize(img, (width, round(H * width / W)), interpolation=cv2.INTER_AREA)
+        H, W = img.shape[:2]
+    th = 2
+    scale = max(0.55, H / 720 * 0.9)
+    for e, no in zip(items, nos):
+        r = box_at(e, t)
+        if r is None:
+            continue
+        c = _COLORS[no % len(_COLORS)]
+        p = th + 2
+        x0, y0 = max(0, round(r[0] * W) - p), max(0, round(r[1] * H) - p)
+        x1, y1 = min(W - 1, round(r[2] * W) + p), min(H - 1, round(r[3] * H) + p)
+        cv2.rectangle(img, (x0, y0), (x1, y1), c, th)
+        lab = str(no + 1)
+        (tw, lh), base = cv2.getTextSize(lab, cv2.FONT_HERSHEY_SIMPLEX, scale, th)
+        bw, bh = tw + 6, lh + base + 4
+        # 标签放框外：上面放不下放下面，再不行放左边
+        if y0 - bh >= 0:
+            lx, ly = min(max(0, x0), W - bw), y0 - bh
+        elif y1 + bh < H:
+            lx, ly = min(max(0, x0), W - bw), y1 + 1
+        else:
+            lx, ly = max(0, x0 - bw), y0
+        cv2.rectangle(img, (lx, ly), (lx + bw, ly + bh), c, -1)
+        cv2.putText(img, lab, (lx + 3, ly + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th, cv2.LINE_AA)
+    os.makedirs(out_dir, exist_ok=True)
+    return path if _imwrite(path, np.ascontiguousarray(img)) else None
+
+
+def _grab(video, groups, out_dir):
+    """各处画面时刻的整帧画面。返回 {时刻: 路径}。"""
+    import time
+
+    from ..sources import media
+
+    times = sorted({t for _, at in groups for t in at or []})
+    t0 = time.time()
+    got = media.grab_frames(str(video), times, out_dir, width=1280, exact=True,
+                            on_progress=lambda n, total: progress(n, total, "截取画面"))
+    log(f"  截取整帧画面 {len(got)} 张（用时 {time.time() - t0:.0f}s），复核时附上，看字是在实物上还是叠加的字幕")
+    return {t: got.get(round(t, 3)) for t in times}
+
+
+def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=False):
+    """context：每处字附上它所在时刻的整帧画面（框出位置、标上编号），判断是叠加字幕还是实物上的字准得多。"""
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir)
     todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
     log(f"视觉大模型复核画面字：{len(todo)} 条")
+    context = bool(context and todo and video and os.path.exists(str(video)))
+    groups = plan_groups(todo, batch, context)
+    frames = _grab(video, groups, os.path.join(workdir, "crops", "frames")) if context else {}
+    marked_dir = os.path.join(workdir, "crops", "marked")
     short = []  # 复核结果只有半截的：换一帧重新截图再问
-    for i in range(0, len(todo), batch):
+    n_done = 0
+    for gi, (group, at) in enumerate(groups):
         check_cancel()
-        progress(i, len(todo), "复核", every=0)
-        group = todo[i:i + batch]
+        progress(n_done, len(todo), "复核", every=0)
+        n_done += len(group)
+
+        def frames_for(idx, group=group, at=at):
+            """这几处（这一批里的序号）的整帧画面：同一时刻的共用一张，编号按 idx 里的先后。"""
+            out = []
+            for t in dict.fromkeys(at[j] for j in idx):
+                mine = [k for k, j in enumerate(idx) if at[j] == t]
+                f = frames.get(t) and mark_frame(frames[t], [group[idx[k]] for k in mine], mine, t, marked_dir)
+                if f:
+                    out.append((f, mine))
+            return out
+
         try:
-            got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
+            got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group], frames_for if at else None)
         except FatalLLMError as ex:
             log(f"  {ex}")
             log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
@@ -118,7 +266,7 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None):
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception as ex:
-            log(f"  第 {i // batch + 1} 批复核失败，保留本地结果：{ex}")
+            log(f"  第 {gi + 1} 批复核失败，保留本地结果：{ex}")
             continue
         for e, g in zip(group, got):
             e["text_local"] = e["text"]
@@ -130,6 +278,9 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None):
             _apply(e, g)
     if short:
         _retry_short(llm, short, workdir, video, batch, float(cfg.ocr.fps))
+    # 整帧画面一批一张、占地方，复核完删掉（中途停止的留着，下次接着用；重新截出来的一样，请求缓存照样命中）
+    for d in ("frames", "marked"):
+        shutil.rmtree(os.path.join(workdir, "crops", d), ignore_errors=True)
     return events
 
 

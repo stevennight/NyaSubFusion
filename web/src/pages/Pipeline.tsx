@@ -240,6 +240,11 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                     <span className="dim">{String(val("ocr.fps"))} 帧/秒 · 时间误差约 ±{(0.5 / Number(val("ocr.fps") || 1)).toFixed(2)} 秒</span></div>
                   <span className="lbl">视觉复核</span>
                   <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
+                  {val("ocr.refine") === "vlm" && <>
+                    <span className="lbl">参考画面</span>
+                    <label className="row" title="同一时刻画面上的几处字放在一批，附上一张框了编号的整帧画面，再加每处的特写。大模型能看到字是印在瓶子、招牌上，还是叠加在画面上的字幕，判断准得多。输入用量大约多一倍。">
+                      <input type="checkbox" checked={!!val("ocr.refine_context")} onChange={(e) => set("ocr.refine_context", e.target.checked)} />复核时附上整帧画面</label>
+                  </>}
                 </div>
                 {val("ocr.enabled") && s.pid && s.summary?.meta?.video ? (
                   <div className="src-region">
