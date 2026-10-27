@@ -52,6 +52,8 @@ export const api = {
   clearOrphans: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/edits/orphans`, { method: "DELETE" }),
   // 几条一起改审校状态（播放看过的一批自动标成已审），算一步撤销
   setReview: (pid: string, ids: string[], review: "ok" | "todo" | "flag") => call<EditResult>(`/api/projects/${pid}/review`, json("POST", { ids, review })),
+  // 统一译法：原文相同 / 相近、译法不一样的字幕，大模型逐组判断要不要统一（改动算一步撤销，改过的标待审校）
+  unify: (pid: string) => call<EditResult & { groups: number; same: number; changed: number }>(`/api/projects/${pid}/unify`, { method: "POST" }),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
     call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),

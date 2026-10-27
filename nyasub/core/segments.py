@@ -96,27 +96,46 @@ def _timeline(srcs):
     return text, times, edges
 
 
-def card_bars(cue, items):
-    """落在同一条字幕 / 台词画面字中间的“｜”是第几个分界（从 1 起）：大模型把里面的换行也当成了分屏。
-    一条字幕原来就是一屏，这种分界该合回去；语音一段可能很长，不算。“｜”两边的字在来源里得连着对上，才算落在中间。"""
+def _bar_spots(cue, items):
+    """每个“｜”分界（从 1 起）落在来源文字的哪里：{k: ((前一个字的来源, 行号), (后一个字的来源, 行号))}。
+    “｜”两边的字在来源里得连着对上才算，对不上的分界不在里面。"""
     ps = pieces(cue["orig"]["text"])
     if len(ps) < 2:
-        return []
+        return {}
     srcs = [s for s in sources(cue, items) if s["end"] > cue["start"] and s["start"] < cue["end"]]
     text, _, _ = _timeline(srcs)
     if not text:
-        return []
-    owner = [s for s in srcs for _ in norm(s["text"].replace("➡", ""))]  # 来源文字里每个字属于哪条来源
+        return {}
+    # 来源文字里每个字属于哪条来源的第几行
+    owner = [(s, i) for s in srcs for i, line in enumerate(s["text"].replace("➡", "").split("\n")) for _ in norm(line)]
     normed = [norm(p) for p in ps]
     sm = SequenceMatcher(None, "".join(normed), text, autojunk=False)
     blocks = [b for b in sm.get_matching_blocks() if b.size]
-    out, i = [], 0
+    out, i = {}, 0
     for k, p in enumerate(normed[:-1], 1):
         i += len(p)
         pos = next((b.b + i - b.a for b in blocks if b.a < i < b.a + b.size), None)
-        if pos is not None and owner[pos]["src"] in ("subs", "telop") and owner[pos - 1] is owner[pos]:
-            out.append(k)
+        if pos is not None:
+            out[k] = (owner[pos - 1], owner[pos])
     return out
+
+
+def card_bars(cue, items):
+    """落在同一条字幕 / 台词画面字中间的“｜”是第几个分界（从 1 起）：大模型把里面的换行也当成了分屏。
+    一条字幕原来就是一屏，这种分界该合回去；语音一段可能很长，不算。"""
+    return [k for k, ((a, _), (b, _)) in _bar_spots(cue, items).items() if a is b and b["src"] in ("subs", "telop")]
+
+
+def voice_change(cue, items, k):
+    """第 k 个分界前后是不是换了一个人说话：字幕带着说话人线索（voices）时看得出来，返回 True / False；看不出来返回 None。"""
+    spot = _bar_spots(cue, items).get(k)
+    if not spot or spot[0][0] is not spot[1][0]:
+        return None
+    (s, a), (_, b) = spot
+    vs = s.get("voices")
+    if not vs or max(a, b) >= len(vs):
+        return None
+    return vs[a] != vs[b]
 
 
 def join_at(text, k, code, sep=None):

@@ -265,6 +265,32 @@ def merge_terms(known, new):
     return out
 
 
+def recall(chunk, done, tgt_code, per_item=2, limit=15):
+    """译文记忆：这一段里和前面已经翻好的字幕原文相同 / 很像的条目，找出前面的译法和前后各一句。
+    只是给大模型参考，沿用还是另译由它按前后文判断（同样的话换了场景可能是另一回事）。
+    太短的（“うん”这类两三个字的应答）不找，免得噪音。前面有几种译法就各给一条（最早那条），每条最多给 per_item 种。
+    返回 [(条目 id, 前面那条的开始时间, 前面的原文, 前面的译文, 前一句原文, 后一句原文)]。"""
+    # 前面每条字幕整句，加上它的每一段（一句话常被拆在两块画面字里，这里的条目只是其中一块）
+    keys = [{norm(c["orig"]["text"].replace("｜", ""))} | {norm(p) for p in c["orig"]["text"].split("｜")} for c in done]
+    out = []
+    for it in chunk:
+        a = norm(it["text"].replace("➡", ""))
+        if len(a) < 3:
+            continue
+        seen, picked = set(), []
+        for i, bs in enumerate(keys):
+            if not any(b and (a == b or (min(len(a), len(b)) >= 5 and full_sim(a, b) >= 90)) for b in bs):
+                continue
+            tr = done[i].get("tr", {}).get(tgt_code, {}).get("text", "")
+            if tr and tr not in seen:
+                seen.add(tr)
+                picked.append(i)
+        for i in picked[:per_item]:
+            ctx = lambda j: done[j]["orig"]["text"] if 0 <= j < len(done) else ""
+            out.append((it["id"], done[i]["start"], done[i]["orig"]["text"], done[i]["tr"][tgt_code]["text"], ctx(i - 1), ctx(i + 1)))
+    return out[:limit]
+
+
 def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     """返回 (cues, glossary)。frames：{条目 id: 画面截图路径}，有的话每段翻译都附上截图。"""
     from .client import LLM
@@ -307,7 +333,8 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     for i, chunk in enumerate(chunks, 1):
         progress(i - 1, len(chunks), f"翻译 {i}/{len(chunks)} 段", every=0)
         log(f"融合翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
-        prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code)
+        prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code,
+                                      recall(chunk, all_cues, tgt_code))
         res = ask(prompt, chunk)
         cues, missing = apply_result(chunk, res, tgt_code, src.code)
         # 这一段新定下的译名（术语表里没有的人名等）记下来，后面各段沿用，前后统一
@@ -329,6 +356,9 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
     resegment(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
     enforce_terms(llm, cues, terms, src, tgt_code, cfg)
+    from .consistency import unify
+
+    unify(llm, cues, src, tgt, tgt_code)
 
     for extra in targets[1:]:
         translate_extra(llm, cues, src, extra, tgt_code, gl_text, cfg)
@@ -429,7 +459,7 @@ def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
             c = cues[i]
             srcs = sorted((items[s] for s in c.get("sources", []) if s in items), key=lambda s: s["start"])
             src_lines = "\n".join(f"　[{prompts.SRC_LABEL.get(s['src'], s['src'])} {fmt_time(s['start'])}-{fmt_time(s['end'])}] "
-                                  f"{s['text'].replace(chr(10), ' / ')}" for s in srcs)
+                                  f"{prompts.lines_text(s)}" for s in srcs)
             blocks.append(f"[{c['id']}]\n来源：\n{src_lines}\n原文：{c['orig']['text']}\n译文：{c['tr'][tgt_code]['text']}")
         try:
             res = llm.chat_json(system, "\n\n".join(blocks))
@@ -536,7 +566,7 @@ def retranslate(cfg, cache_dir, cue, context, src_code, tgt_code, terms, instruc
     seg_lines = [f"第{i + 1}段 {fmt_time(a)}-{fmt_time(b)}：{o_ps[i] if i < len(o_ps) else ''}　〔{t_ps[i] if i < len(t_ps) else ''}〕"
                  for i, (a, b) in enumerate(parts)]
     src_lines = [f"[{prompts.SRC_LABEL.get(s['src'], s['src'])} {fmt_time(s['start'])}-{fmt_time(s['end'])}] "
-                 f"{s['text'].replace(chr(10), ' / ')}" for s in sorted(sources, key=lambda s: s["start"])]
+                 f"{prompts.lines_text(s)}" for s in sorted(sources, key=lambda s: s["start"])]
     ctx = []
     for c in context:
         mark = "→ 本条" if c["id"] == cue["id"] else "　 "

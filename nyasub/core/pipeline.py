@@ -1027,8 +1027,9 @@ class Run:
             for m in marks:
                 t = t.replace(m, "")
             # “ / ”是给大模型看的换行标记（提示词里把来源的换行写成“ / ”），大模型有时照抄进结果，
-            # 或者自己用全角“／”把一条字幕的两行（两个人说的话、标签的两行）接起来：都换回换行。数字之间的“／”（1／2）不动
-            t = re.sub(r" / |\s*(?<!\d)／(?!\d)\s*", "\n", t)
+            # 或者自己用全角“／”把一条字幕的两行（两个人说的话、标签的两行）接起来：都换回换行。数字之间的“／”（1／2）不动。
+            # “‖”（提示词里的换人标记）照抄进来的也换回换行
+            t = re.sub(r" / |\s*‖\s*|\s*(?<!\d)／(?!\d)\s*", "\n", t)
             return "\n".join(l.rstrip() for l in t.split("\n")).strip()
 
         from ..llm.translate import covered, fix_type, info_geometry, merge_dup_info
@@ -1070,8 +1071,11 @@ class Run:
                 # 大模型把一条字幕里的换行也当成了分屏（“藩は｜餌場である…”）：合回一屏；合起来两行放不下的不合。
                 # 片尾职员表这种一行一项的不合
                 for k in reversed(segments.card_bars(c, items)):
+                    # 一条字幕里两个人各说一句：换行隔开。字幕带着说话人线索就看线索；
+                    # 没有线索才按标点猜（前一段是一整句才当成换了人）
+                    who = segments.voice_change(c, items, k)
                     head = segments.pieces(c["orig"]["text"])[k - 1].strip()
-                    sep = "\n" if head[-1] in "。！？!?" else None  # 一条字幕里两个人各说一句：换行隔开
+                    sep = "\n" if (who if who is not None else head[-1] in "。！？!?") else None
                     trs = {code: segments.join_at(v["text"], k, code, sep) for code, v in c["tr"].items() if v["text"]}
                     if any(len(segments.pieces(t)[k - 1].replace("\n", "")) > 2 * segments.line_chars(code, self.cfg)
                            for code, t in trs.items()):

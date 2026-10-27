@@ -184,6 +184,21 @@ export function EditorPage() {
   useEffect(() => {
     if (sel) document.querySelector(`.cuelist tr[data-id="${sel}"]`)?.scrollIntoView({ block: "nearest" });
   }, [sel]);
+  // 统一译法：大模型要一两分钟，期间按钮不能再点
+  const [unifying, setUnifying] = useState(false);
+  const runUnify = useCallback(async () => {
+    if (!s.pid || unifying) return;
+    setUnifying(true);
+    s.toast("正在统一译法：找出原文相同 / 相近的字幕，请大模型逐组判断（要一两分钟）…");
+    try {
+      const r = await api.unify(s.pid);
+      await s.reload();
+      s.toast(!r.groups ? "没有找到译法不一致的字幕"
+        : r.changed ? `统一译法：${r.groups} 组里 ${r.same} 组是同一回事，改了 ${r.changed} 条（已标待审校）`
+          : `统一译法：${r.groups} 组都看过了，不用改`,
+              r.changed ? { label: "撤销 (Ctrl+Z)", run: () => undoRedoRef.current("undo") } : undefined);
+    } catch (e) { s.setError((e as Error).message); } finally { setUnifying(false); }
+  }, [s, unifying]);
   const insertAt = useCallback(() => s.pid && edit(() => api.insertCue(s.pid!, { start: Math.round(time * 100) / 100, end: Math.round((time + 2) * 100) / 100 }), "已插入一条空字幕"), [s.pid, edit, time]);
 
   // 上一条 / 下一条：在列表里现在显示的（筛选后的）那些里走；选中的不在里面（还没选、被筛掉了）就从播放位置往前 / 往后找
@@ -403,6 +418,9 @@ export function EditorPage() {
           <span className="dim">缩放</span>
           <input type="range" min={4} max={80} value={pps} onChange={(e) => setPps(Number(e.target.value))} style={{ maxWidth: 120 }} />
           <button className="btn sm" title="在播放头处插入一条 2 秒的空字幕" onClick={insertAt}>＋ 插入</button>
+          <button className="btn sm" disabled={unifying} onClick={runUnify}
+                  title="找出原文相同 / 相近、译法不一样的字幕（同一个标题、前后呼应的同一句话），请大模型看前后文逐组判断：是同一回事的统一译法、标成待审校；场景不同的不动。手动改过译文的不动，Ctrl+Z 可整批撤销">
+            {unifying ? "统一中…" : "⇄ 统一译法"}</button>
           <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
           <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
           <span className="dim">↑↓ / J K 上下条 · ←→ 快退快进 · 空格播放 · [ ] 倍速 · M 标记</span>

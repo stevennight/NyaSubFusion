@@ -119,6 +119,9 @@ def _merge(cues, op):
 
 
 def _insert(cues, op, src_lang):
+    # 恢复的画面字：重新翻译后这条画面字已经用进了字幕（融合规则改好了），就不再另外插一条，免得同一块字出现两次
+    if op.get("sources") and any(set(op["sources"]) & set(c.get("sources", [])) for c in cues):
+        return cues
     cue = {"id": op["id"], "start": op["start"], "end": op["end"], "type": op.get("type", "dialogue"),
            "sources": list(op.get("sources") or []), "onscreen": bool(op.get("onscreen")),
            "orig": {"lang": src_lang, "text": op.get("orig", "")},
@@ -390,6 +393,16 @@ class Store:
             else:
                 cur[k] = v
         e["cues"][cid] = cur
+        return self.save(e)
+
+    def set_each(self, bodies):
+        """几条各改各的字段（统一译法：每条的新译文不一样），算一步撤销。bodies：{条目 id: 字段}。"""
+        e = self.load()
+        for cid, body in bodies.items():
+            cur = dict(e["cues"].get(cid, {}))
+            for k, v in body.items():
+                cur[k] = {**cur.get(k, {}), **v} if k == "tr" else v
+            e["cues"][cid] = cur
         return self.save(e)
 
     def set_many(self, cids, body):

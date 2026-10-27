@@ -53,6 +53,7 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict) -> str:
    就算内容相关、时间重叠，也绝不能和字幕 / 语音的台词合成一条：它单独成一条 type 为 info 的 cue。
 3. cue 按时间顺序输出。不要自己编时间，时间由 src 决定。
 4. 字幕（subs）是官方文字：orig 里照抄字幕的字，人名等任何字都不要改（只能去掉换行）。OCR 错字结合上下文、语音参考和术语表纠正后写进 orig。条目里的“ / ”表示原来的换行，orig 和译文里不要写“ / ”或“／”（需要换行用换行符，需要分屏用“｜”；同一条字幕里的“ / ”不是分屏，不要换成“｜”）。
+   “ ‖ ”表示这里换了一个人说话（同一条字幕里两个人各说一句）：orig 和译文里两个人的话都用换行符分开，不要接成一句，也不要写“‖”。
 5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。
 6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
@@ -77,6 +78,14 @@ def _position(it):
     return v + h
 
 
+def lines_text(it) -> str:
+    """条目的文字给大模型看：原来的换行写成“ / ”；字幕看得出换了一个人说话的地方写成“ ‖ ”。"""
+    ls, vs = it["text"].split("\n"), it.get("voices")
+    if not vs or len(vs) != len(ls):
+        return " / ".join(ls)
+    return ls[0] + "".join((" ‖ " if vs[i] != vs[i - 1] else " / ") + ls[i] for i in range(1, len(ls)))
+
+
 def item_line(it) -> str:
     label = SRC_LABEL[it["src"]]
     extra = []
@@ -94,7 +103,7 @@ def item_line(it) -> str:
             extra.append("补识别：可能是哭喊、歌声，也可能是噪音或幻觉")
     extra = [e for e in extra if e]
     tag = label + (f"（{'，'.join(extra)}）" if extra else "")
-    text = it["text"].replace("\n", " / ")
+    text = lines_text(it)
     hint = f"　〔语音参考：{it['asr_hint']}〕" if it.get("asr_hint") else ""
     return f"[{it['id']}] {fmt_time(it['start'])}-{fmt_time(it['end'])} {tag}：{text}{hint}"
 
@@ -126,7 +135,8 @@ def glossary_input(items, known_terms) -> str:
     return head + "\n".join(lines)
 
 
-def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code) -> str:
+def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> str:
+    """memory：译文记忆（translate.recall），这一段里和前面已经翻好的原文相同 / 很像的条目。"""
     parts = []
     if summary:
         parts.append(f"## 本集概要\n{summary}")
@@ -135,6 +145,13 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code) -> str:
         parts.append("## 前文（已翻译，仅供衔接参考，不要输出）\n" + "\n".join(
             f"{c['orig']['text'].replace(chr(10), ' / ')} → {c['tr'].get(tgt_code, {}).get('text', '')}"
             for c in context_cues))
+    if memory:
+        flat = lambda t: t.replace("\n", " / ")
+        parts.append("## 前面出现过的相同 / 相近原文（译文记忆，仅供参考，不要输出）\n"
+                     "意思和场景都相同（同一个标题、同一件事、前后呼应的同一句话）就沿用前面的译法，保持全集一致；"
+                     "场景变了、指的不是同一回事，按本段的意思译，不要硬套。看前后句判断。\n" + "\n".join(
+                         f"[{iid}] 前面 {fmt_time(t)}：{flat(o)} → {tr}　〔前一句：{flat(p) or '（无）'}　后一句：{flat(n) or '（无）'}〕"
+                         for iid, t, o, tr, p, n in memory))
     parts.append("## 本段候选条目\n" + "\n".join(item_line(it) for it in chunk))
     parts.append("请按规则输出 JSON。")
     return "\n\n".join(parts)

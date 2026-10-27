@@ -599,6 +599,40 @@ def create_app(token: str | None = None) -> FastAPI:
         EditStore(proj).set_many(list(body["ids"]), {"review": body["review"]})
         return _edit_result(pid)
 
+    @app.post("/api/projects/{pid}/unify")
+    def unify_translations(pid: str):
+        """统一译法（已经翻好的项目也能用）：找出原文相同 / 相近、译法不一样的字幕，大模型逐组判断要不要统一。
+        改动算一步撤销，改过的标成待审校；手动改过译文的条目不动（以手动改的为准）。"""
+        import copy
+
+        from ..llm.client import LLM
+        from ..llm.consistency import unify
+
+        # 先按现在的翻译结果和手动修改重新整理一遍，保证改的条目编号和保存修改时对得上
+        run = _reannotate(pid)
+        cues = run.render_context()[0]
+        if run.cfg.llm_mode() != "api":
+            raise HTTPException(400, "没有配置大模型接口，不能统一译法")
+        fields = EditStore(run.proj).load()["cues"]
+        work = copy.deepcopy(cues)
+        for c in work:
+            c["flags"] = []
+        llm = LLM(run.cfg, cache_dir=run.proj / "llm_cache")
+        bodies, groups, same = {}, 0, 0
+        for code in (lang.canonical(t) for t in run.cfg.project.targets):
+            report = unify(llm, work, lang.get(run.src), lang.get(code), code)
+            groups += len(report)
+            same += sum(1 for r in report if r["same"])
+            for r in report:
+                for cid, _, new in r["changed"]:
+                    if code in (fields.get(cid, {}).get("tr") or {}):
+                        continue
+                    b = bodies.setdefault(cid, {"tr": {}, "review": "todo"})
+                    b["tr"][code] = new
+        if bodies:
+            EditStore(run.proj).set_each(bodies)
+        return {**_edit_result(pid), "groups": groups, "same": same, "changed": len(bodies)}
+
     def _current_cues(pid):
         run = make_run(pid)
         run.load_state()

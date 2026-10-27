@@ -299,3 +299,29 @@ def test_batch_review_is_one_undo_step(client, sample):
     client.post(f"/api/projects/{pid}/edits/undo")
     assert review() == before
     assert client.post(f"/api/projects/{pid}/review", json={"ids": ["q1"], "review": "maybe"}).status_code == 400
+
+
+def test_unify_endpoint_one_undo_step_and_keeps_manual_edits(client, sample):
+    """已经翻好的项目也能统一译法：改动算一步撤销、改过的标待审校；手动改过译文的不动。"""
+    from nyasub.llm import client as llm_client
+
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    cues = lambda: {c["id"]: c for c in client.get(f"/api/projects/{pid}/data").json()["cues"]}
+    first = cues()["q1"]
+    # 再插一条一样的原文，手动给一个不一样的译法
+    u = client.post(f"/api/projects/{pid}/cues", json={"start": 40.0, "end": 41.0, "orig": first["orig"]["text"]}).json()["cue"]["id"]
+    client.patch(f"/api/projects/{pid}/cues/{u}", json={"tr": {"zh-Hans": "手动的译法"}, "review": "ok"})
+    before = cues()
+    llm_client.LLM._call = lambda self, s, u_, images=None: {"groups": [
+        {"g": 1, "same": True, "reason": "同一句", "items": [{"id": "q1", "tr": "统一后 / 的译文"}, {"id": u, "tr": "统一后 / 的译文"}]}]}
+    undo_before = client.get(f"/api/projects/{pid}/data").json()["history"]["undo"]
+    r = client.post(f"/api/projects/{pid}/unify").json()
+    assert r["groups"] == 1 and r["same"] == 1 and r["changed"] == 1
+    after = cues()
+    assert after[u]["tr"]["zh-Hans"]["text"] == "手动的译法"                         # 手动改过的不动
+    assert after["q1"]["tr"]["zh-Hans"]["text"] == "统一后\n的译文" and after["q1"]["review"] == "todo"
+    assert r["history"]["undo"] == undo_before + 1                                 # 一步撤销
+    client.post(f"/api/projects/{pid}/edits/undo")
+    assert {i: c["tr"] for i, c in cues().items()} == {i: c["tr"] for i, c in before.items()}

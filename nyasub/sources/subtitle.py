@@ -9,6 +9,35 @@ SUB_EXTS = (".srt", ".ass", ".ssa", ".vtt")
 _TAG = re.compile(r"\{[^}]*\}")
 _FS = re.compile(r"\\fs(\d+(?:\.\d+)?)")
 _POS = re.compile(r"\\pos\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)")
+_COLOR = re.compile(r"\\1?c&H([0-9A-Fa-f]+)&")
+# 行首的说话人标记：“- ”（SRT 常见的对话格式）、“（名字）”、⚟（画外音）、≪（电话 / 广播里的声音）
+_LABEL = re.compile(r"^\s*(?:[-－‐]\s*\S|[（(][^）)]{1,12}[）)]|[⚟≪])")
+
+
+def _moved(a, b):
+    """相邻两行的线索看得出换了一个人：颜色 / 样式不一样，或者左边、右边都没对齐。"""
+    if a is None or b is None:
+        return False
+    if a[0] != b[0]:
+        return True
+    if a[1] is None or b[1] is None:
+        return False
+    tol = max(a[3], b[3])
+    return abs(a[1] - b[1]) > tol and abs(a[2] - b[2]) > tol
+
+
+def voices(lines):
+    """一条字幕里各行是谁说的：[0, 0, 1] 表示第三行换了一个人。lines：[(这一行的文字, 线索)]。
+    线索是字幕格式里能区分说话人的东西：(颜色或样式, 行左边, 行右边, 对齐容差)，没有就是 None。
+    颜色 / 样式变了、左右两边都没对齐，或者这一行以说话人标记开头，算换了一个人；
+    左对齐 / 右对齐的折行（缩进一两个字也算对齐）是同一个人。居中不算对齐：两个人的话碰巧中心差不多的很常见。
+    一条里只有一个人（或者看不出来）返回 None，交给大模型看内容。"""
+    out, cur = [], 0
+    for i, (text, key) in enumerate(lines):
+        if i and (_moved(lines[i - 1][1], key) or _LABEL.match(text)):
+            cur += 1
+        out.append(cur)
+    return out if cur else None
 
 
 OWN_MARK = "由 NyaSubFusion 生成"  # 本工具写出的 ASS 文件头里有这一行（render/ass.py header）
@@ -104,11 +133,15 @@ def load_arib_ttml(path, ruby_ratio=0.7):
             fs = st.get(f"{{{_NS['tts']}}}fontSize")
             if fs:
                 sizes[st.get("{http://www.w3.org/XML/1998/namespace}id")] = float(fs.split()[-1].rstrip("px") or 0)
-        regions = {}
+        colors = {st.get("{http://www.w3.org/XML/1998/namespace}id"): st.get(f"{{{_NS['tts']}}}color")
+                  for st in root.iter(f"{{{_NS['tt']}}}style")}
+        regions, widths = {}, {}
         for rg in root.iter(f"{{{_NS['tt']}}}region"):
+            rid = rg.get("{http://www.w3.org/XML/1998/namespace}id")
             org = (rg.get(f"{{{_NS['tts']}}}origin") or "0px 0px").split()
             try:
-                regions[rg.get("{http://www.w3.org/XML/1998/namespace}id")] = (float(org[1].rstrip("px")), float(org[0].rstrip("px")))
+                regions[rid] = (float(org[1].rstrip("px")), float(org[0].rstrip("px")))
+                widths[rid] = float((rg.get(f"{{{_NS['tts']}}}extent") or "0px").split()[0].rstrip("px"))
             except (ValueError, IndexError):
                 pass
         for div in root.iter(f"{{{_NS['tt']}}}div"):
@@ -120,22 +153,31 @@ def load_arib_ttml(path, ruby_ratio=0.7):
             for p in div.iter(f"{{{_NS['tt']}}}p"):
                 spans = []
                 for sp in p.iter(f"{{{_NS['tt']}}}span"):
-                    size = max((sizes.get(k, 0) for k in (sp.get("style") or "").split()), default=0)
-                    spans.append((size, "".join(sp.itertext())))
+                    keys = (sp.get("style") or "").split()
+                    size = max((sizes.get(k, 0) for k in keys), default=0)
+                    color = next((colors[k] for k in reversed(keys) if colors.get(k)), None)
+                    spans.append((size, "".join(sp.itertext()), color))
                 if not spans:
-                    spans = [(0, "".join(p.itertext()))]
-                paras.append((regions.get(p.get("region"), (0, 0)), spans))
+                    spans = [(0, "".join(p.itertext()), None)]
+                paras.append((regions.get(p.get("region"), (0, 0)), widths.get(p.get("region")), spans))
             # 振假名是小一号的字，常单独占一个段落：按整条字幕的正文字号过滤
-            body = max((s for _, spans in paras for s, _ in spans), default=0)
+            body = max((s for _, _, spans in paras for s, _, _ in spans), default=0)
             lines = []
-            for pos, spans in paras:
-                text = "".join(t for s, t in spans if not body or not s or s >= body * ruby_ratio).strip()
-                if text:
-                    lines.append((pos, text))
+            for pos, w, spans in paras:
+                kept = [(t, c) for s, t, c in spans if not body or not s or s >= body * ruby_ratio]
+                text = "".join(t for t, _ in kept).strip()
+                if text:  # 说话人线索：颜色（旁白和说话的人常用不同颜色）、这一行左右两边的位置（不同的人的话放在画面不同位置）
+                    left = pos[1]
+                    lines.append((pos, text, (next((c for _, c in kept if c), None), left,
+                                              left + w if w else None, 1.5 * (body or 100))))
             lines.sort(key=lambda x: x[0])
-            text = "\n".join(t for _, t in lines)
+            text = "\n".join(t for _, t, _ in lines)
             if text and end > begin:
-                cues.append({"start": round(begin, 3), "end": round(end, 3), "text": text})
+                cue = {"start": round(begin, 3), "end": round(end, 3), "text": text}
+                v = voices([(t, k) for _, t, k in lines])
+                if v:
+                    cue["voices"] = v
+                cues.append(cue)
     cues.sort(key=lambda c: c["start"])
     out = []
     for c in cues:  # 同一条字幕可能重复发送
@@ -150,6 +192,10 @@ def load_arib_ttml(path, ruby_ratio=0.7):
 
 def load_cues(path, ruby_ratio=0.7):
     subs = _load(path)
+    try:
+        width = float(subs.info.get("PlayResX") or 1920)
+    except ValueError:
+        width = 1920.0
     raw = []
     for ev in subs.events:
         if ev.is_comment or ev.is_drawing:
@@ -168,7 +214,11 @@ def load_cues(path, ruby_ratio=0.7):
         plain = "\n".join(l.strip() for l in plain.split("\n") if l.strip())
         if not plain:
             continue
-        raw.append({"start": ev.start / 1000, "end": ev.end / 1000, "text": plain, "size": size, "y": y})
+        color = _COLOR.findall(text)
+        # 说话人线索：样式（字幕组常给不同的人用不同样式）+ 颜色、\pos 的横坐标
+        x = float(pos.group(1)) if pos else None  # \pos 的锚点：同一个人的几行锚点一样
+        key = (f"{ev.style}|{color[-1].upper() if color else ''}", x, x, width / 20)
+        raw.append({"start": ev.start / 1000, "end": ev.end / 1000, "text": plain, "size": size, "y": y, "key": key})
     if not raw:
         return []
     # ARIB 转出来的 ass 常把每行/振假名拆成单独事件：小字号视为振假名丢弃
@@ -179,17 +229,22 @@ def load_cues(path, ruby_ratio=0.7):
     # 同一时间段的多行合并成一条
     raw.sort(key=lambda r: (round(r["start"], 2), round(r["end"], 2), r["y"]))
     cues = []
+    lines = lambda r: [(t, r["key"]) for t in r["text"].split("\n")]
     for r in raw:
         if cues and abs(cues[-1]["start"] - r["start"]) < 0.05 and abs(cues[-1]["end"] - r["end"]) < 0.05:
             if r["text"] not in cues[-1]["text"]:
                 cues[-1]["text"] += "\n" + r["text"]
+                cues[-1]["_lines"] += lines(r)
             continue
         # 连续重复（ARIB 常见：同一句被刷新多次）
         if cues and cues[-1]["text"] == r["text"] and r["start"] - cues[-1]["end"] < 0.3:
             cues[-1]["end"] = max(cues[-1]["end"], r["end"])
             continue
-        cues.append({"start": r["start"], "end": r["end"], "text": r["text"]})
+        cues.append({"start": r["start"], "end": r["end"], "text": r["text"], "_lines": lines(r)})
     cues = [c for c in cues if c["end"] > c["start"]]
     for i, c in enumerate(cues):
         c["id"] = f"c{i + 1}"
+        v = voices(c.pop("_lines"))
+        if v:
+            c["voices"] = v
     return cues

@@ -48,3 +48,14 @@ def test_store_undo_redo(tmp_path):
     assert s.load()["cues"]["q1"]["tr"]["zh-Hans"] == "二" and s.depth() == {"undo": 2, "redo": 1}
     s.set_fields("q2", {"review": "ok"})  # 新修改清空重做栈
     assert s.depth()["redo"] == 0
+
+
+def test_restored_caption_skipped_once_translation_uses_it():
+    """手动恢复的画面字（插入、带来源），重新翻译后这块字已经在字幕里了：不再另插一条，免得出现两次。"""
+    op = {"op": "insert", "id": "u1", "start": 2562.5, "end": 2568.0, "type": "info", "orig": "冬を食べる", "tr": {},
+          "sources": ["o932"], "rect": [0.02, 0.75, 0.19, 0.85], "onscreen": True}
+    title = {"id": "q550", "start": 2562.5, "end": 2568.0, "type": "info", "sources": ["o932", "o933"],
+             "orig": {"lang": "ja", "text": "冬を食べる\nナマコ"}, "tr": {"zh-Hans": {"text": "品味冬天\n海参"}}}
+    other = dict(title, id="q9", sources=["c1"])
+    assert [c["id"] for c in edits.apply([title], {"ops": [op]}, "ja")] == ["q550"]
+    assert [c["id"] for c in edits.apply([other], {"ops": [op]}, "ja")] == ["q9", "u1"]  # 还没用上：照常恢复

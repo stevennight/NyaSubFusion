@@ -19,7 +19,7 @@ export const TYPE_LBL: Record<string, string> = {
 };
 export const FLAG_LBL: Record<string, string> = {
   asr_only: "仅语音", ocr_low_conf: "OCR 低置信", conflict: "来源冲突", reading_guess: "读音待确认",
-  cps_high: "语速过快", llm_fallback: "大模型漏译",
+  cps_high: "语速过快", llm_fallback: "大模型漏译", unified: "已统一译法",
 };
 export const SRC_LBL: Record<string, string> = { c: "字幕", o: "画面字", a: "语音" };
 export const STAGE_LBL: Record<string, string> = {
