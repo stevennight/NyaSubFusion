@@ -92,10 +92,21 @@ def parse_json(text):
     # 字幕习惯写的 \N 换行不是合法 JSON 转义，换成 \n
     text = re.sub(r"(?<!\\)((?:\\\\)*)\\N", r"\1\\n", text)
     try:
-        return json.loads(text)
+        return _unescape(json.loads(text))
     except json.JSONDecodeError:
         pass
     m = re.search(r"\{.*\}", text, re.S)
     if m:
-        return json.loads(m.group(0))
+        return _unescape(json.loads(m.group(0)))
     raise ValueError(f"返回内容不是 JSON：{text[:300]}")
+
+
+def _unescape(v):
+    """大模型有时把换行符多转义一层（JSON 里写成 \\\\n），解析出来是字面的“\\n”：换回换行。"""
+    if isinstance(v, str):
+        return re.sub(r"\\[nN]", "\n", v)
+    if isinstance(v, list):
+        return [_unescape(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _unescape(x) for k, x in v.items()}
+    return v
