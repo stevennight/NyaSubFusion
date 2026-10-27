@@ -85,7 +85,7 @@ def _timeline(srcs):
     """来源字幕按时间接起来：(规范化后的文字, 每个字的时间, 每条来源开头在文字里的位置 → 开始时间)。"""
     text, times, edges = "", [], {}
     for s in srcs:
-        t = norm(s["text"])
+        t = norm(s["text"].replace("➡", ""))  # 行尾的“➡”（接下一条）大模型不会抄进原文
         if not t:
             continue
         edges[len(text)] = s["start"]
@@ -94,6 +94,38 @@ def _timeline(srcs):
         text += t
     edges[len(text)] = srcs[-1]["end"] if srcs else 0.0
     return text, times, edges
+
+
+def card_bars(cue, items):
+    """落在同一条字幕 / 台词画面字中间的“｜”是第几个分界（从 1 起）：大模型把里面的换行也当成了分屏。
+    一条字幕原来就是一屏，这种分界该合回去；语音一段可能很长，不算。“｜”两边的字在来源里得连着对上，才算落在中间。"""
+    ps = pieces(cue["orig"]["text"])
+    if len(ps) < 2:
+        return []
+    srcs = [s for s in sources(cue, items) if s["end"] > cue["start"] and s["start"] < cue["end"]]
+    text, _, _ = _timeline(srcs)
+    if not text:
+        return []
+    owner = [s for s in srcs for _ in norm(s["text"].replace("➡", ""))]  # 来源文字里每个字属于哪条来源
+    normed = [norm(p) for p in ps]
+    sm = SequenceMatcher(None, "".join(normed), text, autojunk=False)
+    blocks = [b for b in sm.get_matching_blocks() if b.size]
+    out, i = [], 0
+    for k, p in enumerate(normed[:-1], 1):
+        i += len(p)
+        pos = next((b.b + i - b.a for b in blocks if b.a < i < b.a + b.size), None)
+        if pos is not None and owner[pos]["src"] in ("subs", "telop") and owner[pos - 1] is owner[pos]:
+            out.append(k)
+    return out
+
+
+def join_at(text, k, code, sep=None):
+    """把第 k 个分界（从 1 起）前后两段合成一段；sep 不给就用这种语言去掉“｜”时的分隔。"""
+    ps = pieces(text)
+    if not 0 < k < len(ps):
+        return text
+    merged = (joiner(code) if sep is None else sep).join([ps[k - 1].strip(), ps[k].strip()])
+    return "｜".join(ps[:k - 1] + [merged] + ps[k + 1:])
 
 
 def proportional(cue):

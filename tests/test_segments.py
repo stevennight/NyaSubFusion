@@ -40,6 +40,21 @@ def test_part_times_ignore_over_speech_caption_and_fall_back():
     assert segments.proportional(_cue("あ｜い", "甲甲｜乙", 0.0, 6.0)) == [[0.0, 4.0], [4.0, 6.0]]
 
 
+def test_card_bars_find_splits_inside_one_caption():
+    # 两条字幕用 ➡ 接成一句：第 1 个分界在两条之间（对的），第 2 个落在第二条字幕的换行上（大模型当成了分屏）
+    items = {"c50": {"id": "c50", "src": "subs", "start": 380.767, "end": 385.6,
+                     "text": "こうしてとられた鴨は\n江戸時代　幕府に献上され➡"},
+             "c51": {"id": "c51", "src": "subs", "start": 385.6, "end": 390.767,
+                     "text": "藩は\n餌場である周辺の田んぼを守りました。"}}
+    cue = _cue("こうしてとられた鴨は　江戸時代　幕府に献上され｜藩は｜餌場である周辺の田んぼを守りました。",
+               "这样捕获的鸭子 江户时代进贡给幕府｜藩主则｜保护周边作为觅食地的稻田", 380.767, 390.767, items)
+    assert segments.card_bars(cue, items) == [2]
+    assert segments.join_at(cue["tr"]["zh-Hans"]["text"], 2, "zh-Hans") == "这样捕获的鸭子 江户时代进贡给幕府｜藩主则 保护周边作为觅食地的稻田"
+    # 语音里的分界不管（语音一段很长，中间本来就要分屏）
+    asr = {"a1": {"id": "a1", "src": "asr", "start": 0.0, "end": 6.0, "text": "今日はいい天気ですね散歩に行きましょう"}}
+    assert segments.card_bars(_cue("今日はいい天気ですね｜散歩に行きましょう", "甲｜乙", 0.0, 6.0, asr), asr) == []
+
+
 def _layout(cue):
     cfg, _ = config.load(None, None, {"project": {"targets": ["zh-Hans"]}})
     prof = next(p for p in cfg.render.profiles if p.name == "bilingual")

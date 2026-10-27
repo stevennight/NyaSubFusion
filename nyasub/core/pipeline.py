@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=6),  # v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=7),  # v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -956,6 +956,7 @@ class Run:
         """去掉不要的符号（➡ 等）；整理“｜”分段：
         - 原文和译文段数对不上（大模型拿它当换行用）、或者本来就是一屏（只有一条来源）的，去掉“｜”，排版时按长度自己断；
           手动改过文字的条目不动。
+        - 落在同一条字幕中间的“｜”（大模型把字幕里的换行当成了分屏）合回去；
         - 其余的每段按来源字幕算时间（parts）。"""
         from . import segments
 
@@ -1006,6 +1007,19 @@ class Run:
                 if not long:
                     for k, v in c["tr"].items():
                         v["text"] = segments.unbar(v["text"], k)
+            if segments.bars_ok(c) and not touched and c.get("type") in ("dialogue", "narration"):
+                # 大模型把一条字幕里的换行也当成了分屏（“藩は｜餌場である…”）：合回一屏；合起来两行放不下的不合。
+                # 片尾职员表这种一行一项的不合
+                for k in reversed(segments.card_bars(c, items)):
+                    head = segments.pieces(c["orig"]["text"])[k - 1].strip()
+                    sep = "\n" if head[-1] in "。！？!?" else None  # 一条字幕里两个人各说一句：换行隔开
+                    trs = {code: segments.join_at(v["text"], k, code, sep) for code, v in c["tr"].items() if v["text"]}
+                    if any(len(segments.pieces(t)[k - 1].replace("\n", "")) > 2 * segments.line_chars(code, self.cfg)
+                           for code, t in trs.items()):
+                        continue
+                    c["orig"]["text"] = segments.join_at(c["orig"]["text"], k, c["orig"]["lang"], sep)
+                    for code, t in trs.items():
+                        c["tr"][code]["text"] = t
             n_pieces = len(segments.pieces(c["orig"]["text"]))
             for key in ("parts_type", "parts_show"):  # 每段单独的设置：段数变了就不再适用
                 if c.get(key) is not None and (len(c[key]) != n_pieces or n_pieces < 2):
