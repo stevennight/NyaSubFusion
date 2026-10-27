@@ -346,8 +346,9 @@ def test_dialogue_slides_aside_from_name_card():
     assert placed[0]["margin_v"] > 46 and placed[0].get("x") is None
 
 
-def test_fuse_dup_needs_most_of_the_caption_in_subs():
-    """“私 失敗しないので”和后面旁白“失敗しない清志さんも…”只共用一个短语：不算重复，照常用；真正重复的照样去掉。"""
+def test_fuse_dup_needs_subs_on_screen_at_the_same_time():
+    """“私 失敗しないので”消失后旁白才说“失敗しない清志さんも…”（只是靠时间余量带进来、共用一个短语）：
+    不算重复，照常用；同时在屏幕上的真正重复照样去掉。"""
     subs = [{"id": "c498", "start": 3287.1, "end": 3289.3, "text": "（笑い声）"},
             {"id": "c499", "start": 3289.3, "end": 3293.6, "text": "失敗しない清志さんも　今年６２歳。"},
             {"id": "c470", "start": 3111.6, "end": 3115.0, "text": "（取材者）百姓たちが作り上げた野菜。\nそう　農家が。"}]

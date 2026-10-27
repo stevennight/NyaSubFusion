@@ -9,7 +9,7 @@
 """
 import re
 
-from ..textutil import covered, full_sim, overlap, sim
+from ..textutil import full_sim, overlap, sim
 
 # 字幕里不是“说话”的部分：（笑い声）（競りの声）这类括号说明、♪♬〜 音乐记号、➡ 接续符号
 _NOT_SPEECH = re.compile(r"[（(\[［【][^）)\]］】]*[）)\]］】]|[♪♬〜～➡→]")
@@ -125,10 +125,12 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     ocr_items = []
     for e in ocr_events:
         e.pop("dup_of", None)
-        hit, sub_text = _concat(subs, e["start"], e["end"], slack=1.0)
-        best = max((sim(e["text"], c["text"]) for c in hit), default=0)
-        # 还得画面字的字大多出现在字幕里：只共用一个短语（“私 失敗しないので”和“失敗しない清志さんも…”）不算重复
-        if hit and (best >= dup_th or sim(e["text"], sub_text) >= dup_th) and covered(e["text"], sub_text) >= 0.75:
+        hit, _ = _concat(subs, e["start"], e["end"], slack=1.0)
+        # 对得上的字幕得和画面字同时在屏幕上：前后差一点、只是靠时间余量带进来的（画面字消失后才说的
+        # “失敗しない清志さんも…”）不算，否则“私 失敗しないので”会因为共用一个短语被当成重复去掉
+        near = [c for c in hit if overlap(e["start"], e["end"], c["start"], c["end"]) >= 0.3]
+        best = max((sim(e["text"], c["text"]) for c in near), default=0)
+        if near and (best >= dup_th or sim(e["text"], "\n".join(c["text"] for c in near)) >= dup_th):
             e["dup_of"] = [c["id"] for c in hit]
             continue
         a_hit, a_text = _concat(asr, e["start"], e["end"])
