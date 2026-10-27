@@ -64,6 +64,7 @@ input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var
 .kv { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 8px 10px }
 .kv > .lbl { text-align: right }
 .kv > .row { flex-wrap: wrap; min-width: 0 }
+.kv > .seg { justify-self: start }
 .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 17px; font-weight: 600; white-space: nowrap }
 .b-c { background: #7cc4ff22; color: var(--c-sub) } .b-o { background: #ffb35c22; color: var(--c-ocr) } .b-a { background: #9be38a22; color: var(--c-asr) }
 .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: #2f2f3c; border: 1px solid var(--line2); padding: 9px 16px; border-radius: 8px; z-index: 99; box-shadow: 0 8px 30px #0008 }
@@ -243,6 +244,17 @@ table.tb { width: 100%; border-collapse: collapse }
 .src-col.off > :not(.src-head) { opacity: .45; pointer-events: none }
 .src-head { margin-bottom: 8px; font-weight: 600 }
 .src-region { margin-top: 10px }
+.tip { color: var(--tx3); cursor: help; font-size: 12px; font-weight: 400; margin-left: 2px; flex: none }
+.tip:hover { color: var(--tx) }
+/* 来源的“更多”：收起时一行显示当前的值 */
+.more { margin-top: 8px; border-top: 1px dashed var(--line2); padding-top: 6px }
+.more-head { display: flex; align-items: baseline; gap: 6px; width: 100%; border: 0; background: none; padding: 2px 0; color: var(--tx2); font-size: 12px; text-align: left; cursor: pointer }
+.more-head:hover { color: var(--tx) }
+.more-arrow { flex: none; width: 10px }
+.more-sum { display: flex; flex-wrap: wrap; gap: 2px 0; min-width: 0 }
+.more-sum > span + span::before { content: "·"; margin: 0 6px; color: var(--tx2) }
+.more-sum .set { color: var(--acc2) }
+.more-body { margin-top: 8px }
 .src-region .rgn-thumb { width: min(100%, 380px) }
 @media (max-width: 1300px) {
   .pl-body { grid-template-columns: minmax(0, 1fr) }

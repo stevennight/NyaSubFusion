@@ -23,6 +23,10 @@ const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"
   ["asr", "ocr", "源语言"], ["subs", "align"], ["asr", "align"],
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
+const SEP_LBL: Record<string, string> = { auto: "自动", on: "开", off: "关" };
+const FONTS_LBL: Record<string, string> = { subset: "嵌入字体（只含用到的字）", full: "嵌入完整字体", none: "不嵌入字体" };
+const MORE_KEY = "nyasub.cfgMore";
+const MORE_KEYS = ["llm", "asr", "ocr", "video"];  // 有“更多”的几块
 const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编码，先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
   ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
@@ -69,6 +73,16 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
 
   const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
+  const inProject = (path: string) => deepGet(draft, path) !== undefined;  // 这个项目单独设过（不跟随全局 / 作品配置）
+  // 各来源的“更多”展开了哪些：记在本机，下次打开还是这样
+  const [more, setMoreRaw] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem(MORE_KEY) ?? "{}"); } catch { return {}; } });
+  const setMore = (f: Record<string, boolean> | ((m: Record<string, boolean>) => Record<string, boolean>)) => setMoreRaw((m) => {
+    const out = typeof f === "function" ? f(m) : f;
+    try { localStorage.setItem(MORE_KEY, JSON.stringify(out)); } catch { /* 存不了就算了 */ }
+    return out;
+  });
+  const allOpen = MORE_KEYS.every((k) => more[k]);
+  const toggleMore = (k: string) => () => setMore((m) => ({ ...m, [k]: !m[k] }));
   const set = (path: string, v: unknown) => setDraft((d) => setIn(d, path, v));
   const asrBackend = String(val("asr.backend") ?? "local");
   const asrKind = (String(val("asr.api_kind") ?? "transcribe") in ASR_API_KINDS ? String(val("asr.api_kind") ?? "transcribe") : "transcribe") as keyof typeof ASR_API_KINDS;
@@ -122,6 +136,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <h3 style={{ margin: 0 }}>配置</h3>
             <span className="dim" style={{ fontSize: 12 }}>保存在项目的 project.toml；没写的项用全局 / 作品配置</span>
             <span className="sp" />
+            <button className="btn sm" title="展开 / 收起各块的“更多”设置（会记住）" onClick={() => setMore(allOpen ? {} : Object.fromEntries(MORE_KEYS.map((k) => [k, true])))}>{allOpen ? "全部收起" : "全部展开"}</button>
             {dirty && <span className="chip warn">未保存</span>}
             {s.running && <span className="chip warn" title="运行开始时就读好了配置：现在保存的改动，要等这次停下或跑完、再运行一次才生效">正在运行：改动下次运行才生效</span>}
             <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
@@ -151,20 +166,24 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                 <div className="seg">{[["auto", "自动"], ["api", "调接口"], ["export", "导出任务"], ["off", "不翻译"]].map(([v, l]) =>
                   <button key={v} className={val("llm.mode") === v ? "on" : ""} onClick={() => set("llm.mode", v)}>{l}</button>)}</div>
                 <span className="lbl">接口</span>
-                <select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
-                  <option value="">（跟随全局设置）</option>
-                  {((deepGet(s.config?.effective, "llm.providers") as { name: string; model: string }[]) ?? []).map((p) =>
-                    <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
-                </select>
-                <span className="lbl">参考画面</span>
-                <label className="row" title="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网）。翻译的输入用量大约多一倍；接口不支持图片时自动改为不带图。">
-                  <input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />翻译时附上画面截图</label>
+                <div className="row">
+                  <select className="inp" style={{ flex: 1 }} value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
+                    <option value="">（跟随全局设置）</option>
+                    {providers.map((p) => <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}
+                  </select>
+                  <Tip text="接口在「设置」里管理；API Key 存在系统凭据库，不写进项目文件。" />
+                </div>
+                {["export", "off"].includes(String(val("llm.mode"))) && <><span />
+                  <span className="dim" style={{ fontSize: 11.5 }}>{val("llm.mode") === "export" ? "把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次。" : "只做识别和融合，不输出译文字幕。"}</span></>}
               </div>
-              <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
-                {val("llm.mode") === "export" ? "导出任务：把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次。"
-                  : val("llm.mode") === "off" ? "不翻译：只做识别和融合，不输出译文字幕。"
-                  : "接口在「设置」里管理；API Key 存在系统凭据库，不写进项目文件。"}
-              </div>
+              <More open={!!more.llm} onToggle={toggleMore("llm")} items={[[val("llm.frames") ? "翻译时附上画面截图" : "翻译不附画面", "llm.frames"]]} mark={inProject}>
+                <div className="kv">
+                  <span className="lbl">参考画面</span>
+                  <label className="row">
+                    <input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />翻译时附上画面截图
+                    <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网）。翻译的输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
+                </div>
+              </More>
             </div>
           </div>
           <div className="gap" />
@@ -173,110 +192,150 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <h3>识别来源</h3>
             <div className="src-cols">
               <div className={`src-col ${val("subs.enabled") ? "" : "off"}`}>
-                <label className="row src-head"><input type="checkbox" checked={!!val("subs.enabled")} onChange={(e) => set("subs.enabled", e.target.checked)} /><span className="badge b-c">字幕</span>自带字幕</label>
+                <label className="row src-head"><input type="checkbox" checked={!!val("subs.enabled")} onChange={(e) => set("subs.enabled", e.target.checked)} /><span className="badge b-c">字幕</span>自带字幕
+                  <Tip text="最可信的来源：有字幕时以它为准，语音和画面字用来补漏、对时间。" /></label>
                 <input className="inp" placeholder="指定字幕文件（空 = 自动找同名 / 内封字幕）" value={String(val("subs.path") ?? "")} onChange={(e) => set("subs.path", e.target.value)} />
-                <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>最可信的来源：有字幕时以它为准，语音和画面字用来补漏、对时间。</div>
               </div>
               <div className={`src-col ${val("asr.enabled") ? "" : "off"}`}>
                 <label className="row src-head"><input type="checkbox" checked={!!val("asr.enabled")} onChange={(e) => set("asr.enabled", e.target.checked)} /><span className="badge b-a">语音</span>语音识别</label>
                 <div className="kv">
                   <span className="lbl">识别方式</span>
-                  <div className="seg" title="本机：faster-whisper，免费，要显卡才快；云端接口：把音频切成 10 分钟一块上传给转写接口，按时长付费">
-                    {[["local", "本机"], ["api", "云端接口"]].map(([v, l]) =>
+                  <div className="row">
+                    <div className="seg">{[["local", "本机"], ["api", "云端接口"]].map(([v, l]) =>
                       <button key={v} className={asrBackend === v ? "on" : ""} onClick={() => set("asr.backend", v)}>{l}</button>)}</div>
-                  {asrBackend === "api" ? <>
-                    <span />
-                    <span className="dim" style={{ fontSize: 11.5 }}>按音频时长付费（一小时节目约 0.2~0.4 美元，看模型）；接口和 API Key 在「设置」里管理</span>
-                    <span className="lbl">接口</span>
-                    <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
-                      <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
-                      {providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                    </select>
-                    <span className="lbl">接口类型</span>
-                    <div className="seg">
-                      {(Object.keys(ASR_API_KINDS) as (keyof typeof ASR_API_KINDS)[]).map((k) =>
-                        <button key={k} className={asrKind === k ? "on" : ""} onClick={() => setAsrKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div>
-                    <span />
-                    <span className="dim" style={{ fontSize: 11.5 }}>{ASR_API_KINDS[asrKind].desc}</span>
-                    <span className="lbl">模型</span>
-                    <input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[asrKind].model}
-                      onChange={(e) => set("asr.api_model", e.target.value)} />
-                    <span />
-                    <span className="dim" style={{ fontSize: 11.5 }}>要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0</span>
-                    <span className="lbl">每块时长</span>
-                    <select className="inp" value={String(Number(val("asr.api_chunk_seconds") ?? 0))}
-                            title="音频切成多长一块上传。太长可能超过接口的处理时间上限（OpenRouter 是 60 秒）而失败；太短切点多，句子被切断的机会多一点"
-                            onChange={(e) => set("asr.api_chunk_seconds", Number(e.target.value))}>
-                      <option value="0">自动（OpenRouter 3 分钟，其它 10 分钟）</option>
-                      {[1, 2, 3, 5, 10, 20].map((m) => <option key={m} value={String(m * 60)}>{m} 分钟</option>)}
-                    </select>
-                  </> : <>
-                  <span className="lbl">模型</span>
-                  <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
-                    {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
-                      <option key={m.id} value={m.id}>{m.label}</option>)}
-                    {models.length > 0 && !models.some((m) => m.id === val("asr.model")) && <option value={String(val("asr.model"))}>{String(val("asr.model"))}（自定义）</option>}
-                  </select>
-                  <span />
-                  <span className="dim" style={{ fontSize: 11.5 }}>{models.find((m) => m.id === val("asr.model"))?.desc ?? ""}</span>
-                  </>}
-                  <span className="lbl">人声分离</span>
-                  <div className="seg" title="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别">
-                    {[["auto", "自动"], ["on", "开"], ["off", "关"]].map(([v, l]) =>
-                      <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
-                  <span />
-                  <span className="dim" style={{ fontSize: 11.5 }}>自动：没有字幕时才做（这时语音是主要来源）</span>
-                  {asrBackend === "local" && <>
-                  <span className="lbl">人声门槛</span>
-                  <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span></div>
-                  </>}
+                    <Tip text="本机：faster-whisper，免费，要显卡才快。云端接口：把音频切块上传给转写接口，按时长付费。" />
+                  </div>
+                  {asrBackend === "api" && <><span /><span className="dim" style={{ fontSize: 11.5 }}>按音频时长付费，一小时节目约 0.2~0.4 美元</span></>}
                 </div>
+                <More open={!!more.asr} onToggle={toggleMore("asr")} items={asrBackend === "api" ? [
+                  [String(val("asr.api_provider") || `同翻译接口`), "asr.api_provider"],
+                  [ASR_API_KINDS[asrKind].label, "asr.api_kind"],
+                  [String(val("asr.api_model") || ASR_API_KINDS[asrKind].model), "asr.api_model"],
+                  [Number(val("asr.api_chunk_seconds") ?? 0) ? `每块 ${Number(val("asr.api_chunk_seconds")) / 60} 分钟` : "每块自动", "asr.api_chunk_seconds"],
+                  [`人声分离${SEP_LBL[String(val("asr.separate") ?? "auto")]}`, "asr.separate"],
+                ] : [
+                  [String(val("asr.model")), "asr.model"],
+                  [`人声分离${SEP_LBL[String(val("asr.separate") ?? "auto")]}`, "asr.separate"],
+                  [`门槛 ${String(val("asr.vad_threshold"))}`, "asr.vad_threshold"],
+                ]} mark={inProject}>
+                  <div className="kv">
+                    {asrBackend === "api" ? <>
+                      <span className="lbl">接口</span>
+                      <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
+                        <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
+                        {providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                      </select>
+                      <span className="lbl">接口类型</span>
+                      <div className="row">
+                        <div className="seg">
+                          {(Object.keys(ASR_API_KINDS) as (keyof typeof ASR_API_KINDS)[]).map((k) =>
+                            <button key={k} className={asrKind === k ? "on" : ""} onClick={() => setAsrKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div>
+                        <Tip text={ASR_API_KINDS[asrKind].desc} />
+                      </div>
+                      <span className="lbl">模型</span>
+                      <div className="row">
+                        <input className="inp" style={{ flex: 1 }} value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[asrKind].model}
+                          onChange={(e) => set("asr.api_model", e.target.value)} />
+                        <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0" />
+                      </div>
+                      <span className="lbl">每块时长</span>
+                      <div className="row">
+                        <select className="inp" style={{ flex: 1 }} value={String(Number(val("asr.api_chunk_seconds") ?? 0))}
+                                onChange={(e) => set("asr.api_chunk_seconds", Number(e.target.value))}>
+                          <option value="0">自动（OpenRouter 3 分钟，其它 10 分钟）</option>
+                          {[1, 2, 3, 5, 10, 20].map((m) => <option key={m} value={String(m * 60)}>{m} 分钟</option>)}
+                        </select>
+                        <Tip text="音频切成多长一块上传。太长可能超过接口的处理时间上限（OpenRouter 是 60 秒）而失败；太短切点多，句子被切断的机会多一点" />
+                      </div>
+                    </> : <>
+                      <span className="lbl">模型</span>
+                      <div className="row">
+                        <select className="inp" style={{ flex: 1 }} value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
+                          {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) =>
+                            <option key={m.id} value={m.id}>{m.label}</option>)}
+                          {models.length > 0 && !models.some((m) => m.id === val("asr.model")) && <option value={String(val("asr.model"))}>{String(val("asr.model"))}（自定义）</option>}
+                        </select>
+                        {models.find((m) => m.id === val("asr.model"))?.desc && <Tip text={models.find((m) => m.id === val("asr.model"))!.desc} />}
+                      </div>
+                    </>}
+                    <span className="lbl">人声分离</span>
+                    <div className="row">
+                      <div className="seg">
+                        {Object.entries(SEP_LBL).map(([v, l]) =>
+                          <button key={v} className={String(val("asr.separate") ?? "auto") === v ? "on" : ""} onClick={() => set("asr.separate", v)}>{l}</button>)}</div>
+                      <Tip text="先去掉背景音乐、音效再识别：动画、综艺这类配乐很响的节目，漏句和时间提前会少很多，片头片尾曲也能识别。自动：没有字幕时才做（这时语音是主要来源）。" />
+                    </div>
+                    {asrBackend === "local" && <>
+                      <span className="lbl">人声门槛</span>
+                      <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} /><span className="dim">{String(val("asr.vad_threshold"))}</span>
+                        <Tip text="多大的声音算有人说话。调低：小声、远处的话不容易漏，但杂音也可能被当成台词；调高则相反。" /></div>
+                    </>}
+                  </div>
+                </More>
               </div>
               <div className={`src-col ${val("ocr.enabled") ? "" : "off"}`}>
-                <label className="row src-head"><input type="checkbox" checked={!!val("ocr.enabled")} onChange={(e) => set("ocr.enabled", e.target.checked)} /><span className="badge b-o">画面字</span>画面字识别</label>
+                <label className="row src-head"><input type="checkbox" checked={!!val("ocr.enabled")} onChange={(e) => set("ocr.enabled", e.target.checked)} /><span className="badge b-o">画面字</span>画面字识别
+                  <Tip text="识别画面上的字幕、人名条、地名；开启后可以框选识别区域。" /></label>
                 <div className="kv">
-                  <span className="lbl">每秒看几帧</span>
-                  <div className="row" title="画面字识别每秒检查几帧画面。数值越大，画面字出现 / 消失的时间越准、越不容易漏掉一闪而过的字，但扫描越慢（扫描时间和帧数成正比）。台词类画面字建议 2~3；片尾滚动字幕、跑马灯滚得快时可以调到 6~10"><input type="range" min={1} max={10} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} />
-                    <span className="dim">{String(val("ocr.fps"))} 帧/秒 · 时间误差约 ±{(0.5 / Number(val("ocr.fps") || 1)).toFixed(2)} 秒</span></div>
                   <span className="lbl">视觉复核</span>
-                  <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
-                  {val("ocr.refine") === "vlm" && <>
-                    <span className="lbl">特写</span>
-                    <label className="row" title="用截图那一刻的画面重新截每处字的特写（镜头移动时，原来的特写范围很大，会把片名、别处的字截进来，模型就转写了那些字），并用红框框出要转写的字。旧项目要重新识别一次画面字，镜头移动时的字才能用上。">
-                      <input type="checkbox" checked={!!val("ocr.refine_boxed")} onChange={(e) => set("ocr.refine_boxed", e.target.checked)} />框出要转写的字</label>
-                    <span className="lbl">每批几处</span>
-                    <select value={Number(val("ocr.refine_batch") ?? 4)} onChange={(e) => set("ocr.refine_batch", Number(e.target.value))}
-                            title="几处字放在一次请求里问。越多越省；模型偶尔会把同一批另一张图上的字写过来（串图），选 1 就是每处单独问，不会串，请求次数多几倍、总用量多三到五成">
-                      <option value={1}>1（每处单独问，不会串图）</option>
-                      <option value={2}>2</option>
-                      <option value={4}>4（默认）</option>
-                      <option value={6}>6（最省）</option>
-                    </select>
-                    <span className="lbl">参考画面</span>
-                    <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
-                    <label className="row" title="每处字附上它所在时刻的整帧画面（框出位置、标上编号，同一时刻的几处共用一张）。大模型能看到字是印在瓶子、招牌上，还是叠加在画面上的字幕，判断准得多。">
-                      <input type="checkbox" checked={!!val("ocr.refine_context")} onChange={(e) => set("ocr.refine_context", e.target.checked)} />复核时附上整帧画面</label>
-                    {val("ocr.refine_context") && (
-                      <select value={Number(val("ocr.refine_frame_width") ?? 640)} onChange={(e) => set("ocr.refine_frame_width", Number(e.target.value))}
-                              title="整帧画面缩到多宽。认字靠特写，整帧画面只用来看字在什么东西上：640 一般够了；画面里东西很小、很杂时可以调大（输入用量更多）">
-                        <option value={640}>640 宽（省，每张约 300 token）</option>
-                        <option value={1024}>1024 宽（约 700 token）</option>
-                        <option value={1280}>1280 宽（最清楚，约 1300 token）</option>
-                      </select>)}
-                    </div>
-                  </>}
+                  <div className="row">
+                    <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
+                    <Tip text="视觉大模型看每处字的特写重新转写，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。接口要支持图片。" />
+                  </div>
                 </div>
+                <More open={!!more.ocr} onToggle={toggleMore("ocr")} items={[
+                  [`${String(val("ocr.fps"))} 帧/秒`, "ocr.fps"],
+                  ...(val("ocr.refine") === "vlm" ? [
+                    [val("ocr.refine_boxed") ? "框字" : "不框字", "ocr.refine_boxed"],
+                    [`每批 ${Number(val("ocr.refine_batch") ?? 4)} 处`, "ocr.refine_batch"],
+                    [val("ocr.refine_context") ? `整帧 ${Number(val("ocr.refine_frame_width") ?? 640)} 宽` : "不附整帧", ["ocr.refine_context", "ocr.refine_frame_width"]],
+                  ] as [string, string | string[]][] : []),
+                ]} mark={inProject}>
+                  <div className="kv">
+                    <span className="lbl">每秒看几帧</span>
+                    <div className="row"><input type="range" min={1} max={10} step={0.5} value={Number(val("ocr.fps"))} onChange={(e) => set("ocr.fps", Number(e.target.value))} />
+                      <span className="dim">{String(val("ocr.fps"))} 帧/秒</span>
+                      <Tip text={`时间误差约 ±${(0.5 / Number(val("ocr.fps") || 1)).toFixed(2)} 秒。每秒检查几帧画面。越大，画面字出现 / 消失的时间越准、越不容易漏掉一闪而过的字，但扫描越慢（扫描时间和帧数成正比）。台词类画面字建议 2~3；片尾滚动字幕、跑马灯滚得快时可以调到 6~10。`} /></div>
+                    {val("ocr.refine") === "vlm" && <>
+                      <span className="lbl">特写</span>
+                      <label className="row">
+                        <input type="checkbox" checked={!!val("ocr.refine_boxed")} onChange={(e) => set("ocr.refine_boxed", e.target.checked)} />框出要转写的字
+                        <Tip text="用截图那一刻的画面重新截每处字的特写（镜头移动时，原来的特写范围很大，会把片名、别处的字截进来，模型就转写了那些字），并用红框框出要转写的字。旧项目要重新识别一次画面字，镜头移动时的字才能用上。" /></label>
+                      <span className="lbl">每批几处</span>
+                      <div className="row">
+                        <select className="inp" style={{ flex: 1 }} value={Number(val("ocr.refine_batch") ?? 4)} onChange={(e) => set("ocr.refine_batch", Number(e.target.value))}>
+                          <option value={1}>1（每处单独问，不会串图）</option>
+                          <option value={2}>2</option>
+                          <option value={4}>4（默认）</option>
+                          <option value={6}>6（最省）</option>
+                        </select>
+                        <Tip text="几处字放在一次请求里问。越多越省；模型偶尔会把同一批另一张图上的字写过来（串图）。选 1 就是每处单独问，不会串，请求次数多几倍、总用量多三到五成。" />
+                      </div>
+                      <span className="lbl">整帧画面</span>
+                      <div className="row">
+                        <select className="inp" style={{ flex: 1 }} value={val("ocr.refine_context") ? Number(val("ocr.refine_frame_width") ?? 640) : 0}
+                                onChange={(e) => { const w = Number(e.target.value); setDraft((d) => w ? setIn(setIn(d, "ocr.refine_context", true), "ocr.refine_frame_width", w) : setIn(d, "ocr.refine_context", false)); }}>
+                          <option value={0}>不附</option>
+                          <option value={640}>640 宽（省）</option>
+                          <option value={1024}>1024 宽</option>
+                          <option value={1280}>1280 宽（最清楚）</option>
+                        </select>
+                        <Tip text="每处字附上它所在时刻的整帧画面（框出位置、标上编号，同一时刻的几处共用一张），大模型能看到字是印在瓶子、招牌上，还是叠加在画面上的字幕，判断准得多。认字靠特写，整帧画面只用来看字在什么东西上：640 一般够了；画面里东西很小、很杂时可以调大。每张的输入用量：640 约 300 token，1024 约 700，1280 约 1300。" />
+                      </div>
+                    </>}
+                  </div>
+                </More>
                 {val("ocr.enabled") && s.pid && s.summary?.meta?.video ? (
                   <div className="src-region">
                     <RegionEditor pid={s.pid} duration={s.summary.meta.duration} aspect={s.summary.meta.video.aspect} regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]}
                                   boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} />
                   </div>
-                ) : <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>识别画面上的字幕、人名条、地名；开启后可以框选识别区域。</div>}
+                ) : null}
               </div>
             </div>
           </div>
           <div className="gap" />
-          <VideoCard val={val} set={set} dirty={dirty} />
+          <VideoCard val={val} set={set} dirty={dirty} open={!!more.video} onToggle={toggleMore("video")} mark={inProject} />
         </div>
 
         <aside className="pl-side">
@@ -376,7 +435,9 @@ function StageLogDialog({ stage, status, seconds, note, onClose, onStage }: {
     </div>, document.body);
 }
 
-function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: string, v: unknown) => void; dirty: boolean }) {
+function VideoCard({ val, set, dirty, open, onToggle, mark }: {
+  val: (p: string) => unknown; set: (p: string, v: unknown) => void; dirty: boolean; open: boolean; onToggle: () => void; mark: (p: string) => boolean;
+}) {
   const s = useStore();
   const mode = String(val("render.video.mode") ?? "off");
   const profiles = ((deepGet(s.config?.effective, "render.profiles") as { name: string; format: string; enabled: boolean }[]) ?? []);
@@ -390,23 +451,32 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
     <div className="card">
       <div className="row" style={{ marginBottom: 8 }}>
         <h3 style={{ margin: 0 }}>输出视频</h3>
-        <span className="dim" style={{ fontSize: 12 }}>封装：字幕轨 + 用到的字体放进 MKV，不重新编码，几秒完成；压制：字幕画进画面，任何播放器都能看</span>
+        <Tip text="封装：字幕轨 + 用到的字体放进 MKV，不重新编码，几秒完成。压制：字幕画进画面，任何播放器都能看，要重新编码，比较慢。" />
       </div>
-      <div className="grid2">
+      <div className="kv">
+        <span className="lbl">运行完自动</span>
+        <div className="seg">{[["off", "不输出"], ["mux", "封装 MKV"], ["burn", "压制硬字幕"]].map(([v, l]) =>
+          <button key={v} className={mode === v ? "on" : ""} onClick={() => set("render.video.mode", v)}>{l}</button>)}</div>
+        <span className="lbl">用哪些方案</span>
+        <div className="row wrap">
+          <span className={`chip ${picked.length ? "" : "acc"}`} style={{ cursor: "pointer" }} onClick={() => set("render.video.profiles", [])}>全部启用的</span>
+          {profiles.map((pr) => <span key={pr.name} className={`chip ${picked.includes(pr.name) ? "acc" : ""}`} style={{ cursor: "pointer" }}
+                                      onClick={() => toggle(pr.name)}>{pr.name} · {pr.format.toUpperCase()}</span>)}
+        </div>
+      </div>
+      <More open={open} onToggle={onToggle} mark={mark} items={[
+        [FONTS_LBL[String(val("render.video.fonts"))] ?? String(val("render.video.fonts")), "render.video.fonts"],
+        [val("render.video.keep_subs") ? "保留原有字幕轨" : "不留原有字幕轨", "render.video.keep_subs"],
+        [`压制：${(ENCODERS.find(([v]) => v === val("render.video.encoder"))?.[1] ?? String(val("render.video.encoder"))).replace(/（.*）/, "")}`, "render.video.encoder"],
+        [`画质 ${String(val("render.video.quality"))}`, "render.video.quality"],
+        [Number(val("render.video.height")) ? `${Number(val("render.video.height"))}p` : "原尺寸", "render.video.height"],
+      ]}>
+      <div className="grid2" style={{ alignItems: "start" }}>
         <div className="kv">
-          <span className="lbl">运行完自动</span>
-          <div className="seg">{[["off", "不输出"], ["mux", "封装 MKV"], ["burn", "压制硬字幕"]].map(([v, l]) =>
-            <button key={v} className={mode === v ? "on" : ""} onClick={() => set("render.video.mode", v)}>{l}</button>)}</div>
-          <span className="lbl">用哪些方案</span>
-          <div className="row wrap">
-            <span className={`chip ${picked.length ? "" : "acc"}`} style={{ cursor: "pointer" }} onClick={() => set("render.video.profiles", [])}>全部启用的</span>
-            {profiles.map((pr) => <span key={pr.name} className={`chip ${picked.includes(pr.name) ? "acc" : ""}`} style={{ cursor: "pointer" }}
-                                        onClick={() => toggle(pr.name)}>{pr.name} · {pr.format.toUpperCase()}</span>)}
-          </div>
           <span className="lbl">封装</span>
           <div className="row wrap">
             <select className="inp" style={{ width: "auto" }} value={String(val("render.video.fonts"))} onChange={(e) => set("render.video.fonts", e.target.value)}>
-              <option value="subset">嵌入字体（只含用到的字）</option><option value="full">嵌入完整字体</option><option value="none">不嵌入字体</option></select>
+              {Object.entries(FONTS_LBL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
             <label className="row dim"><input type="checkbox" checked={!!val("render.video.keep_subs")} onChange={(e) => set("render.video.keep_subs", e.target.checked)} />保留原有字幕轨</label>
           </div>
         </div>
@@ -416,12 +486,14 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
             {ENCODERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
           <span className="lbl">画质</span>
           <div className="row"><input type="range" min={14} max={32} step={1} value={Number(val("render.video.quality"))} onChange={(e) => set("render.video.quality", Number(e.target.value))} />
-            <span className="dim" title="码率最多和原片一样（按缩小的比例折算），压出来不会比原片大很多">{String(val("render.video.quality"))}（越小越清晰，常用 18~23）</span></div>
+            <span className="dim">{String(val("render.video.quality"))}</span>
+            <Tip text="越小越清晰，常用 18~23。码率最多和原片一样（按缩小的比例折算），压出来不会比原片大很多。" /></div>
           <span className="lbl">尺寸</span>
           <select className="inp" style={{ width: "auto" }} value={String(val("render.video.height"))} onChange={(e) => set("render.video.height", Number(e.target.value))}>
             {[[0, "原尺寸"], [2160, "2160p"], [1080, "1080p"], [720, "720p"], [480, "480p"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
         </div>
       </div>
+      </More>
       <div className="row wrap" style={{ marginTop: 10 }}>
         <button className="btn" disabled={!ready} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("mux")}>现在封装 MKV</button>
         <button className="btn" disabled={!ready || !s.summary?.meta?.video} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("burn")}>现在压制硬字幕</button>
@@ -433,6 +505,27 @@ function VideoCard({ val, set, dirty }: { val: (p: string) => unknown; set: (p: 
         {s.running && !p && <span className="dim">正在处理字幕，完成后才能输出视频</span>}
         {!s.running && (videos.mux || videos.burn) && <span className="dim">已输出：{[videos.mux, videos.burn].filter(Boolean).join("、")}</span>}
       </div>
+    </div>
+  );
+}
+
+/** 鼠标移上去才显示的说明 */
+function Tip({ text }: { text: string }) {
+  return <span className="tip" title={text}>ⓘ</span>;
+}
+
+/** 来源底部的“更多”：收起时一行列出当前的值（这个项目单独设过的标亮），点开再改 */
+function More({ open, onToggle, items, mark, children }: {
+  open: boolean; onToggle: () => void; items: [string, string | string[]][]; mark: (path: string) => boolean; children: React.ReactNode;
+}) {
+  return (
+    <div className={`more${open ? " open" : ""}`}>
+      <button className="more-head" onClick={onToggle} title={open ? "收起" : "展开修改；标亮的是这个项目单独设过的（不跟随全局 / 作品配置）"}>
+        <span className="more-arrow">{open ? "▾" : "▸"}</span>
+        {open ? <span>收起</span> : <span className="more-sum">{items.map(([t, p], i) =>
+          <span key={i} className={(Array.isArray(p) ? p : [p]).some(mark) ? "set" : ""}>{t}</span>)}</span>}
+      </button>
+      {open && <div className="more-body">{children}</div>}
     </div>
   );
 }
