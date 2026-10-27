@@ -47,6 +47,8 @@ export const api = {
     call<EditResult>(`/api/projects/${pid}/cues/${cid}/pieces`, json("POST", body)),
   mergeNext: (pid: string, cid: string) => call<EditResult>(`/api/projects/${pid}/cues/${cid}/merge`, { method: "POST" }),
   insertCue: (pid: string, body: { start: number; end: number; orig?: string }) => call<EditResult>(`/api/projects/${pid}/cues`, json("POST", body)),
+  // 被丢弃 / 没用上的画面字恢复成一条字幕（带位置；配了大模型会顺手翻译，note 是没翻成的原因）
+  restoreOcr: (pid: string, oid: string) => call<EditResult & { note?: string | null }>(`/api/projects/${pid}/ocr/${oid}/restore`, json("POST", {})),
   clearOrphans: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/edits/orphans`, { method: "DELETE" }),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>

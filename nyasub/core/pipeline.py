@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=8),  # v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=9),  # v9：画面上也打着的字幕句不再显示原文；v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -351,7 +351,7 @@ class Run:
         from ..llm.translate import shown
 
         ann = res.get("annotate") or {"cues": shown((res.get("translate") or {}).get("cues", [])), "tokens": {}}
-        boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused, ann.get("rects")) if fused else []
+        boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused, ann.get("rects"), ann["cues"]) if fused else []
         return ann["cues"], ann["tokens"], aspect, boxes
 
     def reannotate(self):
@@ -480,7 +480,7 @@ class Run:
         t = time.time()
         try:
             self._render(annotated["cues"], annotated["tokens"], aspect,
-                         self._hardsub_boxes(refined, fused, annotated.get("rects")))
+                         self._hardsub_boxes(refined, fused, annotated.get("rects"), annotated["cues"]))
         except Exception as e:
             emit({"type": "stage", "name": "render", "status": "failed", "error": str(e)})
             raise
@@ -724,9 +724,11 @@ class Run:
             f"实物上的字 {s['ocr_scene']}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
             f"语音 {s['asr_total']} 段（无字幕覆盖 {s['asr_uncovered']}，作为参考附到字幕上 {s['asr_hint']}）")
 
-    def _hardsub_boxes(self, ocr_events, fused, rects=None):
-        """真正的硬字幕框（排除台标、背景文字），渲染时用来让开位置。rects：注音时收紧了的框（_text_rects）。"""
+    def _hardsub_boxes(self, ocr_events, fused, rects=None, cues=()):
+        """真正的硬字幕框（排除台标、背景文字），渲染时用来让开位置。rects：注音时收紧了的框（_text_rects）；
+        cues：字幕用到的画面字（手动恢复了的被丢弃画面字）也算。"""
         keep = {it["id"] for it in fused["items"] if it["src"] in ("telop", "info")}
+        keep |= {s for c in cues for s in c.get("sources", [])}
         marks = fused.get("ocr_marks", {})
         rects = rects or {}
         return [{"start": e["start"], "end": e["end"], "rect": rects.get(e["id"], e["rect"]), "vertical": e.get("vertical")}
@@ -955,13 +957,27 @@ class Run:
             log(f"注音完成：{len(cues)} 条；读音词典 / 术语表 {len(readings)} 条；{n_guess} 条有读音待确认的专有名词")
         return {"cues": cues, "tokens": tokens, "rects": rects}
 
+    def _items(self, cues):
+        """融合结果里的条目 {id: 条目}，加上手动恢复成字幕的画面字（被丢弃了，不在融合结果里）。"""
+        fused = self.results.get("fuse") or load_json(self._out_path("fuse"), {}) or {}
+        items = {i["id"]: i for i in fused.get("items", [])}
+        events = {e["id"]: e for e in self.results.get("ocr_refine") or []}
+        for c in cues:
+            for s in c.get("sources", []):
+                if s not in items and s in events:
+                    e = events[s]
+                    items[s] = {"id": s, "src": "info" if c.get("type") in ("info", "name", "title") else "telop",
+                                "start": e["start"], "end": e["end"], "text": e["text"], "zone": e.get("zone"),
+                                "rect": e["rect"], "ocr_score": e.get("score", 1.0)}
+        return items
+
     def _text_rects(self, cues):
         """画面字的框只算最终原文里有的那几块字：扫描时旁边招牌上的字被并进同一条画面字、翻译时又清理掉了，
         框还是包着招牌的大框，译文会被推得离字很远。返回 {画面字 id: 收紧后的框}，只含收紧了的。"""
         from ..llm.translate import covered
 
         events = {e["id"]: e for e in self.results.get("ocr_refine") or []}
-        kinds = {i["id"] for i in (self.results.get("fuse") or {}).get("items", []) if i["src"] in ("telop", "info")}
+        kinds = {k for k, i in self._items(cues).items() if i["src"] in ("telop", "info")}
         final = {}
         for c in cues:
             for s in c.get("sources", []):
@@ -995,11 +1011,17 @@ class Run:
           手动改过文字的条目不动。
         - 落在同一条字幕中间的“｜”（大模型把字幕里的换行当成了分屏）合回去；
         - 其余的每段按来源字幕算时间（parts）。"""
+        from ..textutil import overlap
         from . import segments
 
         marks = [m for m in self.cfg.render.strip_marks if m]
-        fused = self.results.get("fuse") or load_json(self._out_path("fuse"), {}) or {}
-        items = {i["id"]: dict(i, rect=rects[i["id"]]) if i["id"] in (rects or {}) else i for i in fused.get("items", [])}
+        items = {k: dict(i, rect=rects[k]) if k in (rects or {}) else i for k, i in self._items(cues).items()}
+        # 融合时当成“和字幕重复”去掉的画面字：画面上打着和字幕同一句话。{字幕 id: [(开始, 结束, 画面字)]}
+        events = {e["id"]: e for e in self.results.get("ocr_refine") or []}
+        dup_on = {}
+        for oid, m in ((self.results.get("fuse") or {}).get("ocr_marks") or {}).items():
+            for sid in (m.get("dup_of") or []) if oid in events else []:
+                dup_on.setdefault(sid, []).append((events[oid]["start"], events[oid]["end"], events[oid]["text"]))
 
         def clean(t):
             for m in marks:
@@ -1071,6 +1093,21 @@ class Run:
             if screen:
                 ps = segments.pieces(c["orig"]["text"]) if c.get("parts") else [c["orig"]["text"]]
                 shown = [covered(p, "\n".join(screen)) >= 0.8 for p in ps]
+                c["onscreen"] = all(shown)
+                if c.get("parts"):
+                    c["parts_onscreen"] = shown
+            # 字幕的这句话画面上也打着（那条画面字当成重复去掉了）：那段时间原文已经在画面上，不再显示。
+            # 两边的字得大多对得上：画面上只打了句子里提到的地名、小标题（“片野鴨池”“鮭とば”）不算
+            dups = [d for s in c.get("sources", []) for d in dup_on.get(s, ())]
+            if dups and not screen:
+                ps = segments.pieces(c["orig"]["text"]) if c.get("parts") else [c["orig"]["text"]]
+                spans = c.get("parts") or [[c["start"], c["end"]]]
+
+                def on(p, a, b):
+                    hit = [(x, y, t) for x, y, t in dups if overlap(a, b, x, y) > 0 and covered(t, p) >= 0.75]
+                    cov = min(1.0, sum(overlap(a, b, x, y) for x, y, _ in hit) / max(1e-6, b - a))
+                    return cov >= 0.6 and covered(p, "\n".join(t for _, _, t in hit)) >= 0.7
+                shown = [on(p, a, b) for p, (a, b) in zip(ps, spans)]
                 c["onscreen"] = all(shown)
                 if c.get("parts"):
                     c["parts_onscreen"] = shown

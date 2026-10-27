@@ -251,3 +251,34 @@ def test_project_list_details_and_forget(client, sample):
     assert all("-merged." not in f for f in p["outputs"])
     left = client.delete(f"/api/projects/{pid}").json()
     assert all(x["id"] != pid for x in left) and sample.exists()  # 只从列表去掉，文件还在
+
+
+def test_restore_dropped_ocr(client, sample):
+    """被误判成实物上的字丢掉的标题卡：一键恢复成说明，位置用它的框，顺手翻译；之后不再标成丢弃，可以撤销。"""
+    from nyasub.core.store import ProjectDir, load_json, save_json
+    from nyasub.llm import client as llm_client
+
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    proj = ProjectDir(sample)
+    ev = {"id": "o9", "start": 30.0, "end": 33.0, "text": "冬を食べる\nナマコ", "rect": [0.02, 0.75, 0.27, 0.99],
+          "zone": "bottom", "score": 0.95, "lines": 2, "vertical": False, "kind": "scene"}
+    save_json(proj.stage("ocr_refine.json"), [ev])
+    fused = load_json(proj.stage("fuse.json"))
+    fused["ocr_marks"] = {"o9": {"dropped": "scene"}}
+    save_json(proj.stage("fuse.json"), fused)
+    assert client.get(f"/api/projects/{pid}/data").json()["ocr"][0]["dropped"] == "scene"
+
+    llm_client.LLM._call = lambda self, s, u, images=None: {"alts": ["冬日滋味｜海参"]}
+    r = client.post(f"/api/projects/{pid}/ocr/o9/restore").json()
+    cue = r["cue"]
+    assert cue["id"] == "u1" and cue["type"] == "info" and cue["sources"] == ["o9"] and cue["onscreen"]
+    assert cue["rect"] == ev["rect"] and cue["orig"]["text"] == "冬を食べる　ナマコ"
+    assert cue["tr"]["zh-Hans"]["text"] == "冬日滋味 海参" and r["note"] is None
+    data = client.get(f"/api/projects/{pid}/data").json()
+    assert "dropped" not in data["ocr"][0]
+    assert any(b["rect"] == ev["rect"] for b in data["hardsub"])  # 台词要让开它
+    assert client.post(f"/api/projects/{pid}/ocr/o9/restore").status_code == 400  # 已经用上了
+    assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "恢复画面字"
+    assert client.get(f"/api/projects/{pid}/data").json()["ocr"][0]["dropped"] == "scene"

@@ -120,8 +120,11 @@ def _merge(cues, op):
 
 def _insert(cues, op, src_lang):
     cue = {"id": op["id"], "start": op["start"], "end": op["end"], "type": op.get("type", "dialogue"),
-           "sources": [], "onscreen": False, "orig": {"lang": src_lang, "text": op.get("orig", "")},
+           "sources": list(op.get("sources") or []), "onscreen": bool(op.get("onscreen")),
+           "orig": {"lang": src_lang, "text": op.get("orig", "")},
            "tr": {k: {"text": v} for k, v in (op.get("tr") or {}).items()}, "flags": ["manual"], "review": "todo"}
+    if op.get("rect"):  # 恢复的画面字：位置用它的框
+        cue["rect"] = op["rect"]
     return cues + [cue]
 
 
@@ -298,7 +301,7 @@ def describe_change(before, after, undone):
         else:
             cid = None if gone else op.get("id")
         n = len(long_) - len(short)
-        what = OP_LBL.get(kind, kind) + (f"等 {n} 步" if n > 1 else "")
+        what = ("恢复画面字" if kind == "insert" and op.get("sources") else OP_LBL.get(kind, kind)) + (f"等 {n} 步" if n > 1 else "")
         return {"id": cid, "at": op.get("at") or op.get("start"), "what": what}
     changed = [cid for cid in set(b["cues"]) | set(a["cues"]) if b["cues"].get(cid) != a["cues"].get(cid)]
     if not changed:

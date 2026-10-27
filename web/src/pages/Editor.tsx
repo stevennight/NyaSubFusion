@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Player, type PlayerHandle } from "../components/Player";
+import { DROP } from "../components/SubtitleOverlay";
 import { Timeline } from "../components/Timeline";
 import { usePeaks, usePreview } from "../hooks";
 import { useStore } from "../store";
@@ -259,7 +260,21 @@ export function EditorPage() {
                 onCueTime={(id, t) => edit(() => api.editCue(s.pid!, id, t), "时间已保存")}
                 onCueSplit={(id, at) => edit(() => api.splitCue(s.pid!, id, at), "已拆成两条")}
                 onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
-                onDropped={(c: Candidate) => { s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`); player.current?.seek(c.start); }} />
+                onDropped={(c: Candidate) => {
+                  player.current?.seek(c.start);
+                  // 只有画面字能恢复（字幕、语音没用上的是融合时去掉的重复内容）
+                  const restore = c.id.startsWith("o") ? {
+                    label: "恢复成字幕",
+                    run: () => {
+                      const got: { note?: string | null }[] = [];  // 成功了才有（失败时 edit 自己报错）
+                      s.toast(`正在恢复 ${c.id}（翻译要几秒）…`);
+                      edit(async () => { const r = await api.restoreOcr(s.pid!, c.id); got.push(r); return r; })
+                        .then(() => got[0] && s.toast(got[0].note ? `已恢复成字幕；${got[0].note}`
+                          : `已恢复成字幕并翻译：${c.text.replace(/\n/g, " ")}`));
+                    },
+                  } : undefined;
+                  s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${DROP[c.dropped] ?? c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`, restore);
+                }} />
       <div className="splitter" title="上下拖动：调整视频和字幕列表的大小" onMouseDown={(e) => {
         // 往下拖 = 视频变大
         e.preventDefault();

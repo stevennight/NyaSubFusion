@@ -523,7 +523,8 @@ def create_app(token: str | None = None) -> FastAPI:
         cues, tokens, aspect, boxes = run.render_context()
         fused = res.get("fuse") or {}
         marks = fused.get("ocr_marks", {})
-        ocr = [dict(e, **marks.get(e["id"], {})) for e in res.get("ocr_refine") or []]
+        used = {s for c in cues for s in c.get("sources", [])}  # 手动恢复了的不再标成丢弃
+        ocr = [dict(e, **({} if e["id"] in used else marks.get(e["id"], {}))) for e in res.get("ocr_refine") or []]
         return {
             "meta": res.get("probe"), "src": run.src, "targets": [lang.canonical(t) for t in run.cfg.project.targets],
             "aspect": aspect, "hardsub": boxes,
@@ -689,6 +690,50 @@ def create_app(token: str | None = None) -> FastAPI:
         store.add_op({"op": "insert", "id": nid, "start": float(body["start"]), "end": float(body["end"]),
                       "type": body.get("type", "dialogue"), "orig": body.get("orig", ""), "tr": body.get("tr") or {}})
         return _edit_result(pid, nid)
+
+    @app.post("/api/projects/{pid}/ocr/{oid}/restore")
+    def restore_ocr(pid: str, oid: str):
+        """被丢弃 / 没用上的画面字恢复成一条字幕：时间、位置用这条画面字的，原文用识别出的字；配了大模型就顺手翻译。
+        底部正中的当台词（叠加的采访台词），其他位置的当说明（译文放在原文旁边）。"""
+        from ..core import segments
+        from ..core.edits import next_insert_id
+        from ..fusion.fuse import _bottom_center
+        from ..llm.translate import retranslate as do
+
+        run, cues = _current_cues(pid)
+        ev = next((e for e in run.results.get("ocr_refine") or [] if e["id"] == oid), None)
+        if ev is None:
+            raise HTTPException(404, "没有这条画面字")
+        if any(oid in c.get("sources", []) for c in cues):
+            raise HTTPException(400, "这条画面字已经用在字幕里了")
+        orig = segments.joiner(run.src).join(l.strip() for l in ev["text"].split("\n") if l.strip())
+        typ = "dialogue" if _bottom_center(ev) else "info"
+        store = EditStore(run.proj)
+        nid = next_insert_id(store.load())
+        op = {"op": "insert", "id": nid, "start": ev["start"], "end": ev["end"], "type": typ, "orig": orig, "tr": {},
+              "sources": [oid], "rect": ev["rect"], "onscreen": True}
+        note = None
+        if run.cfg.llm_mode() == "api":
+            cue = {"id": nid, "start": ev["start"], "end": ev["end"], "type": typ, "sources": [oid],
+                   "orig": {"lang": run.src, "text": orig}, "tr": {}}
+            ctx = sorted(cues + [cue], key=lambda c: c["start"])
+            i = ctx.index(cue)
+            terms = ((run.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
+            for tgt in (lang.canonical(t) for t in run.cfg.project.targets):
+                try:
+                    alts = do(run.cfg, run.proj / "llm_cache", cue, ctx[max(0, i - 3): i + 4], run.src, tgt, terms,
+                              "这是画面上打出来的字（标题、说明等），没有人念出来：译成简短的字幕，不要加原文里没有的内容",
+                              [dict(ev, src="info" if typ == "info" else "telop")])
+                    if alts and alts[0].get("tr"):
+                        op["tr"][tgt] = segments.unbar(alts[0]["tr"], tgt)
+                except Exception as e:  # 翻译失败也照样恢复，译文自己填
+                    note = f"翻译失败（{e}），译文要自己填"
+            if not op["tr"] and note is None:
+                note = "大模型没给出译文，译文要自己填"
+        else:
+            note = "没有配置大模型接口，译文要自己填"
+        store.add_op(op)
+        return {**_edit_result(pid, nid), "note": note}
 
     @app.delete("/api/projects/{pid}/edits/orphans")
     def clear_orphans(pid: str):
