@@ -241,9 +241,29 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                   <span className="lbl">视觉复核</span>
                   <div className="seg">{["none", "vlm"].map((v) => <button key={v} className={val("ocr.refine") === v ? "on" : ""} onClick={() => set("ocr.refine", v)}>{v === "none" ? "不复核" : "视觉大模型"}</button>)}</div>
                   {val("ocr.refine") === "vlm" && <>
+                    <span className="lbl">特写</span>
+                    <label className="row" title="用截图那一刻的画面重新截每处字的特写（镜头移动时，原来的特写范围很大，会把片名、别处的字截进来，模型就转写了那些字），并用红框框出要转写的字。旧项目要重新识别一次画面字，镜头移动时的字才能用上。">
+                      <input type="checkbox" checked={!!val("ocr.refine_boxed")} onChange={(e) => set("ocr.refine_boxed", e.target.checked)} />框出要转写的字</label>
+                    <span className="lbl">每批几处</span>
+                    <select value={Number(val("ocr.refine_batch") ?? 4)} onChange={(e) => set("ocr.refine_batch", Number(e.target.value))}
+                            title="几处字放在一次请求里问。越多越省；模型偶尔会把同一批另一张图上的字写过来（串图），选 1 就是每处单独问，不会串，请求次数多几倍、总用量多三到五成">
+                      <option value={1}>1（每处单独问，不会串图）</option>
+                      <option value={2}>2</option>
+                      <option value={4}>4（默认）</option>
+                      <option value={6}>6（最省）</option>
+                    </select>
                     <span className="lbl">参考画面</span>
-                    <label className="row" title="同一时刻画面上的几处字放在一批，附上一张框了编号的整帧画面，再加每处的特写。大模型能看到字是印在瓶子、招牌上，还是叠加在画面上的字幕，判断准得多。输入用量大约多一倍。">
+                    <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+                    <label className="row" title="每处字附上它所在时刻的整帧画面（框出位置、标上编号，同一时刻的几处共用一张）。大模型能看到字是印在瓶子、招牌上，还是叠加在画面上的字幕，判断准得多。">
                       <input type="checkbox" checked={!!val("ocr.refine_context")} onChange={(e) => set("ocr.refine_context", e.target.checked)} />复核时附上整帧画面</label>
+                    {val("ocr.refine_context") && (
+                      <select value={Number(val("ocr.refine_frame_width") ?? 640)} onChange={(e) => set("ocr.refine_frame_width", Number(e.target.value))}
+                              title="整帧画面缩到多宽。认字靠特写，整帧画面只用来看字在什么东西上：640 一般够了；画面里东西很小、很杂时可以调大（输入用量更多）">
+                        <option value={640}>640 宽（省，每张约 300 token）</option>
+                        <option value={1024}>1024 宽（约 700 token）</option>
+                        <option value={1280}>1280 宽（最清楚，约 1300 token）</option>
+                      </select>)}
+                    </div>
                   </>}
                 </div>
                 {val("ocr.enabled") && s.pid && s.summary?.meta?.video ? (

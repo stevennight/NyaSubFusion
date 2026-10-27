@@ -72,7 +72,10 @@ class OcrCfg(_M):
     skip_static: bool = True
     keep_frames: bool = False
     refine: Literal["none", "vlm"] = "none"  # vlm：视觉大模型复核
-    refine_context: bool = True              # 复核时同一时刻的几处字一批，附上框了编号的整帧画面（判断是叠加字幕还是实物上的字准得多）
+    refine_context: bool = True              # 复核时附上框了编号的整帧画面（同一时刻的几处共用一张），判断是叠加字幕还是实物上的字准得多
+    refine_boxed: bool = True                # 复核时用截图那一帧重新截特写、框出要转写的字（镜头移动时原来的特写会带进片名等别处的字）
+    refine_batch: int = 4                    # 几处一批问：越多越省；1 = 每处单独问，不会把别的图上的字写过来（串图）
+    refine_frame_width: int = 640            # 整帧画面缩到多宽：640 一张约 300 token，看清字在什么东西上够了；1024 / 1280 更清楚，约 2 / 4 倍
 
 
 class FusionCfg(_M):

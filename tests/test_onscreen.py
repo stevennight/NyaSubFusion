@@ -245,3 +245,86 @@ def test_refine_context_asks_with_frames(tmp_path):
     assert calls[0][0] == refine.VLM_CTX_SYSTEM
     assert calls[0][1] == ["画面 A（框出了编号 1、2）", "第 1 张（编号 1 的特写，在画面 A 上）", "第 2 张（编号 2 的特写，在画面 A 上）"]
     assert [g["kind"] for g in got] == ["scene", "scene"]
+
+
+def test_refine_keeps_kind_when_mixed_up_or_batch_fails(tmp_path):
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+
+    paths = []
+    for i in range(2):
+        f = tmp_path / f"{i}.jpg"
+        f.write_bytes(b"x%d" % i)
+        paths.append(str(f))
+    group = [{"id": "o232", "text": "净速上证"}, {"id": "o236", "text": "フジタフーズ"}]
+
+    class Mixed:
+        def chat_json(self, system, user, images=None):
+            if len(images) == 1:  # 单独问：字看不清，但看得出是价签上的字
+                return {"items": [{"no": 1, "text": "", "kind": "scene"}]}
+            return {"items": [{"no": 1, "text": "フジタフーズ", "kind": "caption"}, {"no": 2, "text": "フジタフーズ", "kind": "scene"}]}
+
+    got = refine._ask(Mixed(), group, paths)
+    assert got[0] == {"kind": "scene"}  # 文字保留本地结果，类型用单独问的
+
+    calls = []
+
+    class Broken:
+        def chat_json(self, system, user, images=None):
+            calls.append(len(images))
+            if len(images) > 1:
+                return {"items": [{"no": 1, "text": "x"}]}  # 条数不对
+            return {"items": [{"no": 1, "text": "ok", "kind": "scene"}]}
+
+    import nyasub.llm.client as client
+    events = [dict(e, crop=f"{i}.jpg", start=i, end=i + 2, rect=[0, 0, 0.1, 0.1]) for i, e in enumerate(group)]
+    orig = client.LLM
+    client.LLM = lambda *a, **k: Broken()
+    try:
+        refine.refine_ocr(events, Config(), str(tmp_path), None)
+    finally:
+        client.LLM = orig
+    assert calls == [2, 1, 1]  # 一批失败后逐条单独问
+    assert [(e["text"], e["kind"]) for e in events] == [("ok", "scene"), ("ok", "scene")]
+
+
+def test_refine_recrop_boxes_text_at_snapshot(tmp_path):
+    import cv2
+    import numpy as np
+
+    from nyasub.llm import refine
+
+    f = tmp_path / "f.jpg"
+    cv2.imwrite(str(f), np.full((1080, 1920, 3), 128, np.uint8))
+    # 镜头摇移：截图框是整段移动范围（会带进片名），截图那一刻的位置只在其中一小块
+    pan = {"id": "o42", "start": 238.0, "end": 242.0, "snap_t": 238.9, "lines": 1, "vertical": False,
+           "rect": [0.5, 0.1, 0.55, 0.2], "crop_rect": [0.4, 0.05, 0.9, 0.3], "snap_rect": [0.8, 0.12, 0.85, 0.22]}
+    p = refine.recrop(str(f), pan, 238.9, str(tmp_path / "r"))
+    img = cv2.imread(p)
+    assert img.shape[1] < 0.2 * 1920  # 只截了那一刻字的位置（整段移动范围有 960 宽）
+    red = (img[:, :, 2] > 200) & (img[:, :, 1] < 80)
+    assert red.sum() > 50  # 框出了要转写的字
+    # 旧项目没记下那一刻的位置、字又挪过：框不准，用原来的特写
+    old = dict(pan)
+    del old["snap_rect"]
+    assert refine.recrop(str(f), old, 238.9, str(tmp_path / "r")) is None
+
+
+def test_refine_boxed_crops_told_to_model(tmp_path):
+    from nyasub.llm import refine
+
+    paths = []
+    for i in range(2):
+        f = tmp_path / f"{i}.jpg"
+        f.write_bytes(b"x%d" % i)
+        paths.append(str(f))
+    calls = []
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            calls.append((system, [i["label"] for i in images]))
+            return {"items": [{"no": 1, "text": "ネプ山坂", "kind": "scene"}, {"no": 2, "text": "第十号", "kind": "scene"}]}
+
+    refine._ask(Fake(), [{"id": "o42", "text": "ネプ山坊"}, {"id": "o60", "text": "第十号"}], paths, boxed=[True, False])
+    assert calls[0][0] == refine.VLM_SYSTEM + refine.BOXED_NOTE
+    assert calls[0][1] == ["第 1 张（红框里是要转写的字）", "第 2 张"]

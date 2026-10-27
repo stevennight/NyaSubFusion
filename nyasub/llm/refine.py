@@ -40,6 +40,11 @@ VLM_CTX_SYSTEM = """你是影视节目的画面文字校对员。会给你一到
    没有给整帧画面的那几处，只看特写判断。
 输出 JSON：{"items": [{"no": 1, "text": "第1处原文", "kind": "caption"}, ...]}，no 是编号，数量必须和特写数量一致。"""
 
+# 特写是从截图那一帧重新截的、上面框出了要转写的字时，加在提示词后面
+BOXED_NOTE = """
+有的特写上用红框框出了要转写的字（图前面的说明里会写）：只转写红框里的字。
+红框外露出来的别的字（片名、台标、旁边别处的字幕或招牌…）都不是这一处的字，不要写进来，也不要据此判断 kind。"""
+
 _COLORS = [(48, 59, 255), (89, 199, 52), (255, 132, 10), (0, 204, 255), (212, 45, 255), (255, 229, 0)]  # BGR
 
 
@@ -55,8 +60,11 @@ def truncated(vlm, local):
     return len(_CJK.findall(missing)) >= 3  # “一”被认成“―”这种一两个字的差别不算
 
 
-def _ask_once(llm, group, paths, frames=None):
-    """frames：[(框好的整帧画面, 画面上框出的是这一批里的第几处)]。"""
+def _ask_once(llm, group, paths, frames=None, boxed=None):
+    """frames：[(框好的整帧画面, 画面上框出的是这一批里的第几处)]。boxed：各张特写上有没有用红框框出要转写的字。"""
+    boxed = boxed or [False] * len(paths)
+    note = BOXED_NOTE if any(boxed) else ""
+    red = lambda j: "，红框里是要转写的字" if boxed[j] else ""
     unit = "处" if frames else "张"
     hint = "\n".join(f"第{j + 1}{unit}（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
                      for j, e in enumerate(group))
@@ -65,12 +73,12 @@ def _ask_once(llm, group, paths, frames=None):
         where = {j: chr(65 + k) for k, (_, idx) in enumerate(frames) for j in idx}
         images = [{"path": f, "label": f"画面 {chr(65 + k)}（框出了编号 {'、'.join(str(j + 1) for j in idx)}）"}
                   for k, (f, idx) in enumerate(frames)]
-        images += [{"path": p, "label": f"第 {j + 1} 张（编号 {j + 1} 的特写" + (f"，在画面 {where[j]} 上）" if j in where else "）")}
-                   for j, p in enumerate(paths)]
-        res = llm.chat_json(VLM_CTX_SYSTEM, f"共 {len(group)} 处文字。\n{hint}", images=images)
+        images += [{"path": p, "label": f"第 {j + 1} 张（编号 {j + 1} 的特写" + (f"，在画面 {where[j]} 上" if j in where else "")
+                    + red(j) + "）"} for j, p in enumerate(paths)]
+        res = llm.chat_json(VLM_CTX_SYSTEM + note, f"共 {len(group)} 处文字。\n{hint}", images=images)
     else:
-        images = [{"path": p, "label": f"第 {j + 1} 张"} for j, p in enumerate(paths)]
-        res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=images)
+        images = [{"path": p, "label": f"第 {j + 1} 张" + (f"（{red(j)[1:]}）" if boxed[j] else "")} for j, p in enumerate(paths)]
+        res = llm.chat_json(VLM_SYSTEM + note, f"共 {len(group)} 张图。\n{hint}", images=images)
     got = res.get("items")
     if got is None:
         got = [{"text": t} for t in res.get("texts", [])]
@@ -83,14 +91,16 @@ def _ask_once(llm, group, paths, frames=None):
     return got
 
 
-def _ask(llm, group, paths, frames_for=None):
+def _ask(llm, group, paths, frames_for=None, boxed=None):
     """frames_for(这一批里第几处的列表) -> 给这几处的整帧画面（见 _ask_once）；不带画面时为 None。"""
-    got = _ask_once(llm, group, paths, frames_for(list(range(len(group)))) if frames_for else None)
+    boxed = boxed or [False] * len(paths)
+    got = _ask_once(llm, group, paths, frames_for(list(range(len(group)))) if frames_for else None, boxed)
     for j in borrowed(group, got):
         # 像是串图了：这一张单独再问一次。只有一张图就不可能串，单独问的结果直接用
         # （也可能根本没串：几张图拍的是同一段字、本地识别又认错了，比如片名动画的几帧）
         try:
-            again = _ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None)[0] if len(group) > 1 else {}
+            again = _ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None,
+                              [boxed[j]])[0] if len(group) > 1 else {}
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception:
@@ -99,9 +109,25 @@ def _ask(llm, group, paths, frames_for=None):
             got[j] = again
             log(f"  {group[j]['id']}：和同一批另一张图的字一样、和本地识别对不上，单独重新复核")
         else:
+            # 单独问也没认出字：文字保留本地结果；单独问时给的类型没有串图的问题，照用（不然没有类型，招牌上的字会当成字幕去翻译）
             log(f"  {group[j]['id']}：复核结果和同一批另一张图的字一样、和本地识别对不上（串图了），保留本地结果")
-            got[j] = {}
+            got[j] = {"kind": again["kind"]} if again.get("kind") in ("caption", "scene") else {}
     return got
+
+
+def _ask_each(llm, group, paths, frames_for=None, boxed=None):
+    """一批复核失败（返回条数不对、不是 JSON…）时逐条单独问；单独问也失败的那条保留本地结果。"""
+    boxed = boxed or [False] * len(paths)
+    out = []
+    for j in range(len(group)):
+        try:
+            out.append(_ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None, [boxed[j]])[0])
+        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            raise
+        except Exception as ex:
+            log(f"  {group[j]['id']}：单独复核也失败，保留本地结果：{ex}")
+            out.append({})
+    return out
 
 
 def borrowed(group, got):
@@ -134,17 +160,52 @@ def _snap_t(e):
     return e["snap_t"] if e.get("snap_t") is not None else (e["start"] + e["end"]) / 2
 
 
+def _moved(e):
+    """截图框比字大一圈以上：字在画面上挪过（镜头摇移、逐字出现）。"""
+    x0, y0, x1, y1 = e["rect"]
+    X0, Y0, X1, Y1 = e.get("crop_rect") or e["rect"]
+    return (X1 - X0) * (Y1 - Y0) > 1.5 * max(1e-6, (x1 - x0) * (y1 - y0))
+
+
 def box_at(e, t):
     """这处字在 t 秒的画面上的框（0~1）。那一刻对不上（不在画面上、字或镜头在移动）返回 None。"""
     if abs(t - _snap_t(e)) < 0.01:  # 截图那一帧
         return e.get("snap_rect") or e.get("crop_rect") or e["rect"]
-    if e.get("moving") or not (e["start"] <= t <= e["end"]):
-        return None
-    x0, y0, x1, y1 = e["rect"]
-    X0, Y0, X1, Y1 = e.get("crop_rect") or e["rect"]
-    if (X1 - X0) * (Y1 - Y0) > 1.5 * max(1e-6, (x1 - x0) * (y1 - y0)):
-        return None  # 截图框比字大一圈以上：字在画面上挪过（镜头摇移、逐字出现），别的时刻框不准
+    if e.get("moving") or not (e["start"] <= t <= e["end"]) or _moved(e):
+        return None  # 字挪过的话，别的时刻框不准
     return e["rect"]
+
+
+def recrop(frame, e, t, out_dir):
+    """从画面时刻那一帧重新截这处字的特写，用红框框出要转写的字。
+    原来的特写是整段移动范围加一圈边（镜头摇移时会把片名、别处的字截进来，模型就转写了那些字）；
+    这里只截字在那一刻的位置。旧项目没记下那一刻位置、字又挪过的，框不准，返回 None（用原来的特写）。"""
+    import cv2
+
+    from ..sources.ocr import _imread, _imwrite
+
+    r = box_at(e, t)
+    if r is None or (not e.get("snap_rect") and _moved(e)):
+        return None
+    path = os.path.join(out_dir, f"{e['id']}_{round(t * 1000)}.jpg")
+    if os.path.exists(path):
+        return path
+    img = _imread(frame)
+    if img is None:
+        return None
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = round(r[0] * W), round(r[1] * H), round(r[2] * W), round(r[3] * H)
+    lh = (x1 - x0 if e.get("vertical") else y1 - y0) / max(1, e.get("lines", 1))
+    pad = max(16, int(lh * 0.8))
+    X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
+    if X1 - X0 < 4 or Y1 - Y0 < 4:
+        return None
+    crop = img[Y0:Y1, X0:X1].copy()
+    g = 4  # 框和字之间留几个像素，不压到字
+    cv2.rectangle(crop, (max(0, x0 - X0 - g), max(0, y0 - Y0 - g)),
+                  (min(X1 - X0 - 1, x1 - X0 + g), min(Y1 - Y0 - 1, y1 - Y0 + g)), (0, 0, 255), 2)
+    os.makedirs(out_dir, exist_ok=True)
+    return path if _imwrite(path, crop) else None
 
 
 def plan_groups(todo, batch, context=False):
@@ -215,31 +276,40 @@ def mark_frame(frame, items, nos, t, out_dir, width=640):
     return path if _imwrite(path, np.ascontiguousarray(img)) else None
 
 
-def _grab(video, groups, out_dir):
-    """各处画面时刻的整帧画面。返回 {时刻: 路径}。"""
+def _grab(video, groups, out_dir, width=1920):
+    """各处画面时刻的整帧画面。返回 {时刻: 路径}。
+    截 1920 宽：重新截的特写比识别时（720 高）清楚一些，小字也看得清；发给模型的整帧画面另外缩小。"""
     import time
 
     from ..sources import media
 
     times = sorted({t for _, at in groups for t in at or []})
     t0 = time.time()
-    got = media.grab_frames(str(video), times, out_dir, width=1280, exact=True,
+    got = media.grab_frames(str(video), times, out_dir, width=width, exact=True,
                             on_progress=lambda n, total: progress(n, total, "截取画面"))
-    log(f"  截取整帧画面 {len(got)} 张（用时 {time.time() - t0:.0f}s），复核时附上，看字是在实物上还是叠加的字幕")
+    log(f"  截取画面 {len(got)} 张（用时 {time.time() - t0:.0f}s）")
     return {t: got.get(round(t, 3)) for t in times}
 
 
-def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=False):
-    """context：每处字附上它所在时刻的整帧画面（框出位置、标上编号），判断是叠加字幕还是实物上的字准得多。"""
+def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=False, frame_width=640, boxed=False):
+    """context：每处字附上它所在时刻的整帧画面（框出位置、标上编号），判断是叠加字幕还是实物上的字准得多。
+    boxed：特写从截图那一帧重新截（只截字那一刻的位置），并用红框框出要转写的字。
+    batch：几处一批问。一批越多越省，但模型偶尔会把同一批另一张图上的字写过来（串图）；1 = 每处单独问。"""
+    batch = max(1, int(batch))
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir)
     todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
     log(f"视觉大模型复核画面字：{len(todo)} 条")
-    context = bool(context and todo and video and os.path.exists(str(video)))
-    groups = plan_groups(todo, batch, context)
-    frames = _grab(video, groups, os.path.join(workdir, "crops", "frames")) if context else {}
+    has_video = bool(todo and video and os.path.exists(str(video)))
+    context, boxed = context and has_video, boxed and has_video
+    groups = plan_groups(todo, batch, context or boxed)
+    frames = _grab(video, groups, os.path.join(workdir, "crops", "frames")) if context or boxed else {}
+    if context:
+        log("  复核时附上整帧画面，看字是在实物上还是叠加的字幕")
     marked_dir = os.path.join(workdir, "crops", "marked")
+    recrop_dir = os.path.join(workdir, "crops", "recrop")
+    n_boxed = 0
     short = []  # 复核结果只有半截的：换一帧重新截图再问
     n_done = 0
     for gi, (group, at) in enumerate(groups):
@@ -252,13 +322,20 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
             out = []
             for t in dict.fromkeys(at[j] for j in idx):
                 mine = [k for k, j in enumerate(idx) if at[j] == t]
-                f = frames.get(t) and mark_frame(frames[t], [group[idx[k]] for k in mine], mine, t, marked_dir)
+                f = frames.get(t) and mark_frame(frames[t], [group[idx[k]] for k in mine], mine, t, marked_dir,
+                                                 width=frame_width)
                 if f:
                     out.append((f, mine))
             return out
 
+        paths, box = [], []
+        for j, e in enumerate(group):
+            p = recrop(frames[at[j]], e, at[j], recrop_dir) if boxed and frames.get(at[j]) else None
+            paths.append(p or os.path.join(workdir, e["crop"]))
+            box.append(bool(p))
+        n_boxed += sum(box)
         try:
-            got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group], frames_for if at else None)
+            got = _ask(llm, group, paths, frames_for if context else None, box)
         except FatalLLMError as ex:
             log(f"  {ex}")
             log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
@@ -266,8 +343,8 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception as ex:
-            log(f"  第 {gi + 1} 批复核失败，保留本地结果：{ex}")
-            continue
+            log(f"  第 {gi + 1} 批复核失败（{ex}），逐条单独复核")
+            got = _ask_each(llm, group, paths, frames_for if context else None, box)
         for e, g in zip(group, got):
             e["text_local"] = e["text"]
             if truncated(g.get("text") or "", e["text"]):
@@ -276,10 +353,13 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
                     e["kind"] = g["kind"]
                 continue
             _apply(e, g)
+    if boxed:
+        log(f"  {n_boxed} 条用截图那一帧重新截了特写、框出了要转写的字"
+            + (f"（另外 {len(todo) - n_boxed} 条是旧的识别结果、字又挪过，用原来的特写）" if n_boxed < len(todo) else ""))
     if short:
         _retry_short(llm, short, workdir, video, batch, float(cfg.ocr.fps))
     # 整帧画面一批一张、占地方，复核完删掉（中途停止的留着，下次接着用；重新截出来的一样，请求缓存照样命中）
-    for d in ("frames", "marked"):
+    for d in ("frames", "marked", "recrop"):
         shutil.rmtree(os.path.join(workdir, "crops", d), ignore_errors=True)
     return events
 
