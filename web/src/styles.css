@@ -28,6 +28,7 @@ button { cursor: pointer }
 .btn:hover:not(:disabled) { border-color: #5a5a6c; background: #2e2e3b }
 .btn.pri { background: var(--acc); border-color: var(--acc); color: #2a0d18; font-weight: 600 }
 .btn.pri:hover:not(:disabled) { background: var(--acc); filter: brightness(1.08) }
+.btn.warn { border-color: var(--bad); color: var(--bad) }
 .btn.sm { padding: 3px 8px; font-size: 12px }
 .btn.ghost { background: transparent }
 .btn:disabled { opacity: .45; cursor: not-allowed }
@@ -138,7 +139,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .blk2.sc { background: #7cc4ffcc } .blk2.so { background: #ffb35ccc } .blk2.sa { background: #9be38acc } .blk2.sf { background: #b49cffcc } .blk2.st { background: #ff7aa8cc; font-family: var(--ui) }
 .blk2.drop { background: repeating-linear-gradient(135deg, #ff6b6b44 0 5px, #ff6b6b22 5px 10px); color: #ff9a9a; text-decoration: line-through }
 .blk2.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff }
-.blk2.flag::after { content: ""; position: absolute; right: 3px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn) }
+.blk2.flag::after, .blk2.marked::after { content: ""; position: absolute; right: 3px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn) }
+.blk2.marked::after { background: var(--bad) }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--acc); pointer-events: none; z-index: 3 }
 .cuelist { grid-column: 1; grid-row: 4; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-height: 0 }
 .cuelist .hd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line) }
@@ -147,7 +149,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .cuelist tr.sel td { background: #b49cff1c }
 .cuelist tr.cur td:first-child { box-shadow: inset 3px 0 var(--acc) }
 .cuelist td.t { font-variant-numeric: tabular-nums; color: var(--tx2); white-space: nowrap }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok) } .dot.todo { background: var(--warn) }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok) } .dot.todo { background: var(--warn) } .dot.flag { background: var(--bad) }
 .typ { font-size: 11px; color: var(--tx2); white-space: nowrap } .fl { font-size: 11px; color: var(--warn) }
 .srcitem { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; padding: 8px; border-radius: 6px; background: var(--bg2); margin-bottom: 6px; border: 1px solid #2b2b36 }
 .srcitem .tx { font-family: var(--ja); font-size: 13.5px; white-space: pre-wrap }

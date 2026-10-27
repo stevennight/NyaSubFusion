@@ -282,3 +282,20 @@ def test_restore_dropped_ocr(client, sample):
     assert client.post(f"/api/projects/{pid}/ocr/o9/restore").status_code == 400  # 已经用上了
     assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "恢复画面字"
     assert client.get(f"/api/projects/{pid}/data").json()["ocr"][0]["dropped"] == "scene"
+
+
+def test_batch_review_is_one_undo_step(client, sample):
+    """播放看过的一批一起标成已审：一步撤销全部回到原样；还能人工标记（flag）。"""
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    review = lambda: {c["id"]: c["review"] for c in client.get(f"/api/projects/{pid}/data").json()["cues"]}
+    before = review()
+    assert client.post(f"/api/projects/{pid}/review", json={"ids": ["q1", "q2"], "review": "ok"}).status_code == 200
+    client.post(f"/api/projects/{pid}/review", json={"ids": ["q3"], "review": "flag"})
+    after = review()
+    assert after["q1"] == after["q2"] == "ok" and after["q3"] == "flag"
+    client.post(f"/api/projects/{pid}/edits/undo")
+    client.post(f"/api/projects/{pid}/edits/undo")
+    assert review() == before
+    assert client.post(f"/api/projects/{pid}/review", json={"ids": ["q1"], "review": "maybe"}).status_code == 400

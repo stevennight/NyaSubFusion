@@ -362,7 +362,7 @@ export function Timeline(p: Props) {
             {lane("so", p.ocr)}
             {lane("sa", p.asr)}
             <div className="lane" style={{ width: W }}>
-              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
+              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : c.review === "flag" ? "marked" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
                 {segsOf(c, partsOf(c), c.orig.text, c) ?? c.orig.text}
               </div>)}
             </div>

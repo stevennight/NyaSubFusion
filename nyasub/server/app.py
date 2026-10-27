@@ -590,6 +590,15 @@ def create_app(token: str | None = None) -> FastAPI:
         EditStore(proj).set_fields(cid, body)
         return _edit_result(pid, cid)
 
+    @app.post("/api/projects/{pid}/review")
+    def set_review(pid: str, body: dict = Body(...)):
+        """几条一起改审校状态：{"ids": [...], "review": "ok" | "todo" | "flag"}（播放看过的一批自动标成已审）。算一步撤销。"""
+        if body.get("review") not in ("ok", "todo", "flag") or not body.get("ids"):
+            raise HTTPException(400, "要给 ids 和 review（ok / todo / flag）")
+        _, proj = project_paths(pid)
+        EditStore(proj).set_many(list(body["ids"]), {"review": body["review"]})
+        return _edit_result(pid)
+
     def _current_cues(pid):
         run = make_run(pid)
         run.load_state()

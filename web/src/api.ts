@@ -50,6 +50,8 @@ export const api = {
   // 被丢弃 / 没用上的画面字恢复成一条字幕（带位置；配了大模型会顺手翻译，note 是没翻成的原因）
   restoreOcr: (pid: string, oid: string) => call<EditResult & { note?: string | null }>(`/api/projects/${pid}/ocr/${oid}/restore`, json("POST", {})),
   clearOrphans: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/edits/orphans`, { method: "DELETE" }),
+  // 几条一起改审校状态（播放看过的一批自动标成已审），算一步撤销
+  setReview: (pid: string, ids: string[], review: "ok" | "todo" | "flag") => call<EditResult>(`/api/projects/${pid}/review`, json("POST", { ids, review })),
   undoRedo: (pid: string, action: "undo" | "redo") => call<EditResult>(`/api/projects/${pid}/edits/${action}`, { method: "POST" }),
   addReading: (pid: string, body: { lang: string; src: string; reading: string; scope?: string }) =>
     call<{ saved: string }>(`/api/projects/${pid}/readings`, json("POST", body)),

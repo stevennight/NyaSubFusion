@@ -392,6 +392,13 @@ class Store:
         e["cues"][cid] = cur
         return self.save(e)
 
+    def set_many(self, cids, body):
+        """几条一起改同样的字段（播放看过的一批自动标成已审），算一步撤销。"""
+        e = self.load()
+        for cid in cids:
+            e["cues"][cid] = {**e["cues"].get(cid, {}), **body}
+        return self.save(e)
+
     def add_op(self, op):
         e = self.load()
         e["ops"].append(op)

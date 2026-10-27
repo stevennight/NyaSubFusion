@@ -8,7 +8,16 @@ import { useStore } from "../store";
 import type { Candidate, Cue, EditResult, Word } from "../types";
 import { FLAG_LBL, fmt, fmtHms, langName, SRC_LBL, TYPE_LBL } from "../util";
 
-type Filter = "all" | "todo" | "asr" | "ocr";
+type Filter = "all" | "todo" | "flag" | "asr" | "ocr";
+const FILTERS: [Filter, string][] = [["all", "全部"], ["todo", "待审校"], ["flag", "已标记"], ["asr", "仅语音"], ["ocr", "含画面字"]];
+const FILTER_TEST: Record<Filter, (c: Cue) => boolean> = {
+  all: () => true, todo: (c) => c.review === "todo", flag: (c) => c.review === "flag",
+  asr: (c) => c.flags.includes("asr_only"), ocr: (c) => c.sources.some((x) => x.startsWith("o")),
+};
+const REVIEW_LBL = { ok: "已审", todo: "待审校", flag: "已标记" };
+// 播放看过自动标已审：连续播过一条字幕、又往后播了这么多秒还没被标记，就当看过没问题
+const AUTO_KEY = "nyasub.autoReview";
+const loadAuto = () => { try { return { on: true, sec: 3, ...JSON.parse(localStorage.getItem(AUTO_KEY) ?? "{}") }; } catch { return { on: true, sec: 3 }; } };
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
@@ -205,10 +214,66 @@ export function EditorPage() {
     s.toast(`播放速度 ${n}×`);
   }, [rate, setRate, s]);
 
+  // 播放看过自动标已审：一段连续播放（中间没跳转）完整播过一条字幕、又往后播了 N 秒、没按 M 标记的，攒起来，
+  // 暂停时或者攒了 20 秒一起保存（算一步撤销）
+  const [auto, setAutoState] = useState(loadAuto);
+  const setAuto = useCallback((v: { on: boolean; sec: number }) => {
+    setAutoState(v);
+    try { localStorage.setItem(AUTO_KEY, JSON.stringify(v)); } catch { /* 存不了就只在这次有效 */ }
+  }, []);
+  const cuesRef = useRef(cues);
+  cuesRef.current = cues;
+  const timeRef = useRef(time);
+  timeRef.current = time;
+  const run = useRef<{ from: number; last: number } | null>(null);  // 这一段连续播放从哪儿开始
+  const seen = useRef<{ ids: Set<string>; since: number }>({ ids: new Set(), since: 0 });
+  const flushSeen = useCallback(async () => {
+    const ids = [...seen.current.ids].filter((id) => cuesRef.current.find((c) => c.id === id)?.review === "todo");
+    seen.current = { ids: new Set(), since: 0 };
+    if (!ids.length || !s.pid) return;
+    try {
+      await api.setReview(s.pid, ids, "ok");
+      await s.reload();
+      s.toast(`播放看过，${ids.length} 条已标成已审`, { label: "撤销 (Ctrl+Z)", run: () => undoRedoRef.current("undo") });
+    } catch (e) { s.setError((e as Error).message); }
+  }, [s]);
+  useEffect(() => {
+    if (!playing) {
+      run.current = null;
+      if (seen.current.ids.size) flushSeen();
+      return;
+    }
+    let r = run.current;
+    if (!r || time < r.last - 0.05 || time - r.last > 1.5 + rate) r = run.current = { from: time, last: time };  // 刚开始播、跳转过
+    else r.last = time;
+    if (!auto.on) return;
+    const from = r.from;  // 点列表选中一条会跳到它开头往后一点再播，留 1 秒余量
+    for (const c of cues) {
+      if (c.review === "todo" && c.start >= from - 1 && time >= c.end + auto.sec && !seen.current.ids.has(c.id)) {
+        if (!seen.current.ids.size) seen.current.since = time;
+        seen.current.ids.add(c.id);
+      }
+    }
+    if (seen.current.ids.size && time - seen.current.since > 20) flushSeen();
+  }, [time, playing]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // M：标记正在播的这一条（有问题、回头再看）；刚播完的也算（反应慢了一点），都没有就标选中的那条
+  const toggleFlag = useCallback(() => {
+    const t = timeRef.current, all = cuesRef.current;
+    const here = all.filter((c) => t >= c.start && t < c.end).sort((a, b) => b.start - a.start)[0]
+      ?? all.filter((c) => c.end <= t && t - c.end < 2).sort((a, b) => b.end - a.end)[0]
+      ?? all.find((c) => c.id === sel);
+    if (!here || !s.pid) return;
+    const to = here.review === "flag" ? "todo" : "flag";
+    seen.current.ids.delete(here.id);
+    edit(() => api.setReview(s.pid!, [here.id], to),
+         to === "flag" ? `已标记 #${all.indexOf(here) + 1}「${here.orig.text.replace(/[｜\n]/g, " ").slice(0, 12)}」（再按 M 取消）` : `已取消 #${all.indexOf(here) + 1} 的标记`);
+  }, [s, sel, edit]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.("input,textarea,select")) return;
       if (e.code === "Space") { e.preventDefault(); player.current?.toggle(); }
+      if ((e.key === "m" || e.key === "M") && !e.ctrlKey && !e.altKey) toggleFlag();
       if (e.key === "[") shiftRate(-1);
       if (e.key === "]") shiftRate(1);
       if (e.key === "j" || e.key === "J") step(-1);
@@ -218,15 +283,13 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, undo, redo, shiftRate]);
+  }, [step, undo, redo, shiftRate, toggleFlag]);
 
   if (!d) return <div className="empty">加载中…</div>;
   if (!cues.length) return <div className="empty">还没有字幕。先在「流程」里运行一次。</div>;
 
-  const matches = (c: Cue) => filter === "all" || (filter === "todo" && c.review === "todo")
-    || (filter === "asr" && c.flags.includes("asr_only")) || (filter === "ocr" && c.sources.some((x) => x.startsWith("o")));
-  const counts: Record<Filter, number> = { all: cues.length, todo: 0, asr: 0, ocr: 0 };
-  for (const c of cues) for (const f of ["todo", "asr", "ocr"] as Filter[]) if (f !== "all" && ((f === "todo" && c.review === "todo") || (f === "asr" && c.flags.includes("asr_only")) || (f === "ocr" && c.sources.some((x) => x.startsWith("o"))))) counts[f]++;
+  const matches = (c: Cue) => FILTER_TEST[filter](c);
+  const counts = Object.fromEntries(FILTERS.map(([f]) => [f, cues.filter(FILTER_TEST[f]).length])) as Record<Filter, number>;
   const current = new Set(cues.filter((c) => time >= c.start && time < c.end).map((c) => c.id));
   const selected = cues.find((c) => c.id === sel) ?? null;
 
@@ -246,6 +309,12 @@ export function EditorPage() {
             {RATES.map((r) => <option key={r} value={r}>{r}×</option>)}
           </select>
           <label className="row dim"><input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />识别框</label>
+          <label className="row dim" title="连续播过一条字幕、又往后播了这么多秒，没按 M 标记的，自动标成已审（暂停时一起保存，Ctrl+Z 可撤销）">
+            <input type="checkbox" checked={auto.on} onChange={(e) => setAuto({ ...auto, on: e.target.checked })} />看过自动审
+            <select className="inp" style={{ width: "auto" }} value={auto.sec} disabled={!auto.on} onChange={(e) => setAuto({ ...auto, sec: Number(e.target.value) })}>
+              {[1, 2, 3, 5, 8].map((n) => <option key={n} value={n}>{n} 秒后</option>)}
+            </select>
+          </label>
           <span className="sp" />
           预览方案
           <select className="inp" style={{ width: "auto" }} value={preview?.profile ?? ""} onChange={(e) => setProfile(e.target.value)}>
@@ -315,7 +384,7 @@ export function EditorPage() {
         )}
         <div className="hd">
           <b>字幕</b>
-          <div className="seg">{([["all", "全部"], ["todo", "待审校"], ["asr", "仅语音"], ["ocr", "含画面字"]] as [Filter, string][]).map(([f, l]) =>
+          <div className="seg">{FILTERS.map(([f, l]) =>
             <button key={f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>{l} {counts[f]}</button>)}</div>
           <span className="sp" />
           <span className="dim">缩放</span>
@@ -323,7 +392,7 @@ export function EditorPage() {
           <button className="btn sm" title="在播放头处插入一条 2 秒的空字幕" onClick={insertAt}>＋ 插入</button>
           <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
           <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
-          <span className="dim">J/K 上下条 · 空格播放 · [ ] 倍速</span>
+          <span className="dim">J/K 上下条 · 空格播放 · [ ] 倍速 · M 标记</span>
         </div>
         <div className="bd">
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>
@@ -449,7 +518,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
     <>
       <div className="isec">
         <div className="row" style={{ marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>#{index + 1}</h3><span className={`dot ${cue.review}`} /><span className="dim">{cue.review === "ok" ? "已审" : "待审校"}</span>
+          <h3 style={{ margin: 0 }}>#{index + 1}</h3><span className={`dot ${cue.review}`} /><span className="dim">{REVIEW_LBL[cue.review]}</span>
           <span className="sp" /><button className="btn sm" onClick={() => onStep(-1)}>↑</button><button className="btn sm" onClick={() => onStep(1)}>↓</button>
         </div>
         <div className="kv" style={{ gridTemplateColumns: "56px 1fr" }}>
@@ -619,6 +688,9 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
       <div className="row wrap">
         <button className="btn pri" disabled={busy} onClick={() => patch({ review: cue.review === "ok" ? "todo" : "ok" }, cue.review === "ok" ? "已改回待审校" : "已标记为已审")}>
           {cue.review === "ok" ? "✓ 已审（点击撤销）" : "✓ 标记已审"}</button>
+        <button className={`btn ${cue.review === "flag" ? "warn" : ""}`} disabled={busy} title="有问题、回头再看：在「已标记」里能找到（播放时按 M）"
+                onClick={() => patch({ review: cue.review === "flag" ? "todo" : "flag" }, cue.review === "flag" ? "已取消标记" : "已标记，回头在「已标记」里找")}>
+          {cue.review === "flag" ? "⚑ 已标记（点击取消）" : "⚑ 标记"}</button>
         <button className="btn" disabled={busy || !canSplit} title={canSplit ? `在 ${fmt(time)} 处拆成两条字幕` : "把播放头移到这条字幕中间"} onClick={onSplit}>✂ 在播放头拆成两条</button>
         <button className="btn" disabled={busy || !prev} title={prev ? mergeTip(prev, cue) : "上面没有字幕"} onClick={onMergeUp}
                 onMouseEnter={() => prev && onHint(prev.id)} onMouseLeave={() => onHint(null)}>↑ 与上一条 #{index} 合并</button>
