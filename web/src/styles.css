@@ -337,6 +337,10 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 /* 审校页：画面上的字幕可以拖 */
 .subs .drag { pointer-events: auto; cursor: move }
 .subs .drag:hover { outline: 1px dashed #ffffff88; outline-offset: 2px }
+.subs .drag.picked { outline: 1.5px solid #ff4fd8; outline-offset: 2px }
+.subs .guide { position: absolute; background: #ff4fd8; pointer-events: none }
+.subs .guide.v { top: 0; bottom: 0; width: 1px }
+.subs .guide.h { left: 0; right: 0; height: 1px }
 
 /* 时间轴：分段字幕每段一块 */
 .blk2 .segp { position: absolute; top: 0; bottom: 0; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }

@@ -233,7 +233,8 @@ export function EditorPage() {
     <div className="editor" style={{ "--pv": `${layout.pv}vh` } as React.CSSProperties}>
       <div className="player">
         <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying}
-                onMoveSub={(cid, pos) => { setSel(cid); edit(() => api.editCue(s.pid!, cid, { pos }), "位置已保存（右栏可以恢复自动）"); }} />
+                onMoveSub={(cid, pos) => { setSel(cid); edit(() => api.editCue(s.pid!, cid, { pos }), "位置已保存（右栏可以恢复自动）"); }}
+                onPickSub={setSel} />
         <div className="pctl">
           <button className="iconbtn" title="上一条 (J)" onClick={() => step(-1)}>⏮</button>
           <button className="iconbtn big" title={playing ? "暂停（空格）" : "播放（空格）"} onClick={() => player.current?.toggle()}>{playing ? "❚❚" : "▶"}</button>

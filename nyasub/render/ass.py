@@ -137,6 +137,25 @@ def avoid_margin(item, boxes, base, x0, x1, height, py):
     return m
 
 
+def slide_x(item, boxes, base, w, height, px, py):
+    """台词只是左右擦到一块画面字（右下角的人名条）时，原高度往左 / 右挪开，比整块推到画面中间好。
+    返回挪到的中心 x；挪得太远（超过画面宽的 1/5）、出画面、挪了还撞的返回 None。"""
+    top, bottom = py - base - height, py - base
+    hits = [b for b in boxes if min(item["end"], b["end"]) - max(item["start"], b["start"]) > 0.2
+            and b["top"] < bottom and b["bottom"] > top]
+    if not hits:
+        return None
+    cands = sorted([min(b["x0"] for b in hits) - 24 - w / 2, max(b["x1"] for b in hits) + 24 + w / 2],
+                   key=lambda c: abs(c - px / 2))
+    for cx in cands:
+        x0, x1 = cx - w / 2, cx + w / 2
+        if abs(cx - px / 2) > px / 5 or x0 < px * 0.03 or x1 > px * 0.97:
+            continue
+        if all(b["x1"] < x0 - 20 or b["x0"] > x1 + 20 for b in hits):
+            return cx
+    return None
+
+
 def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     """算出每条字幕在 1080p 画布上的位置（导出 ASS 和界面预览共用）。
 
@@ -187,6 +206,12 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
         w = max((r["width"] for r in rows), default=0) + 12
         h = sum(r["height"] for r in rows)
         mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
+        if mv > margin_v:  # 要往上推：先看原高度左右挪一点能不能让开（挪得比推得少才挪）
+            cx = slide_x(it, boxes, margin_v, w, h, px, py)
+            if cx is not None and abs(cx - px / 2) < mv - margin_v:
+                placed.append({"kind": "main", "item": it, "margin_v": margin_v, "rows": rows, "ruby": ruby,
+                               "x": round(cx), "y": py - margin_v})
+                continue
         placed.append({"kind": "main", "item": it, "margin_v": mv, "rows": rows, "ruby": ruby})
     return px, py, used, placed
 

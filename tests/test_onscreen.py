@@ -328,3 +328,19 @@ def test_refine_boxed_crops_told_to_model(tmp_path):
     refine._ask(Fake(), [{"id": "o42", "text": "ネプ山坊"}, {"id": "o60", "text": "第十号"}], paths, boxed=[True, False])
     assert calls[0][0] == refine.VLM_SYSTEM + refine.BOXED_NOTE
     assert calls[0][1] == ["第 1 张（红框里是要转写的字）", "第 2 张"]
+
+
+def test_dialogue_slides_aside_from_name_card():
+    """右下角的人名条只擦到台词右边一点：台词原高度往左挪开，不整块推到画面中间；整行的硬字幕照旧往上推。"""
+    cfg = config.Config()
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+    cue = {"id": "q385", "start": 1688.4, "end": 1696.9, "type": "narration", "onscreen": False,
+           "orig": {"lang": "ja", "text": "もともと虫を食べる文化は"}, "tr": {"zh-Hans": {"text": "长野县各地原本都有食虫文化"}}}
+    items = layout.build([cue], prof, cfg, "ja")
+    card = {"start": 1691.1, "end": 1697.4, "rect": [0.6242, 0.7097, 0.8227, 0.95]}  # 牧田 豊さん
+    px, py, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [card])
+    p = placed[0]
+    assert p["margin_v"] == 46 and p["x"] < px / 2 and p["y"] == py - 46
+    caption = {"start": 1688.0, "end": 1697.0, "rect": [0.1, 0.85, 0.9, 0.98]}
+    _, _, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [caption])
+    assert placed[0]["margin_v"] > 46 and placed[0].get("x") is None
