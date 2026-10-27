@@ -186,11 +186,16 @@ export function EditorPage() {
   }, [sel]);
   const insertAt = useCallback(() => s.pid && edit(() => api.insertCue(s.pid!, { start: Math.round(time * 100) / 100, end: Math.round((time + 2) * 100) / 100 }), "已插入一条空字幕"), [s.pid, edit, time]);
 
+  // 上一条 / 下一条：在列表里现在显示的（筛选后的）那些里走；选中的不在里面（还没选、被筛掉了）就从播放位置往前 / 往后找
   const step = useCallback((dir: number) => {
-    const i = cues.findIndex((c) => c.id === sel);
-    const n = cues[Math.max(0, Math.min(cues.length - 1, i + dir))];
+    const shown = cues.filter(FILTER_TEST[filter]);
+    const i = shown.findIndex((c) => c.id === sel);
+    const t = timeRef.current;
+    const n = i >= 0 ? shown[Math.max(0, Math.min(shown.length - 1, i + dir))]
+      : dir > 0 ? (shown.find((c) => c.end > t) ?? shown[shown.length - 1])
+      : ([...shown].reverse().find((c) => c.start < t) ?? shown[0]);
     if (n) select(n.id);
-  }, [cues, sel, select]);
+  }, [cues, filter, sel, select]);
 
   // 播放倍速：记在本机，下次打开还是这个速度
   const [playing, setPlaying] = useState(false);
@@ -272,7 +277,15 @@ export function EditorPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.("input,textarea,select")) return;
+      if (e.defaultPrevented) return;  // 画面上点选了一条字幕时，方向键是微调位置
       if (e.code === "Space") { e.preventDefault(); player.current?.toggle(); }
+      // ↑↓ 上下条（不滚列表），←→ 后退 / 前进 2 秒（Shift 10 秒）
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.ctrlKey && !e.altKey) { e.preventDefault(); step(e.key === "ArrowUp" ? -1 : 1); }
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        const to = timeRef.current + (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 2);
+        player.current?.seek(Math.max(0, duration ? Math.min(duration, to) : to));
+      }
       if ((e.key === "m" || e.key === "M") && !e.ctrlKey && !e.altKey) toggleFlag();
       if (e.key === "[") shiftRate(-1);
       if (e.key === "]") shiftRate(1);
@@ -283,7 +296,7 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, undo, redo, shiftRate, toggleFlag]);
+  }, [step, undo, redo, shiftRate, toggleFlag, duration]);
 
   if (!d) return <div className="empty">加载中…</div>;
   if (!cues.length) return <div className="empty">还没有字幕。先在「流程」里运行一次。</div>;
@@ -300,9 +313,9 @@ export function EditorPage() {
                 onMoveSub={(cid, pos) => { setSel(cid); edit(() => api.editCue(s.pid!, cid, { pos }), "位置已保存（右栏可以恢复自动）"); }}
                 onPickSub={setSel} />
         <div className="pctl">
-          <button className="iconbtn" title="上一条 (J)" onClick={() => step(-1)}>⏮</button>
+          <button className="iconbtn" title="上一条（↑ 或 J）" onClick={() => step(-1)}>⏮</button>
           <button className="iconbtn big" title={playing ? "暂停（空格）" : "播放（空格）"} onClick={() => player.current?.toggle()}>{playing ? "❚❚" : "▶"}</button>
-          <button className="iconbtn" title="下一条 (K)" onClick={() => step(1)}>⏭</button>
+          <button className="iconbtn" title="下一条（↓ 或 K）" onClick={() => step(1)}>⏭</button>
           <span className="time">{fmt(time)} / {fmt(duration)}</span>
           <select className="inp" style={{ width: "auto" }} value={rate} title="播放速度（[ 慢一档，] 快一档）。声音音调不变"
                   onChange={(e) => setRate(Number(e.target.value))}>
@@ -392,7 +405,7 @@ export function EditorPage() {
           <button className="btn sm" title="在播放头处插入一条 2 秒的空字幕" onClick={insertAt}>＋ 插入</button>
           <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
           <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
-          <span className="dim">J/K 上下条 · 空格播放 · [ ] 倍速 · M 标记</span>
+          <span className="dim">↑↓ / J K 上下条 · ←→ 快退快进 · 空格播放 · [ ] 倍速 · M 标记</span>
         </div>
         <div className="bd">
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>

@@ -150,9 +150,10 @@ function useDrag(it: PreviewItem, ctl?: Ctl) {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => { timer = undefined; save(); }, 600);
     };
-    window.addEventListener("keydown", onKey);
+    // 捕获阶段先拿到：审校页的方向键（上下条、快退快进）看到已经处理过了就不再动
+    window.addEventListener("keydown", onKey, true);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       if (timer !== undefined) { window.clearTimeout(timer); save(); }  // 取消选中时还没保存的微调马上保存
     };
   }, [picked]);
