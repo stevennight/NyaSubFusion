@@ -89,6 +89,11 @@ def info_geometry(srcs):
             "start": min(s["start"] for s in group), "end": max(s["end"] for s in group)}
 
 
+def shown(cues):
+    """去掉标成 drop 的条目（旧版本翻译结果里，模型想丢掉的条目被当成了字幕）。"""
+    return [c for c in cues if c.get("type") != "drop"]
+
+
 def apply_result(chunk, result, tgt, src_lang):
     """校验大模型结果，返回 (cues, 漏掉的 id)。时间由 src 计算。"""
     by_id = {it["id"]: it for it in chunk}
@@ -98,6 +103,8 @@ def apply_result(chunk, result, tgt, src_lang):
         if not src:
             continue
         seen.update(src)
+        if c.get("type") == "drop":  # 模型有时把要丢掉的条目写成 type 为 drop 的字幕，而不是放进 drop 列表
+            continue
         srcs = [by_id[s] for s in src]
         orig = (c.get("orig") or c.get("ja") or "").strip() or "\n".join(s["text"] for s in srcs)
         orig = keep_subs_wording(srcs, orig)

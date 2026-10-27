@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=5),  # v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=6),  # v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -343,7 +343,9 @@ class Run:
         aspect = (info.get("video") or {}).get("aspect") or 16 / 9
         fused = res.get("fuse")
         boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused) if fused else []
-        ann = res.get("annotate") or {"cues": (res.get("translate") or {}).get("cues", []), "tokens": {}}
+        from ..llm.translate import shown
+
+        ann = res.get("annotate") or {"cues": shown((res.get("translate") or {}).get("cues", [])), "tokens": {}}
         return ann["cues"], ann["tokens"], aspect, boxes
 
     def reannotate(self):
@@ -896,8 +898,10 @@ class Run:
         return e
 
     def _annotate(self, translated):
+        from ..llm.translate import shown
+
         edits = load_json(self.proj / "edits.json", {})  # 已经由 _sync_edits 对好了这一版翻译结果
-        cues = apply_edits(translated["cues"], edits, self.src)
+        cues = apply_edits(shown(translated["cues"]), edits, self.src)
         edits = normalize_edits(edits)["cues"]
         cues = self._tidy(cues, edits)
         readings = self._readings(translated.get("glossary"))

@@ -267,3 +267,36 @@ def test_redo_request_survives_stop_and_can_pick_steps(sample, api_config, fake)
     assert len(fake.CALLS) > calls
     assert fp(sample, "fuse") == before
     assert not pipeline.Run(sample, cfg, pipeline.Options())._pending()
+
+
+def test_cues_typed_drop_never_reach_subtitles(sample, api_config, fake, monkeypatch):
+    """模型把要丢掉的条目写成 type 为 drop 的字幕：新翻译直接丢掉；已经翻好的旧结果在注音那一步过滤掉。"""
+    import json as _json
+
+    from nyasub.llm import client
+
+    def drops_first(self, system, user, images=None):
+        res = fake.respond(system, user)
+        if res.get("cues"):
+            res["cues"][0]["type"] = "drop"
+        return res
+
+    monkeypatch.setattr(client.LLM, "_call", drops_first)
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    proj = sample.with_name("sample.nyasub")
+    tr = _json.loads((proj / "stages" / "translate.json").read_text(encoding="utf-8"))
+    assert all(c["type"] != "drop" for c in tr["cues"])
+
+    # 旧版本的翻译结果里留着 drop 条目：不重新翻译，只在注音 / 输出时去掉
+    victim = tr["cues"][0]
+    victim["type"] = "drop"
+    (proj / "stages" / "translate.json").write_text(_json.dumps(tr, ensure_ascii=False), encoding="utf-8")
+    (proj / "stages" / "annotate.fp").unlink()  # 注音升了版本：要重做（翻译不重做）
+    from nyasub.core import config, pipeline
+
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    r = pipeline.Run(sample, cfg, pipeline.Options())
+    r.load_state()
+    r.reannotate()
+    r.load_state()
+    assert victim["id"] not in [c["id"] for c in r.render_context()[0]]
