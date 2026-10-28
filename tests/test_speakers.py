@@ -58,3 +58,82 @@ def test_split_inside_caption_rejoined_by_speaker():
            "orig": {"lang": "ja", "text": "藩は｜餌場である周辺の田んぼを守りました。"}, "tr": {}}
     assert segments.card_bars(two, items) == [1] and segments.voice_change(two, items, 1) is True
     assert segments.card_bars(one, items) == [1] and segments.voice_change(one, items, 1) is None
+
+
+def test_unsure_layout_goes_to_model():
+    from nyasub.sources.subtitle import speaker_check
+
+    # 位置只错开一点、颜色一样：看不出来，交给大模型（附上各行的位置和颜色）
+    lines = [("（取材者）この冬場の。", (WHITE, 1112, 2652, 216)), ("はい。", (WHITE, 1692, 2052, 216))]
+    assert voices(lines) is None
+    chk = speaker_check(lines, 3840)
+    assert [x["text"] for x in chk] == ["（取材者）この冬場の。", "はい。"] and chk[1]["pos"] == "44%–53%"
+    # 线索都确定（对齐的折行 / 明显分开）：不用问
+    assert speaker_check([("それでも", (YELLOW, 552, 1192, 216)), ("僅かに残る", (YELLOW, 632, 3352, 216))], 3840) is None
+    # 纯文字、没有任何标记的两行：看不出来
+    assert speaker_check([("鴨が飛び込むと", None), ("身動きできなくなる仕掛け。", None)], 1920)
+
+
+def test_split_two_speakers_by_speech_timing():
+    from nyasub.fusion.speakers import split_speakers
+
+    words = lambda t0, text, step=0.1: [{"w": ch, "s": round(t0 + k * step, 3)} for k, ch in enumerate(text)]
+    segs = [{"start": 3108.5, "end": 3112.2, "words": words(3110.3, "百姓たちが作り上げた野菜")},
+            {"start": 3114.0, "end": 3114.8, "words": words(3114.045, "そう農家が")}]
+    subs = [{"id": "c470", "start": 3111.6, "end": 3115.0, "text": "（取材者）百姓たちが作り上げた野菜。\nそう　農家が。", "voices": [0, 1]},
+            {"id": "c471", "start": 3115.4, "end": 3121.0, "text": "雪菜の歴史は\n江戸時代中ごろに遡ります。"}]
+    out = split_speakers(subs, segs)
+    assert [(c["id"], c["start"], c["end"], c["text"]) for c in out[:2]] == [
+        ("c470", 3111.6, 3114.045, "（取材者）百姓たちが作り上げた野菜。"), ("c470b", 3114.045, 3115.0, "そう　農家が。")]
+    assert out[1]["split_from"] == "c470" and "voices" not in out[0]
+    assert out[2]["id"] == "c471" and out[2]["text"] == "雪菜の歴史は\n江戸時代中ごろに遡ります。"  # 一个人的折行不拆
+    # 没有语音识别：按字数估；太短拆不开的保持原样
+    est = split_speakers([dict(subs[0])], [])
+    assert est[1]["start"] == round(3111.6 + 3.4 * 15 / 20, 3)  # 按规范化后的字数（不算括号、标点）：15 / 20
+    assert len(split_speakers([dict(subs[0], end=3112.3)], [])) == 1
+
+
+def test_model_judges_unsure_items():
+    from nyasub.llm.speakers import judge
+
+    class Fake:
+        def chat_json(self, system, user):
+            self.user = user
+            return {"items": [{"id": "c1", "voices": [1, 1, 0]}, {"id": "c2", "voices": [0, 0]}, {"id": "c3", "voices": [0]}]}
+
+    subs = [{"id": "c1", "start": 0, "end": 3, "text": "あ\nい\nう", "speaker_check": [{"text": "あ"}, {"text": "い"}, {"text": "う"}]},
+            {"id": "c2", "start": 3, "end": 5, "text": "え\nお", "speaker_check": [{"text": "え"}, {"text": "お"}]},
+            {"id": "c3", "start": 5, "end": 7, "text": "か\nき", "speaker_check": [{"text": "か"}, {"text": "き"}]}]
+    llm = Fake()
+    assert judge(llm, subs, [{"start": 0.5, "end": 2, "text": "あいう"}]) == (3, 1)
+    assert subs[0]["voices"] == [0, 0, 1]                     # 按出场先后重新编号
+    assert "voices" not in subs[1] and "voices" not in subs[2]  # 一个人 / 回答的行数不对：不拆
+    assert "语音识别听到的" in llm.user and "前一条字幕" in llm.user
+
+
+def test_long_line_split_by_model_and_timed_by_speech():
+    from nyasub.core import config
+    from nyasub.llm.translate import split_long
+
+    cfg = config.Config()
+    long_tr = "春天就把它围在塑料大棚里，再放进蜜蜂让它自行授粉，每年都用这种方法来保护种子"
+    cue = {"id": "q9", "start": 100.0, "end": 108.0, "type": "narration", "sources": ["c9"], "flags": [],
+           "orig": {"lang": "ja", "text": "春になるとビニールハウスに囲って中にミツバチを放して自家受粉するように毎年種を守ります"},
+           "tr": {"zh-Hans": {"text": long_tr}}}
+    bad = dict(cue, id="q10", orig=dict(cue["orig"]), tr={"zh-Hans": {"text": long_tr}})
+
+    class Fake:
+        def chat_json(self, system, user):
+            return {"items": [
+                {"id": "q9", "orig": "春になるとビニールハウスに囲って｜中にミツバチを放して自家受粉するように｜毎年種を守ります",
+                 "tr": "春天就把它围在塑料大棚里｜再放进蜜蜂让它自行授粉｜每年都用这种方法来保护种子"},
+                {"id": "q10", "orig": "春になると｜ハウスで守ります", "tr": "甲｜乙"}]}   # 改了原文的字：不用
+    split_long(Fake(), [cue, bad], {}, __import__("nyasub").lang.get("ja"), "zh-Hans", cfg)
+    assert cue["orig"]["text"].count("｜") == 2 and cue["tr"]["zh-Hans"]["text"].count("｜") == 2
+    assert "｜" not in bad["orig"]["text"]
+    # 每段的时间：用语音识别的逐字时间找每段开口的时刻
+    words = lambda t0, text: [{"w": ch, "s": round(t0 + k * 0.1, 3)} for k, ch in enumerate(text)]
+    segs = [{"start": 100.0, "end": 108.0, "words": words(100.2, "春になるとビニールハウスに囲って") + words(103.5, "中にミツバチを放して")
+             + words(106.4, "毎年種を守ります")}]
+    assert segments.speech_parts(cue, segs) == [[100.0, 103.5], [103.5, 106.4], [106.4, 108.0]]
+    assert segments.speech_parts(cue, []) is None

@@ -355,6 +355,7 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     cues = finalize(all_cues)
     translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
     resegment(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
+    split_long(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
     enforce_terms(llm, cues, terms, src, tgt_code, cfg)
     from .consistency import unify
 
@@ -475,6 +476,58 @@ def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
             same_text = norm(o.replace("｜", "")) == norm(c["orig"]["text"].replace("｜", ""))
             if o and t and same_text and len(segments.pieces(o)) == len(segments.pieces(t)) >= 2:
                 c["orig"]["text"], c["tr"][tgt_code] = o, {"text": t}
+
+
+def split_long(llm, cues, items, src, tgt_code, cfg, batch=15):
+    """一屏（两行）放不下的长句：请大模型在意群边界把原文和译文一起分成几段，每段单独一屏、各有时间（编辑器里能看到、能调）。
+    不在排版时按字数硬切，免得一个词被拆开、原文和译文对不上。原文的字不能动，只加“｜”；分不好的保持原样。"""
+    from ..core import segments
+
+    cap = 2 * segments.line_chars(tgt_code, cfg)  # 一屏两行能放几个字
+
+    def too_long(c):
+        t = c.get("tr", {}).get(tgt_code, {}).get("text", "")
+        ps = segments.pieces(t) if segments.bars_ok(c) else [segments.unbar(t, tgt_code)]
+        return any(segments.screen_lines(p, tgt_code, cfg) > 2 for p in ps)
+
+    todo = [i for i, c in enumerate(cues) if c.get("type") in ("dialogue", "narration") and too_long(c)]
+    if not todo:
+        return
+    log(f"长句分段：{len(todo)} 条字幕一屏放不下，请大模型按意思分段")
+    tgt = lang.get(tgt_code)
+    system = (f"你是{src.name}→{tgt.name}字幕校对。下面每条字幕太长，一屏（两行）放不下，要用“｜”分成几段依次显示：\n"
+              f"- 每段译文不超过 {cap} 个字，一眼读得完；段数尽量少；\n"
+              "- 只在意群 / 句子的边界分开，不要把一个词、一个短语拆开；分段尽量对应说话的停顿（看来源的时间）；\n"
+              "- 原文和译文分成同样多段、一一对应（每段译文就是那段原文的意思，语序可以在段之间微调）；\n"
+              "- 原文只能加“｜”，文字一个字都不能改；已有的“｜”可以保留或移动；译文尽量保持原来的措辞。\n"
+              '输出 JSON：{"items": [{"id": "q12", "orig": "分好段的原文", "tr": "分好同样多段的译文"}]}')
+    done = 0
+    for k in range(0, len(todo), batch):
+        group = todo[k:k + batch]
+        blocks = []
+        for i in group:
+            c = cues[i]
+            srcs = sorted((items[s] for s in c.get("sources", []) if s in items), key=lambda s: s["start"])
+            src_lines = "\n".join(f"　[{prompts.SRC_LABEL.get(s['src'], s['src'])} {fmt_time(s['start'])}-{fmt_time(s['end'])}] "
+                                  f"{prompts.lines_text(s)}" for s in srcs)
+            blocks.append(f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])}\n来源：\n{src_lines}\n"
+                          f"原文：{c['orig']['text']}\n译文：{c['tr'][tgt_code]['text']}")
+        try:
+            res = llm.chat_json(system, "\n\n".join(blocks))
+        except Cancelled:
+            raise
+        except Exception as e:
+            log(f"  长句分段失败，保持原样（输出时按字数分屏）：{e}")
+            continue
+        got = {str(x.get("id")): x for x in res.get("items", []) or [] if isinstance(x, dict)}
+        for i in group:
+            c, g = cues[i], got.get(cues[i]["id"]) or {}
+            o, t = (g.get("orig") or "").strip(), (g.get("tr") or "").strip()
+            same_text = norm(o.replace("｜", "")) == norm(c["orig"]["text"].replace("｜", ""))
+            if o and t and same_text and len(segments.pieces(o)) == len(segments.pieces(t)) >= 2:
+                c["orig"]["text"], c["tr"][tgt_code] = o, {"text": t}
+                done += 1
+    log(f"长句分段：{done} 条分好了段")
 
 
 def translate_missing(llm, cues, src, tgt_code, gl_text, cfg, batch=30):

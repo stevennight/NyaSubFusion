@@ -699,15 +699,27 @@ class Run:
 
     def _align(self, subs, asr):
         from ..fusion.align import apply_offset, estimate_offset
+        from ..fusion.speakers import split_speakers
 
         segs = asr["segments"]
-        if not (subs and segs and self.cfg.fusion.auto_sync):
-            return {"subs": subs, "offset": 0.0}
-        off, gain = estimate_offset(subs, segs)
-        if abs(off) >= 0.15 and gain >= 0.05:
-            log(f"字幕与语音整体差 {off:+.1f} 秒，已自动对齐（匹配度提升 {gain * 100:.0f}%）")
-            return {"subs": apply_offset(subs, off), "offset": off}
-        return {"subs": subs, "offset": 0.0}
+        off = 0.0
+        if subs and segs and self.cfg.fusion.auto_sync:
+            o, gain = estimate_offset(subs, segs)
+            if abs(o) >= 0.15 and gain >= 0.05:
+                log(f"字幕与语音整体差 {o:+.1f} 秒，已自动对齐（匹配度提升 {gain * 100:.0f}%）")
+                subs, off = apply_offset(subs, o), o
+        # 一条字幕里两个人各说一句的拆成各自独立的字幕（线索看不出来的先请大模型判断）
+        subs = [dict(c) for c in subs]
+        if any(c.get("speaker_check") for c in subs) and self.cfg.llm_mode() == "api":
+            from ..llm.client import LLM
+            from ..llm.speakers import judge
+
+            judge(LLM(self.cfg, cache_dir=self.proj / "llm_cache"), subs, segs)
+        subs = split_speakers(subs, segs)
+        n = len({c["split_from"] for c in subs if c.get("split_from")})
+        if n:
+            log(f"说话人：{n} 条字幕里是几个人各说各的，拆成了独立的字幕")
+        return {"subs": subs, "offset": off}
 
     def _fuse(self, aligned, ocr_events, asr, info):
         from ..fusion.fuse import fuse
@@ -1016,6 +1028,7 @@ class Run:
 
         marks = [m for m in self.cfg.render.strip_marks if m]
         items = {k: dict(i, rect=rects[k]) if k in (rects or {}) else i for k, i in self._items(cues).items()}
+        speech = (self.results.get("asr") or {}).get("segments") or []  # 语音识别（逐字时间，给分段定时间用）
         # 融合时当成“和字幕重复”去掉的画面字：画面上打着和字幕同一句话。{字幕 id: [(开始, 结束, 画面字)]}
         events = {e["id"]: e for e in self.results.get("ocr_refine") or []}
         dup_on = {}
@@ -1057,12 +1070,12 @@ class Run:
                     if srcs and all(s["src"] in ("telop", "info") for s in srcs) and "start" not in mine and "end" not in mine:
                         c["start"], c["end"] = geo["start"], geo["end"]
             touched = "orig" in edits.get(c["id"], {}) or "tr" in edits.get(c["id"], {})
+            # 一屏放不下的长句（两行装不下）：大模型分好的段要保留，每段单独一屏、各有时间（见 llm/translate.split_long）
+            long = any(segments.screen_lines(segments.unbar(v["text"], k), k, self.cfg) > 2 for k, v in c["tr"].items())
             if "｜" in c["orig"]["text"] + "".join(v["text"] for v in c["tr"].values()) and not touched and (
-                    not segments.bars_ok(c) or segments.single_event(c, items)):
-                # 一屏放得下的（大模型拿“｜”当换行用）：都不分；放不下的长句：保留译文的“｜”当换屏的位置，
+                    not segments.bars_ok(c) or (segments.single_event(c, items) and not long)):
+                # 一屏放得下的（大模型拿“｜”当换行用）：都不分；分段对不上的长句：保留译文的“｜”当换屏的位置，
                 # 原文按比例跟着切（比按行数硬切、断在半句中间好）
-                long = not segments.single_event(c, items) and any(
-                    len(segments.unbar(v["text"], k)) > 2 * segments.line_chars(k, self.cfg) for k, v in c["tr"].items())
                 c["orig"]["text"] = segments.unbar(c["orig"]["text"], c["orig"]["lang"])
                 if not long:
                     for k, v in c["tr"].items():
@@ -1077,7 +1090,7 @@ class Run:
                     head = segments.pieces(c["orig"]["text"])[k - 1].strip()
                     sep = "\n" if (who if who is not None else head[-1] in "。！？!?") else None
                     trs = {code: segments.join_at(v["text"], k, code, sep) for code, v in c["tr"].items() if v["text"]}
-                    if any(len(segments.pieces(t)[k - 1].replace("\n", "")) > 2 * segments.line_chars(code, self.cfg)
+                    if any(segments.screen_lines(segments.pieces(t)[k - 1], code, self.cfg) > 2
                            for code, t in trs.items()):
                         continue
                     c["orig"]["text"] = segments.join_at(c["orig"]["text"], k, c["orig"]["lang"], sep)
@@ -1089,8 +1102,10 @@ class Run:
                     c.pop(key)
             if segments.bars_ok(c):
                 mine = edits.get(c["id"], {}).get("parts")  # 手动调过每段的时间
-                c["parts"] = ((mine if segments.valid_parts(mine, c) else None) or segments.part_times(c, items)
-                              or segments.proportional(c))
+                c["parts"] = ((mine if segments.valid_parts(mine, c) else None)
+                              # 一条字幕（或画面字）拆成的几段：来源里没有分界，用语音识别的逐字时间找每段开口的时刻
+                              or (segments.speech_parts(c, speech) if segments.single_event(c, items) else None)
+                              or segments.part_times(c, items) or segments.proportional(c))
             # 画面上已经有原文的（硬字幕）：按段判断，只有那一段的字确实是画面字才不再显示原文；
             # 半句画面字、半句字幕的，字幕那部分的原文照常显示
             screen = [items[s]["text"] for s in c.get("sources", []) if s in items and items[s]["src"] in ("telop", "info")]

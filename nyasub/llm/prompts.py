@@ -49,6 +49,7 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict) -> str:
 规则：
 1. 每个输入 id 必须且只能出现一次：要么在某条 cue 的 src 里，要么在 drop 里。
 2. 同一句话被拆在字幕和画面字里（半句在这、半句在那），或者两边内容重复时，合并成一条 cue，src 列出全部来源 id；只合并时间上相邻（间隔不超过约 2 秒）的条目。
+   标了“不同的人在同一时刻说的”的几条字幕是不同的人说的话（一问一答、两个人说同样的话），每条单独成一条 cue，互相不要合并，内容一样也都要保留。
    画面上的标题、菜名、人名条、地名这类说明文字，如果没有人把它说出来（字幕和语音里都没有这几个字），
    就算内容相关、时间重叠，也绝不能和字幕 / 语音的台词合成一条：它单独成一条 type 为 info 的 cue。
 3. cue 按时间顺序输出。不要自己编时间，时间由 src 决定。
@@ -97,6 +98,8 @@ def item_line(it) -> str:
             extra.append("同一时间字幕在说别的话")
         if it.get("ocr_score", 1) < 0.85:
             extra.append("OCR 置信度低")
+    if it.get("split_from"):  # 原来一条字幕里两个人各说一句，拆开了（见 fusion/speakers.py）
+        extra.append("原字幕里和相邻那条是不同的人在同一时刻说的，单独成一条")
     if it["src"] == "asr":
         extra.append("无字幕覆盖")
         if it.get("second_pass"):

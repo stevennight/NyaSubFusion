@@ -15,29 +15,53 @@ _LABEL = re.compile(r"^\s*(?:[-－‐]\s*\S|[（(][^）)]{1,12}[）)]|[⚟≪])"
 
 
 def _moved(a, b):
-    """相邻两行的线索看得出换了一个人：颜色 / 样式不一样，或者左边、右边都没对齐。"""
+    """相邻两行看不看得出换了一个人：True 换了、False 没换、None 看不出来（交给大模型）。
+    颜色 / 样式不一样，或者左右两边都离得很远：换了；左对齐 / 右对齐（缩进一两个字也算）：没换；
+    其他（错开一点、没有任何线索的纯文字字幕）：看不出来。居中不算对齐：两个人的话碰巧中心差不多的很常见。"""
     if a is None or b is None:
-        return False
+        return None
     if a[0] != b[0]:
         return True
     if a[1] is None or b[1] is None:
-        return False
+        return None
     tol = max(a[3], b[3])
-    return abs(a[1] - b[1]) > tol and abs(a[2] - b[2]) > tol
+    if abs(a[1] - b[1]) <= tol or abs(a[2] - b[2]) <= tol:
+        return False
+    if abs(a[1] - b[1]) > 3 * tol and abs(a[2] - b[2]) > 3 * tol:
+        return True
+    return None
+
+
+def _judge(lines):
+    """[(这一行的文字, 线索)] → [每个分界：True / False / None]。行首有说话人标记的一定是换了人。"""
+    return [True if _LABEL.match(lines[i][0]) else _moved(lines[i - 1][1], lines[i][1]) for i in range(1, len(lines))]
 
 
 def voices(lines):
     """一条字幕里各行是谁说的：[0, 0, 1] 表示第三行换了一个人。lines：[(这一行的文字, 线索)]。
     线索是字幕格式里能区分说话人的东西：(颜色或样式, 行左边, 行右边, 对齐容差)，没有就是 None。
-    颜色 / 样式变了、左右两边都没对齐，或者这一行以说话人标记开头，算换了一个人；
-    左对齐 / 右对齐的折行（缩进一两个字也算对齐）是同一个人。居中不算对齐：两个人的话碰巧中心差不多的很常见。
-    一条里只有一个人（或者看不出来）返回 None，交给大模型看内容。"""
-    out, cur = [], 0
-    for i, (text, key) in enumerate(lines):
-        if i and (_moved(lines[i - 1][1], key) or _LABEL.match(text)):
-            cur += 1
+    只算确定的换人；一条里只有一个人（或者看不出来）返回 None。看不出来的另外交给大模型（speaker_check）。"""
+    out, cur = [0], 0
+    for moved in _judge(lines):
+        cur += moved is True
         out.append(cur)
     return out if cur else None
+
+
+def speaker_check(lines, width):
+    """有看不出来是不是换了人的分界：给大模型看的各行版面 [{"text", "pos", "color"}]；都确定的返回 None。
+    width：画面宽（线索里的横坐标是这个宽度下的像素）。"""
+    if len(lines) < 2 or all(m is not None for m in _judge(lines)):
+        return None
+    pct = lambda x: f"{round(100 * x / width)}%" if x is not None else "?"
+    out = []
+    for text, key in lines:
+        if key is None:
+            out.append({"text": text})
+        else:
+            pos = pct(key[1]) if key[1] == key[2] else f"{pct(key[1])}–{pct(key[2])}"
+            out.append({"text": text, "pos": pos if key[1] is not None else "?", "color": key[0]})
+    return out
 
 
 OWN_MARK = "由 NyaSubFusion 生成"  # 本工具写出的 ASS 文件头里有这一行（render/ass.py header）
@@ -174,9 +198,14 @@ def load_arib_ttml(path, ruby_ratio=0.7):
             text = "\n".join(t for _, t, _ in lines)
             if text and end > begin:
                 cue = {"start": round(begin, 3), "end": round(end, 3), "text": text}
-                v = voices([(t, k) for _, t, k in lines])
+                ls = [(t, k) for _, t, k in lines]
+                v = voices(ls)
                 if v:
                     cue["voices"] = v
+                # 4K 广播字幕的坐标是 3840 宽的画面，2K 的是 1920
+                check = speaker_check(ls, 3840 if max((k[2] or 0) for _, _, k in lines) > 1920 else 1920)
+                if check:
+                    cue["speaker_check"] = check
                 cues.append(cue)
     cues.sort(key=lambda c: c["start"])
     out = []
@@ -244,7 +273,11 @@ def load_cues(path, ruby_ratio=0.7):
     cues = [c for c in cues if c["end"] > c["start"]]
     for i, c in enumerate(cues):
         c["id"] = f"c{i + 1}"
-        v = voices(c.pop("_lines"))
+        ls = c.pop("_lines")
+        v = voices(ls)
         if v:
             c["voices"] = v
+        check = speaker_check(ls, width)
+        if check:
+            c["speaker_check"] = check
     return cues

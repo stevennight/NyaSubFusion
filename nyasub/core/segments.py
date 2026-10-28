@@ -52,6 +52,13 @@ def line_chars(code, cfg):
     return int(cfg.render.lang_options.get(code, {}).get("line_chars") or lang.get(code).line_chars)
 
 
+def screen_lines(text, code, cfg):
+    """这段文字一屏要占几行：每一行（换行分开的）按每行字数折行后的行数加起来。
+    （采访者那句 17 个字自己就折成两行，再加一行回答就是三行，一屏放不下。）"""
+    n = line_chars(code, cfg)
+    return sum(max(1, -(-len(l.strip()) // n)) for l in (text or "").replace("｜", "\n").split("\n") if l.strip())
+
+
 def joiner(code):
     """去掉“｜”时两段之间放什么：按词分隔的语言和中文（中文字幕句中停顿用空格）放空格，
     日文放全角空格（日文字幕的停顿习惯；需要再切开时也能切在这里，不会切到词中间）。"""
@@ -145,6 +152,23 @@ def join_at(text, k, code, sep=None):
         return text
     merged = (joiner(code) if sep is None else sep).join([ps[k - 1].strip(), ps[k].strip()])
     return "｜".join(ps[:k - 1] + [merged] + ps[k + 1:])
+
+
+def speech_parts(cue, segs):
+    """每段的 [开始, 结束]：用语音识别的逐字时间找每段开口的时刻（对不上的分界按字数估）。
+    没有语音识别、或者一段都对不上的返回 None（由来源 / 字数比例决定）。"""
+    from ..fusion.speakers import MIN_PART, speech_starts
+
+    ps = pieces(cue["orig"]["text"])
+    if len(ps) < 2 or not segs:
+        return None
+    starts, matched = speech_starts(ps, cue["start"], cue["end"], segs)
+    if not matched:
+        return None
+    ends = starts[1:] + [cue["end"]]
+    if any(b - a < MIN_PART for a, b in zip(starts, ends)):
+        return None
+    return [[round(a, 3), round(b, 3)] for a, b in zip(starts, ends)]
 
 
 def proportional(cue):
