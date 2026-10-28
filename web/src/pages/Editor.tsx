@@ -17,6 +17,7 @@ const FILTER_TEST: Record<Filter, (c: Cue) => boolean> = {
 const REVIEW_LBL = { ok: "已审", todo: "待审校", flag: "已标记" };
 // 播放看过自动标已审：连续播过一条字幕、又往后播了这么多秒还没被标记，就当看过没问题
 const AUTO_KEY = "nyasub.autoReview";
+const FOLLOW_KEY = "nyasub.followPlay";
 const loadAuto = () => { try { return { on: true, sec: 3, ...JSON.parse(localStorage.getItem(AUTO_KEY) ?? "{}") }; } catch { return { on: true, sec: 3 }; } };
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -276,6 +277,21 @@ export function EditorPage() {
     }
     if (seen.current.ids.size && time - seen.current.since > 20) flushSeen();
   }, [time, playing]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // 选中跟随播放：播到（或跳到）哪条字幕就选中它，↑↓ 从这儿接着走。选中的那条正在播（几条重叠时）就不换；
+  // 字幕之间的空档保持原来的选中；正在右栏打字时不换（免得改到一半跳走）
+  const [follow, setFollowState] = useState(() => { try { return localStorage.getItem(FOLLOW_KEY) !== "0"; } catch { return true; } });
+  const setFollow = useCallback((v: boolean) => {
+    setFollowState(v);
+    try { localStorage.setItem(FOLLOW_KEY, v ? "1" : "0"); } catch { /* 存不了就只在这次有效 */ }
+  }, []);
+  useEffect(() => {
+    if (!follow) return;
+    const el = document.activeElement as HTMLInputElement | null;
+    if (el?.tagName === "TEXTAREA" || (el?.tagName === "INPUT" && el.type !== "checkbox")) return;
+    const here = cues.filter((c) => FILTER_TEST[filter](c) && time >= c.start && time < c.end);
+    if (!here.length || here.some((c) => c.id === sel)) return;
+    setSel(here.reduce((a, b) => (b.start > a.start ? b : a)).id);
+  }, [time, follow, filter, cues]);  // eslint-disable-line react-hooks/exhaustive-deps
   // M：标记正在播的这一条（有问题、回头再看）；刚播完的也算（反应慢了一点），都没有就标选中的那条
   const toggleFlag = useCallback(() => {
     const t = timeRef.current, all = cuesRef.current;
@@ -337,6 +353,9 @@ export function EditorPage() {
             {RATES.map((r) => <option key={r} value={r}>{r}×</option>)}
           </select>
           <label className="row dim"><input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />识别框</label>
+          <label className="row dim" title="播到哪条字幕就选中哪条，↑↓ 从正在播的这条接着走（在右栏打字时不换）">
+            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />选中跟随播放
+          </label>
           <label className="row dim" title="连续播过一条字幕、又往后播了这么多秒，没按 M 标记的，自动标成已审（暂停时一起保存，Ctrl+Z 可撤销）">
             <input type="checkbox" checked={auto.on} onChange={(e) => setAuto({ ...auto, on: e.target.checked })} />看过自动审
             <select className="inp" style={{ width: "auto" }} value={auto.sec} disabled={!auto.on} onChange={(e) => setAuto({ ...auto, sec: Number(e.target.value) })}>
