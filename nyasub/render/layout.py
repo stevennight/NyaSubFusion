@@ -106,6 +106,31 @@ def _info_item(cue, layers, cfg):
     return None
 
 
+def _screens(pack, text, maxc, max_lines):
+    """一段放不下的文字分成几屏，每屏折行后不超过 max_lines 行：[[这一屏的行]]。
+    先按原来的换行分（两个人的话、标题的两行），一行太长的在空格 / 标点处切开（pack.split 会吸附到附近的断点），
+    再各自折行、尽量凑满一屏。不先折行再每两行一屏地硬切——那样会把一个词拆在两屏（“黄｜昏”）。
+    找不到空格 / 标点的才只好按行切。"""
+    units = []
+    for seg in text.split("\n"):
+        lines = pack.wrap(seg, maxc)
+        if len(lines) > max_lines:
+            n = -(-len(lines) // max_lines)
+            units += [p for p in pack.split(seg, [1 / n] * n) if p.strip()]
+        elif seg.strip():
+            units.append(seg)
+    screens, cur = [], []
+    for u in units:
+        lines = pack.wrap(u, maxc)
+        if cur and len(cur) + len(lines) > max_lines:
+            screens.append(cur)
+            cur = []
+        cur += lines
+    if cur:
+        screens.append(cur)
+    return [s[i:i + max_lines] for s in screens for i in range(0, len(s), max_lines)] or [[]]
+
+
 def _expand(cue, layers, profile, cfg, tok, seen):
     """一条字幕 → 一条或几条（按“｜”或按长度拆）。
     时间：有 parts（每段按来源字幕算好的时间）就按段用；段内再按长度拆的、或者没有 parts 的，按主图层字数分配。
@@ -154,8 +179,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
     p_pieces = [p for p in p_text.split("｜") if p.strip()] or [p_text]
     groups = []  # [(piece_index, [主图层行])]
     for k, piece in enumerate(p_pieces):
-        lines = p_pack.wrap(p_pack.display(piece, p_opts), _max_chars(p_ly, p_pack, p_opts))
-        chunks = [lines[i:i + profile.max_lines] for i in range(0, len(lines), profile.max_lines)] or [[]]
+        chunks = _screens(p_pack, p_pack.display(piece, p_opts), _max_chars(p_ly, p_pack, p_opts), profile.max_lines)
         groups += [(k, g) for g in chunks]
     weights = [max(1, sum(len(l) for l in g)) for _, g in groups]
 

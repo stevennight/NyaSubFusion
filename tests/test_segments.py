@@ -198,3 +198,23 @@ def test_swap_segments():
     assert f["parts_show"] == [None, None, None, None, "off"]   # 各段的设置跟着内容走
     assert "parts" not in f                                      # 每屏的时间位置不动
     assert piece_swap_fields(cue, 4, 5) is None
+
+
+def test_fit_estimate_matches_layout_wrapping():
+    """估算一屏放不放得下，和排版一样先在空格 / 标点后断行：24 个字按字数是两行，实际折出来是三行。"""
+    cfg, _ = config.load(None, None, {"project": {"targets": ["zh-Hans"]}})
+    t = "而且机会只有 鸭子飞向觅食地的黄昏时分那15分钟"
+    assert segments.screen_lines(t, "zh-Hans", cfg) == 3
+    assert segments.screen_lines("这是农民们培育出来的蔬菜", "zh-Hans", cfg) == 1
+
+
+def test_auto_split_screens_at_break_points():
+    """输出时一屏放不下，先在空格 / 标点 / 原来的换行处分屏，不把一个词拆在两屏（“黄｜昏”）。"""
+    from nyasub import lang
+
+    zh = lang.get("zh-Hans")
+    screens = layout._screens(zh, "而且机会只有　鸭子飞向觅食地的黄昏时分那15分钟", 16, 2)
+    assert screens == [["而且机会只有"], ["鸭子飞向觅食地的黄", "昏时分那15分钟"]]   # 同一屏里折行，词没被拆到两屏
+    # 原来的两行（标题 / 罗马字）各自成屏，罗马字那行折成两行也不拆开
+    assert layout._screens(zh, "新日本风土记\nSHIN NIHON FUDOKI", 16, 2) == [["新日本风土记"], ["SHIN NIHON", "FUDOKI"]]
+    assert layout._screens(zh, "放得下的一句", 16, 2) == [["放得下的一句"]]

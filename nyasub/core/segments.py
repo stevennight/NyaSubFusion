@@ -53,10 +53,12 @@ def line_chars(code, cfg):
 
 
 def screen_lines(text, code, cfg):
-    """这段文字一屏要占几行：每一行（换行分开的）按每行字数折行后的行数加起来。
-    （采访者那句 17 个字自己就折成两行，再加一行回答就是三行，一屏放不下。）"""
-    n = line_chars(code, cfg)
-    return sum(max(1, -(-len(l.strip()) // n)) for l in (text or "").replace("｜", "\n").split("\n") if l.strip())
+    """这段文字输出时要占几行：和排版（render/layout.py）用同样的整理和折行，不能只数字数——
+    折行会先在空格 / 标点后断（“而且机会只有　鸭子飞向觅食地的黄昏时分那15分钟”24 个字，
+    在空格处断开后剩下 18 个字还要再折一行，一共三行，一屏放不下）。"""
+    pack = lang.get(code)
+    opts = cfg.render.lang_options.get(code, {})
+    return len(pack.wrap(pack.display((text or "").replace("｜", "\n"), opts), line_chars(code, cfg)))
 
 
 def joiner(code):
