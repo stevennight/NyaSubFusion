@@ -41,27 +41,34 @@ class LanguagePack:
         return joiner.join(l for l in lines if l)
 
     # ---------- 断行 ----------
+    def break_levels(self, text: str) -> dict[int, int]:
+        """text 里能断开的位置（断在第 p 个字之前）有多好：3 空格 / 标点后（小句的边界），2 小句里的自然停顿，
+        1 词与词之间。不在里面的位置在一个词中间，尽量不断。默认只认空格 / 标点；中文、日文按分词补上词边界。"""
+        out = {p: 3 for p in range(1, len(text)) if text[p - 1] in self.break_after}
+        if self.word_based:
+            out.update({p: 3 for p in range(1, len(text)) if text[p] == " "})
+        return out
+
+    def learn_words(self, words) -> None:
+        """告诉分词这些是一个词（术语表里的人名、地名），折行时不拆开。没有分词的语言不用管。"""
+
     def wrap(self, text: str, max_chars: int) -> list[str]:
         if self.word_based:
             return _wrap_words(text, max_chars)
-        return _wrap_chars(text, max_chars, self.break_after, self.no_line_start)
+        return _wrap_chars(text, max_chars, self.break_levels, self.no_line_start)
 
     def split(self, text: str, ratios: list[float]) -> list[str]:
-        """按比例把一段文字切成几份，切点吸附到附近的空格 / 标点。"""
+        """按比例把一段文字切成几份（分屏用），切点选在附近好的断点上（空格 / 标点 > 小句停顿 > 词边界），不切在词中间。"""
         if len(ratios) <= 1:
             return [text]
         parts, start, acc = [], 0, 0.0
         n = len(text)
+        lv = self.break_levels(text)
         for r in ratios[:-1]:
             acc += r
             target = int(round(n * acc))
-            cut = target
-            for d in range(0, 12):
-                hit = [p for p in (target + d, target - d)
-                       if start < p < n and (text[p - 1] in self.break_after or (self.word_based and text[p] == " "))]
-                if hit:
-                    cut = hit[0]
-                    break
+            cands = [p for p in range(max(start + 1, target - 12), min(n, target + 13)) if lv.get(p)]
+            cut = max(cands, key=lambda p: (_score(lv[p], p, target), -abs(p - target))) if cands else target
             parts.append(text[start:cut].strip("　 "))
             start = cut
         parts.append(text[start:].strip("　 "))
@@ -89,30 +96,65 @@ class LanguagePack:
         return len(re.sub(r"[\s　\W]", "", text or ""))
 
 
-def _wrap_chars(text, maxc, break_after, no_start):
-    """按字数断行：优先在空格 / 标点后断，各行尽量等长，不让禁则字符出现在行首。"""
+def _score(level, pos, target):
+    """断点好不好：断点本身的好坏（标点 / 空格 > 小句停顿 > 词边界）为主，离理想位置（各行等长）越近越好。"""
+    return level * 4 - abs(pos - target)
+
+
+# 折行的代价（整行一起选断点，总代价最小）：断点越差越贵，在词中间断几乎不可接受；
+# 多一行要一点代价（为了不拆开小句可以多一行，只为凑满不行）；一两个字孤零零占一行（“嗯 / 不过……”）要罚
+_BREAK_COST = {3: 0, 2: 4, 1: 8}
+_MID_WORD = 40
+_PER_LINE = 5
+_SHORT_LINE = 12
+
+
+def _wrap_chars(text, maxc, levels, no_start):
+    """按字数断行：整行一起选断点，使总代价最小——断在好的断点上（空格 / 标点 > 小句里的停顿 > 词与词之间），
+    不断在一个词中间；为了不拆开小句可以多一行；不留孤零零的一两个字；同样好时各行尽量等长；禁则字符不放行首。
+    levels(line) → {位置: 好坏}（见 LanguagePack.break_levels）。"""
     out = []
     for line in text.split("\n"):
-        while len(line) > maxc:
-            n_lines = -(-len(line) // maxc)
-            target = -(-len(line) // n_lines)
-            cut = None
-            for d in range(0, 6):
-                for pos in (target + d, target - d):
-                    if 0 < pos < len(line) and pos <= maxc and line[pos - 1] in break_after:
-                        cut = pos
-                        break
-                if cut:
-                    break
-            if cut is None:
-                cut = min(target, maxc)
-                while 1 < cut < len(line) and line[cut] in no_start:
-                    cut -= 1
-            out.append(line[:cut].rstrip("　 "))
-            line = line[cut:].lstrip("　 ")
-        if line:
+        if len(line) > maxc:
+            out += _best_breaks(line, maxc, levels(line), no_start)
+        elif line:
             out.append(line)
     return out
+
+
+def _best_breaks(line, maxc, lv, no_start):
+    n = len(line)
+
+    def brk(p):  # 在 p 处断开的代价；None = 不能断（下一行会以禁则字符开头）
+        if line[p] in no_start:
+            return None
+        return _BREAK_COST.get(lv.get(p), _MID_WORD)
+
+    def seg_cost(q, p):  # line[q:p] 这一行本身的代价
+        k = len(line[q:p].strip("　 "))
+        return _PER_LINE + (_SHORT_LINE if k < 3 else 0) + 0.005 * k * k  # 平方项：同样好时让各行等长
+
+    best = [None] * (n + 1)
+    back = [0] * (n + 1)
+    best[0] = 0.0
+    for p in range(1, n + 1):
+        b = 0 if p == n else brk(p)
+        if b is None:
+            continue
+        for q in range(max(0, p - maxc), p):
+            if best[q] is None:
+                continue
+            c = best[q] + seg_cost(q, p) + b
+            if best[p] is None or c < best[p]:
+                best[p], back[p] = c, q
+    if best[n] is None:  # 怎么断都会把禁则字符放到行首：只好按字数切
+        return [line[i:i + maxc] for i in range(0, n, maxc)]
+    cuts, p = [], n
+    while p > 0:
+        cuts.append(p)
+        p = back[p]
+    cuts.reverse()
+    return [x for x in (line[a:b].strip("　 ") for a, b in zip([0] + cuts, cuts)) if x]
 
 
 def _wrap_words(text, maxc):

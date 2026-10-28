@@ -1,10 +1,36 @@
 import re
+from functools import lru_cache
 
 from . import ruby
 from .base import LanguagePack
 
 _MID = re.compile(r"[，。；]+")
 _TAIL = re.compile(r"[，。；、\s　]+$")
+# 小句里的自然停顿：这些词之后（“鸭子飞向觅食地的 / 黄昏时分”）、这些词之前（“… / 但是 …”）断开读起来最顺。
+# _ATTACHED 里的助词粘着前面的词，它们前面不断（不让一行以“的”“了”开头）
+_PAUSE_AFTER = {"吗", "呢", "吧", "啊", "呀", "嘛"}
+# 粘着前面的词、前面不断，但后面常接着名词 / 宾语，断开会拆开一个短语（“喜欢的 / 人”“盯着 / 我的家伙”），只算普通的词边界
+_ATTACHED = _PAUSE_AFTER | {"的", "地", "得", "了", "着", "过"}
+# 只收明确的连词：单字的介词 / “是”常常和前面的字连成一个词（“飞向”“只在”“这就是”），不能当停顿
+_PAUSE_BEFORE = {"但", "但是", "而", "而且", "可是", "却", "所以", "因为", "如果", "虽然", "然后", "并且", "或者", "还是"}
+
+
+_LEARNED = set()  # 已经告诉过 jieba 的词
+
+
+@lru_cache(maxsize=4096)
+def _words(text):
+    """中文分词（jieba）；没装 jieba 就返回 None（只在空格 / 标点处断行）。"""
+    import warnings
+
+    try:
+        with warnings.catch_warnings():  # jieba 源码里有老式正则转义，导入时会报 SyntaxWarning
+            warnings.simplefilter("ignore")
+            import jieba
+    except ImportError:
+        return None
+    jieba.setLogLevel(60)  # 第一次加载词典时不往日志里打进度
+    return tuple(jieba.lcut(text, HMM=True))
 
 
 class Chinese(LanguagePack):
@@ -19,6 +45,35 @@ class Chinese(LanguagePack):
     meaningful = re.compile(r"[㐀-鿿]")
     break_after = set("　 ，。、；：？！…」』）】》”")
     no_line_start = set("，。、；：？！…」』）】》”")
+
+    def learn_words(self, words):
+        """术语表里的译名告诉 jieba（“加贺市”“差间正树”），折行时不拆开；加了新词就清掉分词缓存。"""
+        new = {w.strip() for w in words if w and len(w.strip()) >= 2} - _LEARNED
+        if not new or _words("") is None:
+            return
+        import jieba
+
+        for w in new:
+            jieba.add_word(w)
+        _LEARNED.update(new)
+        _words.cache_clear()
+
+    def break_levels(self, text):
+        """空格 / 标点后（3）之外，按分词补上词与词之间（1），助词之后、连词之前算小句里的停顿（2）。"""
+        out = super().break_levels(text)
+        words = _words(text)
+        if not words:
+            return out
+        pos = 0
+        for i, w in enumerate(words[:-1]):
+            pos += len(w)
+            if words[i + 1] in _ATTACHED:  # 助词前面不断
+                if out.get(pos, 0) < 3:
+                    out.pop(pos, None)
+                continue
+            pause = w in _PAUSE_AFTER or words[i + 1] in _PAUSE_BEFORE
+            out[pos] = max(out.get(pos, 0), 2 if pause else 1)
+        return out
 
     def prompt_target_rules(self, opts):
         n = int(opts.get("line_chars") or self.line_chars)

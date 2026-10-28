@@ -352,7 +352,15 @@ class Run:
 
         ann = res.get("annotate") or {"cues": shown((res.get("translate") or {}).get("cues", [])), "tokens": {}}
         boxes = self._hardsub_boxes(res.get("ocr_refine") or [], fused, ann.get("rects"), ann["cues"]) if fused else []
+        self._learn_words()
         return ann["cues"], ann["tokens"], aspect, boxes
+
+    def _learn_words(self):
+        """术语表里的译名（人名、地名…）告诉译文语言的分词，折行时不把一个名字拆开（“加贺 / 市内”）。"""
+        terms = ((self.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
+        words = [t.get("tr", "") for t in terms if isinstance(t, dict)]
+        for code in {lang.canonical(t) for t in self.cfg.project.targets}:
+            lang.get(code).learn_words(words)
 
     def reannotate(self):
         """只重做注音（编辑字幕、改读音词典后调用）：直接用已有的翻译结果。
@@ -1136,6 +1144,7 @@ class Run:
     def _render(self, cues, tokens, aspect, boxes, only=None):
         from ..render import ass, layout, srt
 
+        self._learn_words()
         targets = {lang.canonical(t) for t in self.cfg.project.targets}
         seen = set()
         written = []

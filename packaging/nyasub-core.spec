@@ -14,7 +14,7 @@ if not (WEB_DIST / "index.html").exists():
     raise SystemExit("先构建界面：cd web && pnpm build")
 
 datas = [(str(WEB_DIST), "web")]
-for pkg in ("sudachipy", "sudachidict_core", "pypinyin", "faster_whisper", "rapidocr"):
+for pkg in ("sudachipy", "sudachidict_core", "pypinyin", "jieba", "faster_whisper", "rapidocr"):
     datas += collect_data_files(pkg)
 # OCR 模型：medium（有 GPU 时）和 small（只有 CPU 时）都带上，离线也能用
 # keyring 通过包元数据里的入口点找凭据库后端，元数据也要带上
@@ -23,7 +23,7 @@ datas += copy_metadata("keyring")
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("av")
 
 hiddenimports = (collect_submodules("uvicorn") + collect_submodules("nyasub") + collect_submodules("keyring")
-                 + ["sudachipy", "sudachidict_core", "pypinyin", "tomli_w", "websockets", "httptools", "watchfiles"])
+                 + ["sudachipy", "sudachidict_core", "pypinyin", "jieba", "tomli_w", "websockets", "httptools", "watchfiles"])
 
 EXCLUDE_DLLS = ("onnxruntime_providers_cuda", "onnxruntime_providers_tensorrt", "cublas", "cudnn", "cudart",
                 "cufft", "curand", "nvrtc", "nvjitlink", "nvblas")

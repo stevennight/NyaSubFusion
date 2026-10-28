@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 
 from . import ruby
 from .base import LanguagePack
@@ -29,6 +30,21 @@ def _tok():
     return _tokenizer
 
 
+@lru_cache(maxsize=4096)
+def _phrases(text):
+    """日文分词（sudachi）：[(词, 词性大类)]；没装 sudachi 返回 None（只在空格 / 标点处断行）。"""
+    try:
+        from sudachipy import SplitMode
+
+        return tuple((m.surface(), m.part_of_speech()[0]) for m in _tok().tokenize(text, SplitMode.C))
+    except Exception:
+        return None
+
+
+# 粘着前面那个词的：它们前面不断（一行不以助词、助动词、接尾辞开头）
+_ATTACHED = {"助詞", "助動詞", "接尾辞", "補助記号"}
+
+
 class Japanese(LanguagePack):
     code = "ja"
     name = "日语"
@@ -41,6 +57,23 @@ class Japanese(LanguagePack):
     meaningful = re.compile(r"[぀-ヿ㐀-鿿]")
     break_after = set("　 、。，；：？！…」』）】》”")
     no_line_start = set("、。，．・：；？！ー」』）】》ぁぃぅぇぉっゃゅょァィゥェォッャュョ")
+
+    def break_levels(self, text):
+        """空格 / 标点后（3）之外，按分词补上：助词、助动词之后（文节的边界，2）、其他词与词之间（1）；
+        助词、助动词、接尾辞前面不断（“鴨が / 餌場に”可以，“鴨 / が”不行）。"""
+        out = super().break_levels(text)
+        toks = _phrases(text)
+        if not toks:
+            return out
+        pos = 0
+        for i, (w, p) in enumerate(toks[:-1]):
+            pos += len(w)
+            if toks[i + 1][1] in _ATTACHED:
+                if out.get(pos, 0) < 3:
+                    out.pop(pos, None)
+                continue
+            out[pos] = max(out.get(pos, 0), 2 if p in ("助詞", "助動詞") else 1)
+        return out
     annotations = ("furigana",)
     translit_name = "罗马字"
 

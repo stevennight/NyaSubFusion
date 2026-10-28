@@ -201,20 +201,40 @@ def test_swap_segments():
 
 
 def test_fit_estimate_matches_layout_wrapping():
-    """估算一屏放不放得下，和排版一样先在空格 / 标点后断行：24 个字按字数是两行，实际折出来是三行。"""
+    """估算一屏放不放得下，和排版用同一套折行：在好的断点断开后数行数，不只数字数。"""
     cfg, _ = config.load(None, None, {"project": {"targets": ["zh-Hans"]}})
-    t = "而且机会只有 鸭子飞向觅食地的黄昏时分那15分钟"
-    assert segments.screen_lines(t, "zh-Hans", cfg) == 3
+    assert segments.screen_lines("而且机会只有 鸭子飞向觅食地的黄昏时分那15分钟", "zh-Hans", cfg) == 2
+    assert segments.screen_lines("这些家族会诞生被兽神选中的孩子 听说教会收养他们是为了得到那份力量", "zh-Hans", cfg) == 3
     assert segments.screen_lines("这是农民们培育出来的蔬菜", "zh-Hans", cfg) == 1
 
 
+def test_wrap_never_splits_a_word():
+    """折行整行一起选断点：不把一个词拆开、行首不是助词；为了不拆开小句可以多一行；不留一两个字的孤行。"""
+    from nyasub import lang
+
+    zh, ja = lang.get("zh-Hans"), lang.get("ja")
+    assert zh.wrap("而且机会只有　鸭子飞向觅食地的黄昏时分那15分钟", 16) == ["而且机会只有　鸭子飞向", "觅食地的黄昏时分那15分钟"]
+    assert zh.wrap("听说教会收养他们是为了得到那份力量", 16) == ["听说教会收养他们", "是为了得到那份力量"]
+    assert zh.wrap("外表姑且不论 对喜欢的人来说是难以抗拒的美味", 16) == ["外表姑且不论", "对喜欢的人来说是难以抗拒的美味"]
+    assert zh.wrap("嗯 不过能知道村雨在哪儿就算走运了", 16) == ["嗯 不过能知道村雨", "在哪儿就算走运了"]   # 不让“嗯”独占一行
+    assert zh.wrap("可是 那个从刚才开始就一直盯着我的家伙", 16) == ["可是 那个从刚才开始", "就一直盯着我的家伙"]
+    # 多一行换来每个小句完整
+    assert zh.wrap("这么说 想召唤我们的 是信乃体内的村雨 或庄介体内的与四郎？", 16) ==         ["这么说 想召唤我们的", "是信乃体内的村雨", "或庄介体内的与四郎？"]
+    # 术语表里的名字不拆开
+    zh.learn_words(["加贺市"])
+    assert zh.wrap("为了品尝只在加贺市内流通的鸭肉……", 16)[0].endswith("加贺市")
+    # 日文：在文节的边界断，不断在词中间（刚好两整行长、卡在词中间时宁可多一行）
+    lines = ja.wrap("もともと虫を食べる文化は長野県各地にありますが中でも伊那には独特の歴史があります", 20)
+    assert lines == ["もともと虫を食べる文化は", "長野県各地にありますが中でも", "伊那には独特の歴史があります"]
+
+
 def test_auto_split_screens_at_break_points():
-    """输出时一屏放不下，先在空格 / 标点 / 原来的换行处分屏，不把一个词拆在两屏（“黄｜昏”）。"""
+    """输出时一屏放不下，先在空格 / 标点 / 原来的换行处分屏，不把一个词拆在两屏。"""
     from nyasub import lang
 
     zh = lang.get("zh-Hans")
-    screens = layout._screens(zh, "而且机会只有　鸭子飞向觅食地的黄昏时分那15分钟", 16, 2)
-    assert screens == [["而且机会只有"], ["鸭子飞向觅食地的黄", "昏时分那15分钟"]]   # 同一屏里折行，词没被拆到两屏
+    screens = layout._screens(zh, "这些家族会诞生被兽神选中的孩子　听说教会收养他们是为了得到那份力量", 16, 2)
+    assert screens == [["这些家族会诞生被兽神选中的孩子"], ["听说教会收养他们", "是为了得到那份力量"]]
     # 原来的两行（标题 / 罗马字）各自成屏，罗马字那行折成两行也不拆开
     assert layout._screens(zh, "新日本风土记\nSHIN NIHON FUDOKI", 16, 2) == [["新日本风土记"], ["SHIN NIHON", "FUDOKI"]]
     assert layout._screens(zh, "放得下的一句", 16, 2) == [["放得下的一句"]]
