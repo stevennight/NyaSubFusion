@@ -241,6 +241,15 @@ def test_edit_never_reruns_translation(client, sample):
     assert len(fakellm.CALLS) == calls
 
 
+def test_reopen_keeps_custom_workdir(client, sample, tmp_path):
+    """从“最近项目”再打开（不带项目目录）：沿用上次自定义的项目目录，不会变回视频旁边的默认目录。"""
+    work = tmp_path / "elsewhere"
+    pid = client.post("/api/projects", json={"path": str(sample), "workdir": str(work)}).json()["id"]
+    assert client.post("/api/projects", json={"path": str(sample)}).json()["id"] == pid
+    p = next(x for x in client.get("/api/projects").json() if x["id"] == pid)
+    assert p["workdir"] == str(work)
+
+
 def test_project_list_details_and_forget(client, sample):
     pid, _ = opened(client, sample)
     client.post(f"/api/projects/{pid}/run", json={})
@@ -282,6 +291,48 @@ def test_restore_dropped_ocr(client, sample):
     assert client.post(f"/api/projects/{pid}/ocr/o9/restore").status_code == 400  # 已经用上了
     assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "恢复画面字"
     assert client.get(f"/api/projects/{pid}/data").json()["ocr"][0]["dropped"] == "scene"
+
+
+def test_new_cue_from_any_source_and_attach(client, sample):
+    """时间轴右键：一块语音 / 字幕新建成关联的字幕（已经用上的也可以，提示重复）；并入选中的字幕时原文按时间接上、
+    时间放宽、来源加上、整句重译，一步撤销回到原样。"""
+    from nyasub.core.store import ProjectDir, load_json, save_json
+    from nyasub.llm import client as llm_client
+
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    proj = ProjectDir(sample)
+    asr = load_json(proj.stage("asr.json")) or {}
+    asr["segments"] = [{"id": "a1", "start": 15.6, "end": 17.0, "text": "寒いからね"}]
+    save_json(proj.stage("asr.json"), asr)
+    llm_client.LLM._call = lambda self, s, u, images=None: {"alts": [{"orig": "寒いからね", "tr": "因为很冷嘛"}]}
+
+    r = client.post(f"/api/projects/{pid}/sources/a1/cue").json()
+    cue = r["cue"]
+    assert cue["sources"] == ["a1"] and cue["type"] == "dialogue" and not cue["onscreen"]
+    assert (cue["start"], cue["end"]) == (15.6, 17.0) and cue["orig"]["text"] == "寒いからね"
+    assert cue["tr"]["zh-Hans"]["text"] == "因为很冷嘛" and r["note"] is None
+    # 已经用在 q2 里的字幕：照样新建，提示重复
+    r = client.post(f"/api/projects/{pid}/sources/c2/cue").json()
+    assert r["cue"]["sources"] == ["c2"] and "#q2" in r["note"]
+    assert client.post(f"/api/projects/{pid}/sources/zz/cue").status_code == 404
+    assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "从字幕轨新建字幕"
+    assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "从语音新建字幕"
+
+    before = next(c for c in client.get(f"/api/projects/{pid}/data").json()["cues"] if c["id"] == "q2")
+    llm_client.LLM._call = lambda self, s, u, images=None: {
+        "alts": [{"orig": "冬になると海が荒れてね。｜寒いからね", "tr": "一到冬天海上就起风浪｜因为很冷嘛"}]}
+    r = client.post(f"/api/projects/{pid}/cues/q2/attach", json={"source": "a1"}).json()
+    cue = r["cue"]
+    assert cue["orig"]["text"] == "冬になると海が荒れてね。｜寒いからね" and cue["sources"] == ["c2", "a1"]
+    assert (cue["start"], cue["end"]) == (13.0, 17.0) and cue["review"] == "todo"
+    assert cue["tr"]["zh-Hans"]["text"] == "一到冬天海上就起风浪｜因为很冷嘛"
+    assert cue["parts"][0][0] == 13.0 and cue["parts"][1] == [15.6, 17.0]  # 每段时间按来源
+    assert client.post(f"/api/projects/{pid}/cues/q2/attach", json={"source": "a1"}).status_code == 400
+    assert client.post(f"/api/projects/{pid}/edits/undo").json()["changed"]["what"] == "并入语音 a1"
+    after = next(c for c in client.get(f"/api/projects/{pid}/data").json()["cues"] if c["id"] == "q2")
+    assert after["orig"] == before["orig"] and after["sources"] == ["c2"] and after["end"] == before["end"]
 
 
 def test_batch_review_is_one_undo_step(client, sample):

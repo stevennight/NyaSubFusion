@@ -69,8 +69,10 @@ class Projects:
             raise HTTPException(400, f"找不到文件：{video}")
         pid = _pid(video)
         with self.lock:
+            old = next((x for x in self.all() if x["id"] == pid), {})
             items = [x for x in self.all() if x["id"] != pid]
-            entry = {"id": pid, "video": video, "workdir": workdir, "opened": int(time.time())}
+            # 从“最近项目”再打开不带项目目录：沿用上次的，不然自定义的项目目录会悄悄变回视频旁边的默认目录
+            entry = {"id": pid, "video": video, "workdir": workdir or old.get("workdir"), "opened": int(time.time())}
             items.insert(0, entry)
             save_json(_registry_path(), {"projects": items[:50]})
         return entry
@@ -734,49 +736,164 @@ def create_app(token: str | None = None) -> FastAPI:
                       "type": body.get("type", "dialogue"), "orig": body.get("orig", ""), "tr": body.get("tr") or {}})
         return _edit_result(pid, nid)
 
-    @app.post("/api/projects/{pid}/ocr/{oid}/restore")
-    def restore_ocr(pid: str, oid: str):
-        """被丢弃 / 没用上的画面字恢复成一条字幕：时间、位置用这条画面字的，原文用识别出的字；配了大模型就顺手翻译。
-        底部正中的当台词（叠加的采访台词），其他位置的当说明（译文放在原文旁边）。"""
+    def _source_item(run, sid):
+        """时间轴上任意一块来源：字幕（c…）、画面字（o…）、语音（a…，也认融合时切开的 a33-2）。
+        返回 {id, src: subs / ocr / asr, start, end, text}，画面字另带 rect 和原来的条目（event）；没有返回 None。"""
+        for s in (run.results.get("align") or {}).get("subs", run.results.get("subs") or []):
+            if s["id"] == sid:
+                return {"id": sid, "src": "subs", "start": s["start"], "end": s["end"], "text": s["text"]}
+        for e in run.results.get("ocr_refine") or []:
+            if e["id"] == sid:
+                return {"id": sid, "src": "ocr", "start": e["start"], "end": e["end"], "text": e["text"],
+                        "rect": e["rect"], "event": e}
+        for s in (run._asr_fixed(run.results.get("asr")) or {}).get("segments", []):
+            if s["id"] == sid:
+                return {"id": sid, "src": "asr", "start": s["start"], "end": s["end"], "text": s["text"]}
+        for it in (run.results.get("fuse") or {}).get("items", []):
+            if it["id"] == sid and it["src"] == "asr":
+                return {"id": sid, "src": "asr", "start": it["start"], "end": it["end"], "text": it["text"]}
+        return None
+
+    # 新建 / 并入时给大模型的提示：来源是什么
+    _SOURCE_HINT = {
+        "ocr": "这是画面上打出来的字（标题、说明等），没有人念出来：译成简短的字幕，不要加原文里没有的内容",
+        "asr": "原文来自语音识别，可能有听错的字：结合前后文理解，译成自然的字幕",
+        "subs": "",
+    }
+
+    def _source_text(run, src):
+        """来源的文字当字幕原文：画面字的几行接成一句（画面上的换行只是排版），字幕 / 语音保留原来的换行。"""
+        from ..core import segments
+
+        lines = [l.strip() for l in (src["text"] or "").split("\n") if l.strip()]
+        return (segments.joiner(run.src) if src["src"] == "ocr" else "\n").join(lines)
+
+    def _source_for_llm(src, typ):
+        """给大模型看的来源条目（带时间）。"""
+        if src["src"] == "ocr":
+            return dict(src["event"], src="info" if typ in ("info", "name", "title") else "telop")
+        return {k: src[k] for k in ("id", "src", "start", "end", "text")}
+
+    def _translate_one(run, cues, cue, hint, sources, edited=False):
+        """新建 / 改了原文的一条字幕，配了大模型就翻译。返回 ({语言: 推荐的候选 {"orig", "tr"}（带“｜”分段）}, 提示)。"""
+        from ..llm.translate import retranslate as do
+
+        if run.cfg.llm_mode() != "api":
+            return {}, "没有配置大模型接口，译文要自己填"
+        ctx = sorted([c for c in cues if c["id"] != cue["id"]] + [cue], key=lambda c: c["start"])
+        i = ctx.index(cue)
+        terms = ((run.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
+        out, note = {}, None
+        for tgt in (lang.canonical(t) for t in run.cfg.project.targets):
+            try:
+                alts = do(run.cfg, run.proj / "llm_cache", cue, ctx[max(0, i - 3): i + 4], run.src, tgt, terms, hint,
+                          sources, orig_edited=edited)
+                if alts and alts[0].get("tr"):
+                    out[tgt] = alts[0]
+            except Exception as e:  # 翻译失败也照样保存，译文自己填
+                note = f"翻译失败（{e}），译文要自己填"
+        if not out and note is None:
+            note = "大模型没给出译文，译文要自己填"
+        return out, note
+
+    def _cue_from_source(pid, sid, refuse_used=False):
         from ..core import segments
         from ..core.edits import next_insert_id
         from ..fusion.fuse import _bottom_center
-        from ..llm.translate import retranslate as do
 
         run, cues = _current_cues(pid)
-        ev = next((e for e in run.results.get("ocr_refine") or [] if e["id"] == oid), None)
-        if ev is None:
-            raise HTTPException(404, "没有这条画面字")
-        if any(oid in c.get("sources", []) for c in cues):
+        src = _source_item(run, sid)
+        if src is None:
+            raise HTTPException(404, "没有这一块来源")
+        users = [c["id"] for c in cues if sid in c.get("sources", [])]
+        if users and refuse_used:
             raise HTTPException(400, "这条画面字已经用在字幕里了")
-        orig = segments.joiner(run.src).join(l.strip() for l in ev["text"].split("\n") if l.strip())
-        typ = "dialogue" if _bottom_center(ev) else "info"
+        orig = _source_text(run, src)
+        ocr = src["src"] == "ocr"
+        # 画面字：底部正中的当台词（叠加的采访台词），其他位置的当说明（译文放在原文旁边）
+        typ = "info" if ocr and not _bottom_center(src["event"]) else "dialogue"
         store = EditStore(run.proj)
         nid = next_insert_id(store.load())
-        op = {"op": "insert", "id": nid, "start": ev["start"], "end": ev["end"], "type": typ, "orig": orig, "tr": {},
-              "sources": [oid], "rect": ev["rect"], "onscreen": True}
-        note = None
-        if run.cfg.llm_mode() == "api":
-            cue = {"id": nid, "start": ev["start"], "end": ev["end"], "type": typ, "sources": [oid],
-                   "orig": {"lang": run.src, "text": orig}, "tr": {}}
-            ctx = sorted(cues + [cue], key=lambda c: c["start"])
-            i = ctx.index(cue)
-            terms = ((run.results.get("translate") or {}).get("glossary") or {}).get("terms", [])
-            for tgt in (lang.canonical(t) for t in run.cfg.project.targets):
-                try:
-                    alts = do(run.cfg, run.proj / "llm_cache", cue, ctx[max(0, i - 3): i + 4], run.src, tgt, terms,
-                              "这是画面上打出来的字（标题、说明等），没有人念出来：译成简短的字幕，不要加原文里没有的内容",
-                              [dict(ev, src="info" if typ == "info" else "telop")])
-                    if alts and alts[0].get("tr"):
-                        op["tr"][tgt] = segments.unbar(alts[0]["tr"], tgt)
-                except Exception as e:  # 翻译失败也照样恢复，译文自己填
-                    note = f"翻译失败（{e}），译文要自己填"
-            if not op["tr"] and note is None:
-                note = "大模型没给出译文，译文要自己填"
-        else:
-            note = "没有配置大模型接口，译文要自己填"
+        op = {"op": "insert", "id": nid, "start": src["start"], "end": src["end"], "type": typ, "orig": orig, "tr": {},
+              "sources": [sid]}
+        if ocr:
+            op.update(rect=src["rect"], onscreen=True)
+        if users:  # 来源已经用在别的字幕里，用户特意另建一条：重新翻译后也照样保留
+            op["keep"] = True
+        cue = {"id": nid, "start": src["start"], "end": src["end"], "type": typ, "sources": [sid],
+               "orig": {"lang": run.src, "text": orig}, "tr": {}}
+        alts, note = _translate_one(run, cues, cue, _SOURCE_HINT[src["src"]], [_source_for_llm(src, typ)])
+        op["tr"] = {k: segments.unbar(a["tr"], k) for k, a in alts.items()}
         store.add_op(op)
+        if users:
+            dup = "这一块已经用在 " + "、".join(f"#{u}" for u in users) + " 里了，两条会同时显示，记得删掉重复的部分"
+            note = f"{dup}；{note}" if note else dup
         return {**_edit_result(pid, nid), "note": note}
+
+    @app.post("/api/projects/{pid}/sources/{sid}/cue")
+    def cue_from_source(pid: str, sid: str):
+        """时间轴上的一块字幕 / 画面字 / 语音新建成一条关联的字幕：时间用它的，原文用它的文字，配了大模型就顺手翻译。
+        已经用在别的字幕里的也可以（补漏、另起一条），会提示重复。"""
+        return _cue_from_source(pid, sid)
+
+    @app.post("/api/projects/{pid}/ocr/{oid}/restore")
+    def restore_ocr(pid: str, oid: str):
+        """被丢弃 / 没用上的画面字恢复成一条字幕（已经用在字幕里的不行）。"""
+        return _cue_from_source(pid, oid, refuse_used=True)
+
+    @app.post("/api/projects/{pid}/cues/{cid}/attach")
+    def attach_source(pid: str, cid: str, body: dict = Body(...)):
+        """把时间轴上的一块来源并入这条字幕（{"source": id}）：原文按时间先后接上它的文字（另起一屏），
+        时间放宽到包住它，来源里加上它；配了大模型就按新的原文整句重译、重新分段。算一步撤销，标成待审校。"""
+        from ..core import segments
+        from ..textutil import norm
+
+        run, cues = _current_cues(pid)
+        cue = next((c for c in cues if c["id"] == cid), None)
+        if not cue:
+            raise HTTPException(404, "没有这条字幕")
+        sid = body.get("source") or ""
+        src = _source_item(run, sid)
+        if src is None:
+            raise HTTPException(404, "没有这一块来源")
+        if sid in cue.get("sources", []):
+            raise HTTPException(400, "这一块已经关联在这条字幕上了")
+        text = _source_text(run, src)
+        old = cue["orig"]["text"]
+        if not norm(text) or norm(text) in norm(old):  # 文字已经在原文里（只是没记成来源）：只补关联和时间
+            orig = old
+        else:  # 按时间插到对应的位置：分了段、每段有时间的看每段的开头，否则看整条的开头
+            spans = cue.get("parts") or [[cue["start"], cue["end"]]]
+            ps = segments.pieces(old)
+            if len(ps) != len(spans):
+                ps, spans = [old], [[cue["start"], cue["end"]]]
+            k = sum(1 for a, _ in spans if a <= src["start"])
+            orig = "｜".join(p for p in ps[:k] + [text] + ps[k:] if p.strip())
+        start, end = min(cue["start"], src["start"]), max(cue["end"], src["end"])
+        body = {"orig": orig, "start": start, "end": end, "sources": list(cue.get("sources", [])) + [sid],
+                "review": "todo", "parts": None}
+        note = None
+        if orig != old:
+            items = run._items(cues)
+            new = {k: v for k, v in cue.items() if k != "parts"}
+            new.update(orig={**cue["orig"], "text": orig}, start=start, end=end, sources=body["sources"])
+            alts, note = _translate_one(run, cues, new, _SOURCE_HINT[src["src"]],
+                                        [items[x] for x in cue.get("sources", []) if x in items]
+                                        + [_source_for_llm(src, cue.get("type"))], edited=True)
+            tr = {}
+            for code, a in alts.items():
+                same = norm(a.get("orig", "").replace("｜", "")) == norm(orig.replace("｜", ""))
+                if same and len(segments.pieces(a["orig"])) == len(segments.pieces(a["tr"])):
+                    body["orig"] = a["orig"]  # 大模型调整了分段（文字不变）
+                    tr[code] = a["tr"]
+                else:
+                    tr[code] = segments.unbar(a["tr"], code)
+            if tr:
+                body["tr"] = tr
+            elif note:
+                note = note.replace("译文要自己填", "新加的部分要自己补进译文")
+        EditStore(run.proj).set_fields(cid, body)
+        return {**_edit_result(pid, cid), "note": note}
 
     @app.delete("/api/projects/{pid}/edits/orphans")
     def clear_orphans(pid: str):

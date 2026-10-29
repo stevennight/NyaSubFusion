@@ -43,7 +43,7 @@ def _fields(cues, fields):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig", "pos") + tuple(SEG_KEYS):
+        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig", "pos", "sources") + tuple(SEG_KEYS):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:
@@ -119,8 +119,9 @@ def _merge(cues, op):
 
 
 def _insert(cues, op, src_lang):
-    # 恢复的画面字：重新翻译后这条画面字已经用进了字幕（融合规则改好了），就不再另外插一条，免得同一块字出现两次
-    if op.get("sources") and any(set(op["sources"]) & set(c.get("sources", [])) for c in cues):
+    # 恢复的画面字：重新翻译后这条画面字已经用进了字幕（融合规则改好了），就不再另外插一条，免得同一块字出现两次。
+    # keep：新建的时候来源就已经用在别的字幕里了（用户特意另建一条），照样插
+    if op.get("sources") and not op.get("keep") and any(set(op["sources"]) & set(c.get("sources", [])) for c in cues):
         return cues
     cue = {"id": op["id"], "start": op["start"], "end": op["end"], "type": op.get("type", "dialogue"),
            "sources": list(op.get("sources") or []), "onscreen": bool(op.get("onscreen")),
@@ -283,8 +284,19 @@ def piece_isolate_ops(cue, seg):
 
 FIELD_LBL = {"orig": "原文", "tr": "译文", "start": "时间", "end": "时间", "parts": "分段时间", "type": "类型",
              "review": "审校状态", "delete": "删除", "rect": "位置", "show_orig": "原文显示",
-             "parts_type": "分段类型", "parts_show": "分段原文显示"}
+             "parts_type": "分段类型", "parts_show": "分段原文显示", "sources": "关联的来源"}
 OP_LBL = {"split": "拆分", "merge": "合并", "insert": "插入"}
+SRC_LBL = {"o": "画面字", "c": "字幕轨", "a": "语音"}  # 来源 id 的开头
+
+
+def _insert_label(op):
+    """插入的是哪种：没用上的画面字恢复成字幕 / 从时间轴上的一块来源新建 / 手动插入。"""
+    src = (op.get("sources") or [""])[0][:1]
+    if not src:
+        return OP_LBL["insert"]
+    if src == "o" and not op.get("keep"):
+        return "恢复画面字"
+    return f"从{SRC_LBL.get(src, '来源')}新建字幕"
 
 
 def describe_change(before, after, undone):
@@ -304,7 +316,7 @@ def describe_change(before, after, undone):
         else:
             cid = None if gone else op.get("id")
         n = len(long_) - len(short)
-        what = ("恢复画面字" if kind == "insert" and op.get("sources") else OP_LBL.get(kind, kind)) + (f"等 {n} 步" if n > 1 else "")
+        what = (_insert_label(op) if kind == "insert" else OP_LBL.get(kind, kind)) + (f"等 {n} 步" if n > 1 else "")
         return {"id": cid, "at": op.get("at") or op.get("start"), "what": what}
     changed = [cid for cid in set(b["cues"]) | set(a["cues"]) if b["cues"].get(cid) != a["cues"].get(cid)]
     if not changed:
@@ -318,6 +330,12 @@ def describe_change(before, after, undone):
         if lbl not in names:
             names.append(lbl)
     what = "、".join(names) or "修改"
+    hi, lo = (b, a) if undone else (a, b)  # 并入之后 / 之前的状态
+    hs, ls = hi["cues"].get(cid, {}).get("sources") or [], lo["cues"].get(cid, {}).get("sources")
+    # 之前没改过来源（记录里没有原来的列表）：并入的那一块接在最后
+    more = hs[-1:] if ls is None and "sources" in keys else [s for s in hs if s not in (ls or [])]
+    if more and len(changed) == 1:  # 时间轴上把一块来源并入了这条（原文、时间、译文跟着改）
+        what = f"并入{SRC_LBL.get(more[0][:1], '来源')} {more[0]}"
     if len(changed) > 1:
         what += f"（共 {len(changed)} 条）"
     deleted = new.get("delete") and not old.get("delete")

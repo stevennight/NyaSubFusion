@@ -989,6 +989,14 @@ class Run:
                     items[s] = {"id": s, "src": "info" if c.get("type") in ("info", "name", "title") else "telop",
                                 "start": e["start"], "end": e["end"], "text": e["text"], "zone": e.get("zone"),
                                 "rect": e["rect"], "ocr_score": e.get("score", 1.0)}
+        # 在时间轴上手动关联的字幕 / 语音（融合时没用上，不在融合结果里）
+        extra = {s["id"]: dict(s, src="subs") for s in (self.results.get("align") or {}).get("subs", [])}
+        extra.update({s["id"]: {"id": s["id"], "src": "asr", "start": s["start"], "end": s["end"], "text": s["text"]}
+                      for s in (self._asr_fixed(self.results.get("asr")) or {}).get("segments", [])})
+        for c in cues:
+            for s in c.get("sources", []):
+                if s not in items and s in extra:
+                    items[s] = extra[s]
         return items
 
     def _text_rects(self, cues):

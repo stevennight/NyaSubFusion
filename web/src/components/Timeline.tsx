@@ -46,6 +46,9 @@ interface Props {
   onCueCut?: (cueId: string, t: number) => void;
   onSegSwap?: (cueId: string, seg: number, other: number) => void;   // 两段互换内容（改顺序）
   onSegSplit?: (cueId: string, boundary: number) => void;            // 在第 boundary 个分界处拆成两条字幕
+  // 参考轨（字幕 / 画面字 / 语音）上右键：以这一块新建一条关联的字幕 / 并入选中的字幕
+  onSourceCue?: (c: Candidate) => void;
+  onSourceAttach?: (c: Candidate, cueId: string) => void;
   refLanes?: boolean;                      // 显示参考轨（字幕 / 画面字 / 语音 / 原文）；false = 只留波形和译文
   onToggleRef?: () => void;
 }
@@ -126,7 +129,10 @@ export function Timeline(p: Props) {
   // ---- 「译文」轨：拖边缘 / 分界线 / 整条 ----
   const root = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; cue: string; seg: number; n: number } | null>(null);
+  const [menu, setMenu] = useState<
+    { x: number; y: number; cue: string; seg: number; n: number; src?: undefined }
+    | { x: number; y: number; src: Candidate; kind: string }
+    | null>(null);
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -312,12 +318,17 @@ export function Timeline(p: Props) {
     if (cid) p.onSelect(cid);
     else p.onDropped(c);
   };
-  const lane = (cls: string, items: Candidate[]) => (
+  const lane = (cls: string, items: Candidate[], kind: string) => (
     <div className="lane" style={{ width: W }}>
       {items.map((c) => (
-        <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)}`} style={blk(c)}
+        <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""}`} style={blk(c)}
              title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.dup_of ? " · 与字幕重复" : ""}`}
-             onClick={() => clickCand(c)}>{c.text.replace(/\n/g, " ")}</div>
+             onClick={() => clickCand(c)}
+             onContextMenu={(e) => {
+               if (!p.onSourceCue && !p.onSourceAttach) return;
+               e.preventDefault();
+               setMenu({ x: e.clientX, y: e.clientY, src: c, kind });
+             }}>{c.text.replace(/\n/g, " ")}</div>
       ))}
     </div>
   );
@@ -327,7 +338,26 @@ export function Timeline(p: Props) {
 
   return (
     <div className="timeline" ref={root}>
-      {menu && (
+      {menu?.src && (() => {
+        const c = menu.src, used = cueOf.current[c.id], selCue = p.cues.find((x) => x.id === p.selected);
+        const inSel = !!selCue?.sources.includes(c.id);
+        const close = (fn: () => void) => () => { fn(); setMenu(null); };
+        return (
+          <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 170) }}
+               onMouseDown={(e) => e.stopPropagation()}>
+            <div className="dim">{menu.kind} {c.id}{used ? ` · 用在 #${used}` : " · 没有用到"}</div>
+            <button disabled={!p.onSourceCue} title="时间用这一块的，原文用它的文字，配了大模型就顺手翻译"
+                    onClick={close(() => p.onSourceCue?.(c))}>＋ 以此新建字幕</button>
+            <button disabled={!p.onSourceAttach || !selCue || inSel}
+                    title={!selCue ? "先在译文轨或字幕列表里选中一条字幕" : inSel ? "已经关联在这条字幕上了" : "原文按时间接上这一块的文字，时间放宽到包住它，整句重新翻译"}
+                    onClick={close(() => selCue && p.onSourceAttach?.(c, selCue.id))}>
+              ⇢ 并入选中的字幕{selCue ? ` #${selCue.id}` : ""}{inSel ? "（已关联）" : ""}</button>
+            {used && used !== p.selected && <button onClick={close(() => p.onSelect(used))}>选中用到它的字幕 #{used}</button>}
+            <button onClick={close(() => p.onSeek(c.start))}>▶ 跳到这里</button>
+          </div>
+        );
+      })()}
+      {menu && !menu.src && (
         <div className="tl-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(e) => e.stopPropagation()}>
           <div className="dim">第 {menu.seg + 1} 段（共 {menu.n} 段）</div>
           <button disabled={menu.seg === 0 || !p.onSegSwap} onClick={() => { p.onSegSwap?.(menu.cue, menu.seg, menu.seg - 1); setMenu(null); }}>← 和前一段交换</button>
@@ -358,9 +388,9 @@ export function Timeline(p: Props) {
             <canvas ref={canvas} style={{ position: "absolute", top: 0, left: view.left, width: view.width, height: 36 }} />
           </div>
           {showRef && <>
-            {lane("sc", p.subs)}
-            {lane("so", p.ocr)}
-            {lane("sa", p.asr)}
+            {lane("sc", p.subs, "字幕")}
+            {lane("so", p.ocr, "画面字")}
+            {lane("sa", p.asr, "语音")}
             <div className="lane" style={{ width: W }}>
               {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : c.review === "flag" ? "marked" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
                 {segsOf(c, partsOf(c), c.orig.text, c) ?? c.orig.text}

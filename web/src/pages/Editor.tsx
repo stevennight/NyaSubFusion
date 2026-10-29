@@ -376,6 +376,18 @@ export function EditorPage() {
                 onCueTime={(id, t) => edit(() => api.editCue(s.pid!, id, t), "时间已保存")}
                 onCueSplit={(id, at) => edit(() => api.splitCue(s.pid!, id, at), "已拆成两条")}
                 onCueCut={(id, t) => edit(() => api.cuePieces(s.pid!, id, { action: "cut", t }), "已分成两段")}
+                onSourceCue={(c: Candidate) => {
+                  const got: { note?: string | null }[] = [];
+                  s.toast(`正在以 ${c.id} 新建字幕（翻译要几秒）…`);
+                  edit(async () => { const r = await api.cueFromSource(s.pid!, c.id); got.push(r); return r; })
+                    .then(() => got[0] && s.toast(got[0].note ? `已新建字幕；${got[0].note}` : `已新建字幕并翻译：${c.text.replace(/\n/g, " ")}`));
+                }}
+                onSourceAttach={(c: Candidate, id: string) => {
+                  const got: { note?: string | null }[] = [];
+                  s.toast(`正在把 ${c.id} 并入 #${id}（重新翻译要几秒）…`);
+                  edit(async () => { const r = await api.attachSource(s.pid!, id, c.id); got.push(r); return r; })
+                    .then(() => got[0] && s.toast(got[0].note ? `已并入 #${id}；${got[0].note}` : `已并入 #${id} 并重新翻译，记得看一下分段`));
+                }}
                 onDropped={(c: Candidate) => {
                   player.current?.seek(c.start);
                   // 只有画面字能恢复（字幕、语音没用上的是融合时去掉的重复内容）

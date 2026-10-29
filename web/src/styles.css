@@ -289,6 +289,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .tb tr.hint td { background: #ffc35a1f }
 .tb tr.hint td:first-child { box-shadow: inset 3px 0 0 var(--warn) }
 .blk2.hint { outline: 2px dashed var(--warn); outline-offset: 1px; z-index: 2 }
+.blk2.menuon { outline: 2px solid var(--acc2); outline-offset: 1px; z-index: 3 }  /* 正在右键的那一块 */
 
 /* “｜”分段 */
 .tb td .piece + .piece { border-top: 1px dashed #3a3a48; margin-top: 2px; padding-top: 2px }
