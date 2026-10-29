@@ -74,7 +74,8 @@ def build(cues, profile, cfg, src_code, tokens=None):
         main += _expand(cue, layers, profile, cfg, (tokens or {}).get(cue.get("id"), {}), seen)
     # 手动放过位置的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
     fixed = [m for m in main if m.get("pos")]
-    main = _extend_short(_resolve_overlaps([m for m in main if not m.get("pos")]), profile.min_duration)
+    main = _extend_short(_resolve_overlaps([m for m in main if not m.get("pos")], merge=profile.simultaneous == "merge"),
+                         profile.min_duration)
     return main + fixed + info
 
 
@@ -275,23 +276,22 @@ def _decorate(lines, ly, code, words, seen, profile):
     return out
 
 
-def _resolve_overlaps(items, min_dur=0.6):
-    """台词不叠着显示：后一句开始时前一句结束；几乎同时开始的合并成一条。"""
+def _resolve_overlaps(items, min_dur=0.6, merge=False):
+    """台词不叠着显示：后一句开始时前一句结束。
+    几乎同时开始的（不到 min_dur 秒）是同时出现的不同字幕（两个人同时说、旁白和画面上的台词同时出现），按输出方案的选择：
+    - 分开（默认）：各自成块、各自的时间，同时显示（排版时上下错开，见 render/ass.place）；
+    - merge：合成一屏，一条接一条地放——每条的译文和原文仍挨在一起，不按图层把几条的译文、原文分开堆。"""
     out = []
     for c in sorted(items, key=lambda c: (c["start"], c["end"])):
-        if out and c["start"] < out[-1]["end"] - 0.05:
-            prev = out[-1]
-            if c["start"] - prev["start"] < min_dur:
-                merged = []
-                for ly, code, lines in prev["layers"]:
-                    extra = next((l for l2, c2, l in c["layers"] if l2 is ly), [])
-                    merged.append((ly, code, lines + extra))
-                merged += [x for x in c["layers"] if not any(x[0] is m[0] for m in merged)]
-                prev["layers"] = merged
-                prev["end"] = max(prev["end"], c["end"])
-                prev["sources"] = prev.get("sources", []) + c.get("sources", [])
-                continue
-            prev["end"] = c["start"]
+        prev = out[-1] if out else None
+        if merge and prev and c["start"] < prev["end"] - 0.05 and c["start"] - prev["start"] < min_dur:
+            prev["layers"] = prev["layers"] + c["layers"]
+            prev["end"] = max(prev["end"], c["end"])
+            prev["sources"] = prev.get("sources", []) + c.get("sources", [])
+            continue
+        for p in out:
+            if p["end"] > c["start"] + 0.05 and c["start"] - p["start"] >= min_dur:
+                p["end"] = c["start"]
         out.append(dict(c))
     return out
 
@@ -300,6 +300,6 @@ def _extend_short(items, min_dur):
     """太短的字幕往后延长，但不盖到下一句。"""
     for a, b in zip(items, items[1:] + [None]):
         want = a["start"] + min_dur
-        if a["end"] < want:
-            a["end"] = round(min(want, b["start"]) if b else want, 3)
+        if a["end"] < want:  # 只延长不缩短（和下一句同时显示的不能被截短）
+            a["end"] = round(max(a["end"], min(want, b["start"]) if b else want), 3)
     return items

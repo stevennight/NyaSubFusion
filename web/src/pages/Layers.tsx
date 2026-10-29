@@ -118,6 +118,12 @@ export function LayersPage() {
             <span className="lbl">排版</span>
             <div className="row"><label className="row dim"><input type="checkbox" checked={prof.avoid_hardsub} onChange={(e) => updProf({ avoid_hardsub: e.target.checked })} />避开硬字幕</label>
               最多<div className="seg">{[1, 2, 3].map((n) => <button key={n} className={prof.max_lines === n ? "on" : ""} onClick={() => updProf({ max_lines: n })}>{n}</button>)}</div>行</div>
+            <span className="lbl">同时出现</span>
+            <div className="row" title="几条字幕几乎同时开始时（两个人同时说、旁白和画面上的台词同时出现）怎么显示">
+              <div className="seg">{([["stack", "分开显示"], ["merge", "合成一屏"]] as const).map(([v, l]) =>
+                <button key={v} className={(prof.simultaneous ?? "stack") === v ? "on" : ""} onClick={() => updProf({ simultaneous: v })}>{l}</button>)}</div>
+              <span className="dim" style={{ fontSize: 12 }}>{(prof.simultaneous ?? "stack") === "stack"
+                ? "每条单独一块、各自的时间，上下错开同时显示" : "放在同一屏里，每条的译文和原文仍挨在一起"}</span></div>
             <span className="lbl">去掉的符号</span>
             <input className="inp" value={marks} placeholder="例如 ➡" title="原文、译文里出现这些符号时去掉（所有方案通用，空格分隔）。默认去掉日文字幕行尾表示“接下一条”的 ➡"
                    onChange={(e) => setMarks(e.target.value)} />

@@ -162,6 +162,9 @@ class ProfileCfg(_M):
     avoid_hardsub: bool = True
     max_lines: int = 2
     min_duration: float = 1.0
+    # 几乎同时开始的几条字幕（两个人同时说、旁白和画面上的台词同时出现）：
+    # stack 各自成块、各自的时间，同时显示时上下错开；merge 合成一屏（每条的译文和原文仍挨在一起）
+    simultaneous: Literal["stack", "merge"] = "stack"
 
 
 DEFAULT_STYLES = {

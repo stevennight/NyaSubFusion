@@ -2,7 +2,7 @@
 from nyasub.core import config, segments
 from nyasub.core.edits import apply, piece_join_fields, piece_split_ops
 from nyasub.llm.refine import truncated
-from nyasub.render import layout
+from nyasub.render import ass, layout
 
 
 def _cue(orig, tr, start=0.0, end=6.0, sources=(), **kw):
@@ -238,3 +238,32 @@ def test_auto_split_screens_at_break_points():
     # 原来的两行（标题 / 罗马字）各自成屏，罗马字那行折成两行也不拆开
     assert layout._screens(zh, "新日本风土记\nSHIN NIHON FUDOKI", 16, 2) == [["新日本风土记"], ["SHIN NIHON", "FUDOKI"]]
     assert layout._screens(zh, "放得下的一句", 16, 2) == [["放得下的一句"]]
+
+
+def test_simultaneous_lines_stay_separate_and_stack():
+    """几乎同时开始的两条字幕（两个人同时说）不合成一块：各自的译文和原文在一起，同时显示、上下错开。"""
+    cfg, _ = config.load(None, None, {"project": {"targets": ["zh-Hans"]}})
+    prof = next(p for p in cfg.render.profiles if p.name == "bilingual")
+    a = _cue("いや、やばいなと思ったんですね", "我当时觉得 这下可糟了", 1390.72, 1392.74, id="q1")
+    b = dict(_cue("雪納豆づくり大変ですね", "做雪纳豆真不容易啊", 1391.21, 1393.91), id="q2")
+    c = dict(_cue("次の話", "下一句", 1395.0, 1397.0), id="q3")
+    items = layout.build([a, b, c], prof, cfg, "ja")
+    texts = [[layout.plain(l) for _, _, ls in it["layers"] for l in ls] for it in items]
+    assert texts[0] == ["我当时觉得 这下可糟了", "いや、やばいなと思ったんですね"]
+    assert texts[1] == ["做雪纳豆真不容易啊", "雪納豆づくり大変ですね"]
+    assert (items[0]["end"], items[1]["end"]) == (1392.74, 1393.91)       # 各自的结束时间，不互相截短
+    _, _, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [])
+    m = {p["item"]["start"]: p["margin_v"] for p in placed}
+    assert m[1391.21] > m[1390.72] and m[1395.0] == m[1390.72]           # 同时显示的放到上面；之后的回到原位
+
+
+def test_simultaneous_lines_merged_on_request_keep_pairs():
+    """输出方案选“合成一屏”：几乎同时开始的两条放进同一屏，但每条的译文和原文挨在一起，不按图层分开堆。"""
+    cfg, _ = config.load(None, None, {"project": {"targets": ["zh-Hans"]}})
+    prof = next(p for p in cfg.render.profiles if p.name == "bilingual").model_copy(update={"simultaneous": "merge"})
+    a = _cue("いや、やばいなと思ったんですね", "我当时觉得 这下可糟了", 1390.72, 1392.74, id="q1")
+    b = dict(_cue("雪納豆づくり大変ですね", "做雪纳豆真不容易啊", 1391.21, 1393.91), id="q2")
+    items = layout.build([a, b], prof, cfg, "ja")
+    assert len(items) == 1 and (items[0]["start"], items[0]["end"]) == (1390.72, 1393.91)
+    assert [[layout.plain(l) for l in ls] for _, _, ls in items[0]["layers"]] == [
+        ["我当时觉得 这下可糟了"], ["いや、やばいなと思ったんですね"], ["做雪纳豆真不容易啊"], ["雪納豆づくり大変ですね"]]

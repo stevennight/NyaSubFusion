@@ -99,6 +99,7 @@ export interface Layer {
 export interface Profile {
   name: string; enabled: boolean; format: "ass" | "srt"; filename: string; layers: Layer[];
   info_mode: "near" | "top" | "off"; info_style: string; avoid_hardsub: boolean; max_lines: number; min_duration: number;
+  simultaneous?: "stack" | "merge";   // 几乎同时开始的几条字幕：分开显示（上下错开）/ 合成一屏
 }
 export type Cfg = Record<string, any>;
 

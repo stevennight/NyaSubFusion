@@ -214,8 +214,11 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
             if cx is not None and abs(cx - px / 2) < mv - margin_v:
                 placed.append({"kind": "main", "item": it, "margin_v": margin_v, "rows": rows, "ruby": ruby,
                                "x": round(cx), "y": py - margin_v})
+                boxes.append(_box(it["start"], it["end"], cx - w / 2, cx + w / 2, py - margin_v - h, py - margin_v))
                 continue
         placed.append({"kind": "main", "item": it, "margin_v": mv, "rows": rows, "ruby": ruby})
+        # 放好的台词也占位置：同时显示的另一条字幕（两个人同时说、旁白和画面台词同时出现）放到它上面，不叠在一起
+        boxes.append(_box(it["start"], it["end"], px / 2 - w / 2, px / 2 + w / 2, py - mv - h, py - mv))
     return px, py, used, placed
 
 
