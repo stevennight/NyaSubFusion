@@ -31,6 +31,7 @@ export interface Candidate {
   id: string; start: number; end: number; text: string;
   rect?: [number, number, number, number]; score?: number; zone?: string; crop?: string;
   dropped?: string; dup_of?: string[];
+  ruby_of?: string;   // 振假名：标在这条画面字上的注音
 }
 
 export interface FusedItem extends Candidate { src: "subs" | "telop" | "info" | "asr"; asr_hint?: string; ocr_score?: number }

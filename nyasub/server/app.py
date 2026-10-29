@@ -526,7 +526,9 @@ def create_app(token: str | None = None) -> FastAPI:
         fused = res.get("fuse") or {}
         marks = fused.get("ocr_marks", {})
         used = {s for c in cues for s in c.get("sources", [])}  # 手动恢复了的不再标成丢弃
-        ocr = [dict(e, **({} if e["id"] in used else marks.get(e["id"], {}))) for e in res.get("ocr_refine") or []]
+        # 振假名（并到了下面那条画面字上）：融合结果是旧的、还没标上的也标成丢弃
+        ocr = [dict(e, **({} if e["id"] in used else {**marks.get(e["id"], {}), **({"dropped": "ruby"} if e.get("ruby_of") else {})}))
+               for e in res.get("ocr_refine") or []]
         return {
             "meta": res.get("probe"), "src": run.src, "targets": [lang.canonical(t) for t in run.cfg.project.targets],
             "aspect": aspect, "hardsub": boxes,

@@ -401,7 +401,7 @@ export function EditorPage() {
                           : `已恢复成字幕并翻译：${c.text.replace(/\n/g, " ")}`));
                     },
                   } : undefined;
-                  s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${DROP[c.dropped] ?? c.dropped}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`, restore);
+                  s.toast(`${c.id}「${c.text}」${c.dropped ? `已丢弃（${DROP[c.dropped] ?? c.dropped}${c.ruby_of ? `，是 ${c.ruby_of} 上的注音` : ""}）` : c.dup_of ? "与字幕重复，已去掉" : "没有用到"}`, restore);
                 }} />
       <div className="splitter" title="上下拖动：调整视频和字幕列表的大小" onMouseDown={(e) => {
         // 往下拖 = 视频变大

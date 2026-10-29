@@ -322,7 +322,7 @@ export function Timeline(p: Props) {
     <div className="lane" style={{ width: W }}>
       {items.map((c) => (
         <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""}`} style={blk(c)}
-             title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.dup_of ? " · 与字幕重复" : ""}`}
+             title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.ruby_of ? `（${c.ruby_of} 的注音）` : ""}${c.dup_of ? " · 与字幕重复" : ""}`}
              onClick={() => clickCand(c)}
              onContextMenu={(e) => {
                if (!p.onSourceCue && !p.onSourceAttach) return;

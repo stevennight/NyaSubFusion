@@ -103,11 +103,13 @@ def prefilter(ocr_events, duration, pack):
         e.pop("dropped", None)
         if e["id"] in logos:
             e["dropped"] = "logo"
+        elif e.get("ruby_of"):  # 振假名：已经并到下面那条上（sources/ocr.attach_ruby）
+            e["dropped"] = "ruby"
         elif _is_junk(e, pack):
             e["dropped"] = "junk"
         elif e.get("kind") == "scene" and e["id"] not in titles:
             e["dropped"] = "scene"
-        e["prefiltered"] = e.get("dropped") in ("logo", "junk")  # 台标和杂讯不用送去视觉复核
+        e["prefiltered"] = e.get("dropped") in ("logo", "junk", "ruby")  # 台标和杂讯不用送去视觉复核
 
 
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
@@ -200,6 +202,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         "ocr_logo": sum(1 for e in ocr_all if e.get("dropped") == "logo"),
         "ocr_junk": sum(1 for e in ocr_all if e.get("dropped") == "junk"),
         "ocr_scene": sum(1 for e in ocr_all if e.get("dropped") == "scene"),
+        "ocr_ruby": sum(1 for e in ocr_all if e.get("dropped") == "ruby"),
         "ocr_dup": sum(1 for e in ocr_events if e.get("dup_of")),
         "telop": sum(1 for o in ocr_items if o["src"] == "telop"),
         "info": sum(1 for o in ocr_items if o["src"] == "info"),

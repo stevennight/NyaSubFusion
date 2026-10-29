@@ -74,6 +74,15 @@ class LanguagePack:
         parts.append(text[start:].strip("　 "))
         return parts
 
+    # ---------- 画面上的注音小字（日语的振假名） ----------
+    def is_furigana(self, text: str) -> bool:
+        """这段字像不像标在别的字上的注音（日语：全是假名）。没有这种习惯的语言一律 False。"""
+        return False
+
+    def furigana_hint(self, line: str, i: int, j: int, reading: str):
+        """画面上 line[i:j] 标着读音 reading：分词读得不一样时返回要告诉注音的读音 {"src", "reading"}，否则 None。"""
+        return None
+
     # ---------- 注音 / 转写（有的语言包才实现） ----------
     annotations: tuple[str, ...] = ()   # 支持的注音：furigana / pinyin / zhuyin
     translit_name = None                 # 整行转写的名字，例如“罗马字”；None = 不支持

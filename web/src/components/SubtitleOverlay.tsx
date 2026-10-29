@@ -68,7 +68,7 @@ export function SubtitleOverlay({ preview, time, width, height, boxes, onMove, o
   );
 }
 
-export const DROP: Record<string, string> = { logo: "台标", junk: "杂讯", scene: "实物上的字" };
+export const DROP: Record<string, string> = { logo: "台标", junk: "杂讯", scene: "实物上的字", ruby: "振假名" };
 
 const SNAP = 8;     // 离参考线这么近（屏幕像素）就吸过去
 const MARGIN = 46;  // 四边的安全边（1080 画布上的像素，和自动排版时台词离底边的距离一样）

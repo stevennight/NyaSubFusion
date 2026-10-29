@@ -701,3 +701,123 @@ def tight_rect(pieces, text, final):
         keep += add
         rest = [p for p in rest if p not in add]
     return [min(p[0] for p in keep), min(p[1] for p in keep), max(p[2] for p in keep), max(p[3] for p in keep)]
+
+
+# ---------------- 振假名 ----------------
+
+
+def _lines_of(e):
+    """一条画面字每一行的框和文字（横排从上到下，竖排从右到左）。字是按行均分框估的（旧结果没有每行的框）。"""
+    lines = [l for l in (e.get("text_local") or e["text"]).split("\n") if l.strip()] or [e["text"]]
+    x0, y0, x1, y1 = e["rect"]
+    n = len(lines)
+    if e.get("vertical"):
+        w = (x1 - x0) / n
+        return [((x1 - (i + 1) * w, y0, x1 - i * w, y1), t) for i, t in enumerate(lines)]
+    h = (y1 - y0) / n
+    return [((x0, y0 + i * h, x1, y0 + (i + 1) * h), t) for i, t in enumerate(lines)]
+
+
+def _ruby_line(r, line, vertical, aspect):
+    """注音 r（框）在不在这一行（框 line）的汉字上方（竖排是右边）：字高是这一行的 1/4～2/3，紧贴着，左右不出这一行。
+    是的话返回离这一行的距离（越小越像），否则 None。"""
+    i = 0 if vertical else 1                     # 字高的方向：横排 y，竖排 x
+    j = 1 - i                                    # 沿着行的方向
+    rh, lh = r[i + 2] - r[i], line[i + 2] - line[i]
+    if not (0.25 * lh <= rh <= 0.7 * lh):
+        return None
+    gap = (r[0] - line[2]) if vertical else (line[1] - r[3])  # 竖排：注音在这一列右边
+    if not -0.4 * rh <= gap <= 0.8 * rh:
+        return None
+    # 沿着行的方向：注音的中心在这一行里，两头最多出去大约一个字
+    lw = lh * (aspect if vertical else 1 / aspect)  # 一个字的宽度换成沿行方向的坐标
+    c = (r[j] + r[j + 2]) / 2
+    if not (line[j] <= c <= line[j + 2] and r[j] >= line[j] - lw and r[j + 2] <= line[j + 2] + lw):
+        return None
+    return abs(gap)
+
+
+def _ruby_base(r, line, text, vertical, aspect):
+    """注音下面是这一行的哪几个汉字：按字宽估注音中心落在第几个字（行可能左对齐、居中或右对齐，几种估法要指向同一串汉字），
+    返回 (开始, 结束)（这一行文字里的位置）或 None（估不准）。"""
+    from ..lang import ruby as kana
+
+    j = 1 if vertical else 0
+    lh = line[3 - j] - line[1 - j]
+    cw = lh * (aspect if vertical else 1 / aspect)
+    n = len(text)
+    c = (r[j] + r[j + 2]) / 2
+    span = line[j + 2] - line[j]
+    used = min(span, n * cw)
+    starts = {line[j], line[j] + (span - used) / 2, line[j + 2] - used}  # 左对齐 / 居中 / 右对齐
+    runs = set()
+    for s in starts:
+        k = int((c - s) / max(1e-6, used / n))
+        for x in (k, k - 1, k + 1):
+            if 0 <= x < n and kana.is_kanji(text[x]):
+                a = b = x
+                while a > 0 and kana.is_kanji(text[a - 1]):
+                    a -= 1
+                while b + 1 < n and kana.is_kanji(text[b + 1]):
+                    b += 1
+                runs.add((a, b + 1))
+                break
+    return runs.pop() if len(runs) == 1 else None
+
+
+def attach_ruby(events, pack, aspect=16 / 9):
+    """振假名：汉字上方（竖排是右边）注音的小字。识别时它和下面的字高差太多，没并在一起，成了单独一条画面字；
+    视觉复核看截图时又常把它当成单独一行写进下面那条（「わらづと / 藁苞」，还因此漏掉一行）。
+    找出来以后：注音那条标上 ruby_of（下面那条的 id；融合时丢掉，不送去复核）；下面那条去掉复核写进来的注音行
+    （去掉后比本地识别少了一截的，换回本地识别的字），框包住注音，记下读音 ruby：[{"base", "reading", "hint"}]，
+    hint 是读音词典里没有、要告诉注音的读音（{"src", "reading"}），分词本来就读对了的为 None。
+    只认语言包认可的注音（日语：全是假名）。返回新的列表，不改传进来的；对同样的输入结果一样。"""
+    from ..lang import ruby as kana
+    from ..llm.refine import truncated
+
+    out = [dict(e) for e in events]
+    for e in out:
+        e.pop("ruby_of", None)
+        e.pop("ruby", None)
+    if not pack.is_furigana("あ"):
+        return out
+    by_start = sorted(out, key=lambda e: e["start"])
+    for r in out:
+        if r.get("moving") or not pack.is_furigana(r["text"].replace("\n", "")):
+            continue
+        best = None
+        for b in by_start:
+            if b["start"] >= r["end"]:
+                break
+            if b is r or b.get("moving") or bool(b.get("vertical")) != bool(r.get("vertical")) or b.get("ruby_of"):
+                continue
+            ov = min(r["end"], b["end"]) - max(r["start"], b["start"])
+            if ov < 0.5 * (r["end"] - r["start"]) or pack.is_furigana(b["text"].replace("\n", "")):
+                continue
+            for li, (rect, text) in enumerate(_lines_of(b)):
+                if not any(kana.is_kanji(ch) for ch in text):
+                    continue
+                d = _ruby_line(r["rect"], rect, r.get("vertical"), aspect)
+                # 注音正下方得是汉字（招牌、手写字旁边的假名不算）
+                at = _ruby_base(r["rect"], rect, text, r.get("vertical"), aspect) if d is not None else None
+                if at and (best is None or d < best[0]):
+                    best = (d, b, text, at)
+        if best is None:
+            continue
+        _, b, text, at = best
+        r["ruby_of"] = b["id"]
+        reading = kana.to_hira(norm(r["text"]))
+        b.setdefault("ruby", []).append({"base": text[at[0]:at[1]], "reading": reading,
+                                         "hint": pack.furigana_hint(text, at[0], at[1], reading)})
+        b["rect"] = [min(b["rect"][0], r["rect"][0]), min(b["rect"][1], r["rect"][1]),
+                     max(b["rect"][2], r["rect"][2]), max(b["rect"][3], r["rect"][3])]
+        # 复核写进来的注音行：本地识别没有这一行、文字就是这条注音
+        local = {norm(l) for l in (b.get("text_local") or "").split("\n")}
+        lines = b["text"].split("\n")
+        keep = [l for l in lines if not (norm(l) == norm(r["text"]) and norm(l) not in local)]
+        if len(keep) < len(lines):
+            b["text"] = "\n".join(keep)
+            if b.get("text_local") and truncated(b["text"], b["text_local"]):
+                b["text"] = b["text_local"]
+            b["lines"] = len([l for l in b["text"].split("\n") if l.strip()])
+    return out

@@ -123,6 +123,39 @@ class Japanese(LanguagePack):
                         "guess": has_kanji and (proper or not known)})
         return out
 
+    def is_furigana(self, text):
+        t = re.sub(r"[\s　]", "", text or "")
+        return 0 < len(t) <= 12 and all(ruby.is_kana(c) for c in t)
+
+    def furigana_hint(self, line, i, j, reading):
+        """画面上的振假名：line[i:j] 这几个汉字读 reading。找分词里包含它们的那个词（汉字前后只能是送假名），
+        分词给的读音和“送假名 + 振假名”对得上就不用管；对不上（藁苞 わらづと）返回整个词的读音。"""
+        reading = ruby.to_hira(reading)
+        if not reading or not 0 <= i < j <= len(line):
+            return None
+        try:
+            from sudachipy import SplitMode
+
+            toks = _tok().tokenize(line, SplitMode.C)
+        except ImportError:
+            return None
+        for m in toks:
+            s, e = m.begin(), m.end()
+            if not (s <= i and j <= e):
+                continue
+            surface = m.surface()
+            head, tail = line[s:i], line[j:e]
+            if not all(ruby.is_kana(c) for c in head + tail):  # 词里还有别的汉字：读音分不开，不管
+                return None
+            tail_h = ruby.to_hira(tail)
+            # 识别出的注音有时把送假名也带上了（瞬 + き 读成「まばたき」）
+            want = ruby.to_hira(head) + (reading if tail_h and reading.endswith(tail_h) else reading + tail_h)
+            got = ruby.to_hira(m.reading_form())
+            if got == want:
+                return None
+            return {"src": surface, "reading": want}
+        return None
+
     def ruby_visible(self, word, cfg, first):
         """cfg 是 AnnotateCfg；first 表示这个词是不是第一次出现。"""
         if word["num"] and not cfg.numbers:

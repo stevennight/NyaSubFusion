@@ -65,7 +65,7 @@ DEFS = {
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
     # v2：没人说出来的画面字（标题、菜名）不和台词合并；说明类的位置框取所有来源的并集
     # 套用手动修改，再给原文和各译文注音（振假名、拼音…）
-    "annotate": StageDef(["translate"], ["render.strip_marks"], version=10),  # v10：字面的“\n”换回换行；v9：画面上也打着的字幕句不再显示原文；v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
+    "annotate": StageDef(["translate"], ["render.strip_marks"], version=11),  # v11：画面上的振假名当读音参考；v10：字面的“\n”换回换行；v9：画面上也打着的字幕句不再显示原文；v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
@@ -340,7 +340,17 @@ class Run:
                 self.fps[n] = rec
         self.src = self._resolve_source(self.results.get("asr") or {"language": None},
                                         self.results.get("subs") or [], quiet=True)
+        if self.results.get("ocr_refine"):
+            self.results["ocr_refine"] = self._ruby_fixed(self.results["ocr_refine"])
         return self.results
+
+    def _ruby_fixed(self, events):
+        """画面字找出振假名（并到下面那条画面字上，见 sources/ocr.attach_ruby）再用。存着的结果不改，每次读出来时整理。"""
+        from ..sources.ocr import attach_ruby
+
+        info = self.results.get("probe") or {}
+        aspect = (info.get("video") or {}).get("aspect") or 16 / 9
+        return attach_ruby(events, lang.get(self.src), aspect)
 
     def render_context(self):
         """输出需要的东西：(字幕, 注音词, 画面比例, 硬字幕框)。先调 load_state。"""
@@ -450,6 +460,8 @@ class Run:
 
         ocr = self.stage("ocr", lambda: self._run_ocr(info))
         refined = self.stage("ocr_refine", lambda: self._refine(ocr))
+        if refined is not None:
+            refined = self.results["ocr_refine"] = self._ruby_fixed(refined)
         if self._stop("ocr"):
             return self._done(t_all)
 
@@ -694,6 +706,10 @@ class Run:
         from ..llm.refine import refine_ocr
 
         prefilter(events, self.results["probe"]["duration"], lang.get(self.src))
+        ruby = {e["id"] for e in self._ruby_fixed(events) if e.get("ruby_of")}
+        for e in events:  # 振假名不用送去复核（会并到下面那条上）
+            if e["id"] in ruby:
+                e["prefiltered"] = True
         return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
                           context=self._refine_context(), frame_width=self.cfg.ocr.refine_frame_width,
                           boxed=self._refine_on() and self.cfg.ocr.refine_boxed, batch=self.cfg.ocr.refine_batch)
@@ -741,7 +757,7 @@ class Run:
     def _log_fuse(self, fused):
         s = fused["stats"]
         log(f"融合：字幕 {s['subs']} 条；画面字 {s['ocr_total']} 条（台标 {s['ocr_logo']}，杂讯 {s['ocr_junk']}，"
-            f"实物上的字 {s['ocr_scene']}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
+            f"实物上的字 {s['ocr_scene']}，振假名 {s.get('ocr_ruby', 0)}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
             f"语音 {s['asr_total']} 段（无字幕覆盖 {s['asr_uncovered']}，作为参考附到字幕上 {s['asr_hint']}）")
 
     def _hardsub_boxes(self, ocr_events, fused, rects=None, cues=()):
@@ -870,12 +886,15 @@ class Run:
         return out
 
     def _readings(self, glossary):
-        """优先级：读音词典 > 术语表读音（源语言）；同一写法只保留优先级高的。"""
+        """优先级：读音词典 > 画面上的振假名（分词读得不一样的那些） > 术语表读音（源语言）；同一写法只保留优先级高的。"""
         out, seen = [], set()
+        screen = [{"lang": self.src, "src": r["hint"]["src"], "reading": r["hint"]["reading"], "proper": False,
+                   "from": "screen"}
+                  for e in self.results.get("ocr_refine") or [] for r in e.get("ruby") or [] if r.get("hint")]
         terms = [{"lang": self.src, "src": t.get("src", ""), "reading": t.get("reading", ""),
                   "proper": t.get("type") in ("地名", "人名", "团体"), "from": "glossary"}
                  for t in (glossary or {}).get("terms", []) if t.get("reading") and t.get("reading") != "—"]
-        for e in self._user_readings() + terms:
+        for e in self._user_readings() + screen + terms:
             k = (lang.canonical(e.get("lang") or self.src), e.get("src"))
             if e.get("src") and e.get("reading") and k not in seen:
                 seen.add(k)
