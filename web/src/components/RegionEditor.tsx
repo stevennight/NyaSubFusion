@@ -1,5 +1,5 @@
 // 画面字的识别区（绿）和排除区（红，台标、固定角标）。
-// 流程页上是一张小预览，点开是大的编辑窗口：拖动画新框、拖框内移动、拖四角改大小、直接输入坐标；
+// 处理页（画面字识别）上是一张小预览，点开是大的编辑窗口：拖动画新框、拖框内移动、拖四角改大小、直接输入坐标；
 // 样帧可以逐秒 / 逐条画面字翻看，虚线框是那一刻已经识别到的文字。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -39,7 +39,7 @@ function Boxes({ regions, sel, onPick, onHandle }: {
   })}</>;
 }
 
-/** 流程页上的小预览：点开编辑。 */
+/** 处理页上的小预览：点开编辑。 */
 export function RegionEditor({ pid, duration, aspect, regions, boxes, onChange }: {
   pid: string; duration: number; aspect?: number; regions: Region[]; boxes: Candidate[]; onChange: (r: Region[]) => void;
 }) {

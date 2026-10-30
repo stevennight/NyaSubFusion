@@ -1,6 +1,10 @@
 # NyaSubFusion 配置示例。没写的项用内置默认值。
-# 配置按层合并：内置默认 < 用户全局（%APPDATA%\NyaSubFusion\config.toml）< 作品 series.toml
-#             < 项目（<视频名>.nyasub\project.toml）< --config 指定的文件 < 命令行参数
+# 每一集的设置都在项目里（<视频名>.nyasub\project.toml），按层合并：内置默认 < 项目 < --config 指定的文件 < 命令行参数。
+# 用户全局配置（%APPDATA%\NyaSubFusion\config.toml）只放跟这台电脑有关的项：[llm] 的接口列表和用途、
+# [asr] 的 device / compute_type / download_root / hf_endpoint、[ocr] 的 use_cuda / hwaccel。写在全局里的其它项
+# 会被挪进“我的默认”预设（新项目默认用它）。作品默认设置（series.toml）、预设（presets\*.toml）只在新建一集时
+# 复制过去，之后各自独立；改了可以在界面里同步给已有的集，或者让一集逐项恢复成模板。
+# 样式（[render.styles]）写的是一整套：没写的样式就没有（出厂样式随时能在界面里加回来）。
 
 [project]
 source = "auto"               # 源语言：ja / zh-Hans / en / ko …；auto = 按语音或字幕自动判断
@@ -41,7 +45,8 @@ mode = "auto"                 # auto：配了接口和 Key 就调接口，否则
 # 推荐：在界面的「设置」里管理接口列表，API Key 存进系统凭据库（不写进任何配置文件）。
 # 对应的配置写法（用户全局配置）：
 #   translate = "deepseek"    # 翻译用哪个
-#   vision = "bailian"        # 视觉复核用哪个（空 = 和翻译一样）
+#   vision = "bailian"        # 画面字复核用哪个（空 = 和翻译一样）
+#   asr = ""                  # 云端语音识别用哪个（空 = 和翻译一样）
 #   providers = [
 #     { name = "deepseek", base_url = "https://api.deepseek.com/v1", model = "deepseek-chat" },
 #     { name = "bailian", base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1", model = "qwen-max", vision_model = "qwen-vl-max" },

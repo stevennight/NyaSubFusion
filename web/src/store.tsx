@@ -1,7 +1,7 @@
 // 全局状态：当前项目、数据、配置、运行中的实时事件。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, subscribe } from "./api";
-import type { Cfg, ConfigState, LangInfo, OverwriteDir, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
+import type { Cfg, ConfigState, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
 
 interface Store {
   pid: string | null;
@@ -20,8 +20,6 @@ interface Store {
   open: (pid: string | null) => void;
   reload: () => Promise<void>;
   setConfig: (project: Cfg) => Promise<void>;
-  saveConfig: (body: { project?: Cfg; series?: Cfg }) => Promise<void>;   // 这一集 / 所属作品的默认设置（可以一起存）
-  overwriteSeries: (direction: OverwriteDir) => Promise<void>;   // 用作品设置覆盖这一集 / 用这一集的设置覆盖作品
   run: (body?: { until?: string; redo?: string[]; translate?: string }) => Promise<void>;
   exportVideo: (mode: "mux" | "burn", profiles?: string[]) => Promise<void>;
   cancel: () => Promise<void>;
@@ -92,7 +90,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [pid]);
 
+  const pidRef = useRef(pid);
+  pidRef.current = pid;
+  const [tick, setTick] = useState(0);
   const open = useCallback((id: string | null) => {
+    if (id && id === pidRef.current) { setTick((n) => n + 1); return; }  // 已经打开的这一集：重新读一遍就行（清掉的话 pid 没变，不会再读）
     if (id) localStorage.setItem(LAST, id);
     else localStorage.removeItem(LAST);
     setPid(id);
@@ -107,7 +109,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => { api.langs().then(setLangs).catch(() => {}); }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { reload(); }, [reload, tick]);
 
   // 实时事件
   useEffect(() => {
@@ -166,13 +168,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setVersion((v) => v + 1);
   }, [pid]);
   const setConfig = useCallback((project: Cfg) => saveConfig({ project }), [saveConfig]);
-  const overwriteSeries = useCallback(async (direction: OverwriteDir) => {
-    if (!pid) return;
-    const r = await api.overwrite(pid, direction);
-    setCfg(r.config);
-    setSummary((s) => (s ? { ...s, plan: r.plan } : s));
-    setVersion((v) => v + 1);
-  }, [pid]);
 
   const run = useCallback(async (body: { until?: string; redo?: string[]; translate?: string } = {}) => {
     if (!pid) return;
@@ -212,8 +207,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
-    open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
+    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

@@ -51,7 +51,7 @@ export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summar
             )}
             <h3 style={{ marginTop: 14 }}>作品</h3>
             <SeriesPicker value={seriesName} onChange={setSeriesName} onPicked={setPicked} />
-            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：这一集会复制一份作品的设置（语言、识别、输出都用它）。之后这一集和作品各自独立，在「流程」里改这一集不影响作品。节目说明不填就用作品的。</div>}
+            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：这一集会复制一份作品的设置（语言、识别、输出都用它）。之后这一集和作品各自独立，在这一集的「处理」「输出」里改不影响作品。节目说明不填就用作品的。</div>}
             <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
                       value={context} onChange={(e) => setContext(e.target.value)} />
             {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
@@ -78,7 +78,7 @@ export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summar
                 </div>
               ))}
             </div>
-            <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>这些设置都写在项目的 project.toml 里，之后可以在「流程」「图层样式」里随时改。</div>
+            <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>选的预设就是这一集的模板：设置写在项目的 project.toml 里，之后可以在「处理」「输出」里随时改，也能随时恢复成模板的值。</div>
           </div>
         </div>
         <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>

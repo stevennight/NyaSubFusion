@@ -59,7 +59,7 @@
 nyasub/
   core/
     model.py         # Project / Candidate / Cue / Token / Layer / Profile
-    config.py        # 分层配置：默认 < 用户 < 作品 < 项目 < 单条
+    config.py        # 分层配置：默认 < 项目 < --config < 命令行；全局只放接口、显卡这类（见第 13 节）
     pipeline.py      # 步骤图、指纹缓存、断点续跑
     store.py         # 项目目录读写（原子写）
   sources/
@@ -557,7 +557,7 @@ libass 不支持 ruby，带注音的字幕改为逐块定位（没有注音的�
 | GET | `/api/langs` | 已安装语言包，及其注音 / 转写选项的 JSON Schema |
 | GET/POST | `/api/components` | GPU 组件、模型的安装状态；开始 / 取消下载 |
 | POST | `/api/shutdown` | 桌面壳关闭时通知内核优雅退出 |
-| GET/PUT | `/api/settings` | 用户全局配置（接口列表、用途分配、镜像）；返回每个接口有没有 Key，不回显 Key |
+| GET/PUT | `/api/settings` | 用户全局配置（只放跟这台电脑有关的：接口列表、用途分配、镜像）；返回每个接口有没有 Key，不回显 Key |
 | PUT/DELETE | `/api/settings/keys/{接口名}` | API Key 存入 / 移出系统凭据库（keyring） |
 | POST | `/api/settings/test` | 测试接口连接（发一条很短的请求） |
 | POST | `/api/projects/{id}/cues/{cid}/split` · `/merge` · `/api/projects/{id}/cues` · `/edits/undo` · `/edits/redo` | 拆分、与下一条合并、插入、撤销、重做（只重做注音，不会触发重新识别或翻译） |
@@ -661,3 +661,30 @@ nyasubfusion.exe（Tauri 2）
 | CUDA DLL 版本冲突（用户机器上已有别的 CUDA） | 组件目录隔离 + `add_dll_directory` 显式加载；`doctor` 检查 |
 | 老 Windows 10 没有 WebView2 | Tauri 安装包内置 WebView2 引导安装 |
 | 小语种注音 / 转写质量参差 | 语言包插件化，首批只承诺 ja / zh / en |
+
+## 13. 界面 v2 与配置格式 3（2026-10-31）
+
+原型见 [prototype/v2.html](../prototype/v2.html)（打开先看设计说明页）。
+
+**界面结构**：左栏只放应用级的 库 · 任务 · 设置。库按作品分组；作品页有 各集 / 默认设置 / 节目说明与术语。打开一集后用页内标签：
+
+| 标签 | 内容 |
+| --- | --- |
+| 处理 | 左边步骤列表（来源类步骤的开关在列表上），右边这一步的设置、“下次重做这一步”、这一次 / 上次的日志 |
+| 审校 | 不变 |
+| 输出 | 左边清单：字幕文件（每个一个“输出”开关，含广播字幕原样）· 视频（封装 MKV、压制硬字幕）· 样式 · 通用；右边编辑 + 预览 |
+| 资料 | 节目说明、本集概要、术语表、读音词典（每条标范围：本集 / 作品 / 全局） |
+
+一集的页头常驻运行条（▶ 运行，写出下次运行会做哪几步；运行到、强制重做、不用缓存、清掉修改收在 ▾）。所有设置改了自动保存（`web/src/doc.tsx` 的 `useDraft` / `useRemote`，只写改过的项；离开页面时马上存），运行条在还没存完时先等。处理页、输出页编辑的是一份 `ConfigDoc`，所以一集、作品默认设置、自己的预设用同一套页面（模板模式整页变紫、没有运行和日志）。
+
+**模板**：每一集只有一个模板——属于有默认设置的作品就是作品默认设置，否则是建它时选的预设（`project.preset`）。`GET /api/projects/{pid}/template` 返回和模板不一样的项（逐级的键 `keys`），`POST …/template/apply {keys, to: episode|template}` 逐项恢复成模板 / 存到模板（先备份）。作品默认设置改了以后 `POST /api/series/{name}/sync` 只把改了的项同步给选中的集。每次运行前留一份 `backup/last-run.toml`，可以回到上次运行时的设置。
+
+**预设**：内置预设写在 `presets.py`（只读）；自己的预设存在 `用户目录/presets/<名字>.toml`（完整的一份设置），`presets/index.json` 记哪个是新项目默认。还没有 `project.toml` 的新项目（命令行）用默认的自己的预设。
+
+**配置格式**（`version`）：
+
+- 2：`render.styles` 是一整套，后面的层整套替换前面的，不再按名字补回内置样式（所以能删）；每个样式缺的字段按它来自的出厂样式（`base`，或同名的出厂样式）补齐。兜底样式 `render.fallback_style`（图层 / 说明文字的样式不存在时用它）。样式多了 `spacing`、`box`（ASS BorderStyle 3）、`box_color`、`box_opacity`。
+- 3：用户全局配置只留 `MACHINE_KEYS`（接口、用途、显卡、下载镜像），不再实时影响项目。原来写在全局里的处理参数第一次读的时候挪成“我的默认”预设，并留一份 `legacy_global.toml`。
+
+旧的项目 / 作品配置第一次读的时候自动升级（`config.upgrade_file`）：写上当时合并出来的整套样式、补上以前从全局继承的项，结果不变；原文件备份到 `backup/*-v1.toml`、`*-v2.toml`。
+

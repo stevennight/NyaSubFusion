@@ -330,7 +330,7 @@ export function EditorPage() {
   }, [step, undo, redo, shiftRate, toggleFlag, duration]);
 
   if (!d) return <div className="empty">加载中…</div>;
-  if (!cues.length) return <div className="empty">还没有字幕。先在「流程」里运行一次。</div>;
+  if (!cues.length) return <div className="empty">还没有字幕。先在「处理」里运行一次（右上角 ▶ 运行）。</div>;
 
   const matches = (c: Cue) => FILTER_TEST[filter](c);
   const counts = Object.fromEntries(FILTERS.map(([f]) => [f, cues.filter(FILTER_TEST[f]).length])) as Record<Filter, number>;
