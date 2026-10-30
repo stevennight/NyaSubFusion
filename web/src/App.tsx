@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { PageGuard } from "./components/PageGuard";
 import { EditorPage } from "./pages/Editor";
 import { GlossaryPage } from "./pages/Glossary";
 import { LayersPage } from "./pages/Layers";
@@ -57,13 +58,15 @@ export default function App() {
       </nav>
       <main className="main">
         {s.error && <div className="errbar">⚠ {s.error}<span className="sp" /><button className="btn sm ghost" onClick={() => s.setError(null)}>关闭</button></div>}
-        {view === "projects" && <ProjectsPage onOpened={() => setView("pipeline")} />}
-        {view === "pipeline" && s.pid && <PipelinePage onReview={() => setView("editor")} />}
-        {view === "editor" && s.pid && <EditorPage />}
-        {view === "layers" && s.pid && <LayersPage />}
-        {view === "glossary" && s.pid && <GlossaryPage />}
-        {view === "settings" && <SettingsPage />}
-        {view === "queue" && <QueuePage onOpenProject={() => setView("pipeline")} />}
+        <PageGuard key={`${view}:${s.pid ?? ""}`} onBack={() => setView("projects")}>
+          {view === "projects" && <ProjectsPage onOpened={() => setView("pipeline")} />}
+          {view === "pipeline" && s.pid && <PipelinePage onReview={() => setView("editor")} />}
+          {view === "editor" && s.pid && <EditorPage />}
+          {view === "layers" && s.pid && <LayersPage />}
+          {view === "glossary" && s.pid && <GlossaryPage />}
+          {view === "settings" && <SettingsPage />}
+          {view === "queue" && <QueuePage onOpenProject={() => setView("pipeline")} />}
+        </PageGuard>
       </main>
       {s.toastMsg && (
         <div className="toast">{s.toastMsg}

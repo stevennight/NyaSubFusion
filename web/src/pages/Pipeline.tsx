@@ -440,13 +440,17 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
 }) {
   const s = useStore();
   const mode = String(val("render.video.mode") ?? "off");
-  type Prof = { name: string; format: string; enabled: boolean };
-  const profiles = ((val("render.profiles") ?? deepGet(s.config?.effective, "render.profiles")) as Prof[]) ?? [];
+  type Prof = { name: string; format?: string; enabled?: boolean };
+  // 项目自己的配置里方案只写了改过的字段（没写 format 就是 ASS、没写 enabled 就是启用）：读的时候补上默认值，存回去时保持原样
+  const raw = (val("render.profiles") as Prof[]) ?? [];
+  const profiles = raw.map((p) => ({ ...p, format: p.format ?? "ass", enabled: p.enabled ?? true }));
   const bc = s.summary?.broadcast;   // 字幕来自广播：能输出“广播字幕原样”
+  // 读过字幕了（“读取字幕”这一步做过）才知道是不是电视广播字幕
+  const subsRead = !!s.summary?.plan.some((x) => x.stage === "subs" && ["done", "cached", "empty", "off", "stale"].includes(x.status));
   // 表里的每一行：输出的字幕（方案 + 广播字幕原样）
   const rows = [
     ...profiles.map((pr, i) => ({ id: pr.name, label: pr.name, fmt: pr.format.toUpperCase(), out: pr.enabled, ok: true,
-                                  setOut: (v: boolean) => set("render.profiles", profiles.map((x, j) => (j === i ? { ...x, enabled: v } : x))) })),
+                                  setOut: (v: boolean) => set("render.profiles", raw.map((x, j) => (j === i ? { ...x, enabled: v } : x))) })),
     { id: "broadcast", label: "广播字幕原样", fmt: "ASS", out: !!bc && !!val("render.broadcast"), ok: !!bc,
       setOut: (v: boolean) => set("render.broadcast", v) },
   ];
@@ -489,8 +493,8 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
               <tr key={r.id} className={r.ok ? (off ? "off" : "") : "na"}>
                 <td>{r.label} <span className="dim">· {r.fmt}</span>
                   {r.id === "broadcast" && <Tip text={r.ok ? `日语原文，位置、颜色、背景、振假名和电视上一样${bc?.file ? `（${bc.file}）` : "（视频名.ja-broadcast.ass，输出字幕时生成）"}`
-                    : "这个视频的字幕不是电视广播字幕（ARIB），没有原样可以照搬"} />}
-                  {!r.ok && <div className="dim" style={{ fontSize: 11 }}>这个视频没有电视广播字幕</div>}</td>
+                    : subsRead ? "这个视频的字幕不是电视广播字幕（ARIB），没有原样可以照搬" : "还没运行过：读了字幕才知道是不是电视广播字幕"} />}
+                  {!r.ok && <div className="dim" style={{ fontSize: 11 }}>{subsRead ? "这个视频没有电视广播字幕" : "运行过后才知道有没有电视广播字幕"}</div>}</td>
                 <td><input type="checkbox" disabled={!r.ok} checked={r.out} onChange={(e) => r.setOut(e.target.checked)} /></td>
                 <td><input type="checkbox" disabled={off} checked={muxed.includes(r.id)} onChange={(e) => setMux(r.id, e.target.checked)} /></td>
                 <td><input type="radio" name="vdefault" disabled={off || !muxed.includes(r.id)} checked={defId === r.id}
