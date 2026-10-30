@@ -2,7 +2,7 @@
 import { useMemo } from "react";
 import { DocProvider, type ConfigDoc } from "../doc";
 import { EditorPage } from "../pages/Editor";
-import { GlossaryPage } from "../pages/Glossary";
+import { NotesPage } from "../pages/Notes";
 import { OutputPage } from "../pages/Output";
 import { ProcessPage } from "../pages/Process";
 import { useStore } from "../store";
@@ -50,7 +50,7 @@ export function EpisodeShell({ tab, setTab }: { tab: EpTab; setTab: (t: EpTab) =
             {tab === "process" && <ProcessPage onTab={setTab} />}
             {tab === "review" && <EditorPage />}
             {tab === "output" && <OutputPage />}
-            {tab === "notes" && <GlossaryPage />}
+            {tab === "notes" && <NotesPage />}
           </PageGuard>
         </DocProvider>
       </div>

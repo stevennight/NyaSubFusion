@@ -478,3 +478,9 @@ table.tb { width: 100%; border-collapse: collapse }
 .runmenu label { padding: 2px 0 }
 .redo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; margin: 4px 0 }
 .run-err { color: var(--bad); font-size: 12px; word-break: break-all; margin-bottom: 8px }
+
+/* ---------- 资料页 ---------- */
+.notes-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 14px; align-items: start }
+.scope { font-size: 11px; padding: 1px 6px; border-radius: 4px; white-space: nowrap }
+.scope.s { background: #b49cff22; color: var(--acc2) } .scope.e { background: #ff7aa822; color: var(--acc) } .scope.g { background: #7cc4ff22; color: var(--c-sub) }
+.scroll-table { max-height: calc(100vh - 260px); overflow: auto }

@@ -80,6 +80,37 @@ export function useDraft<T>(doc: ConfigDoc | null, load: (doc: ConfigDoc) => T, 
   return { v, update, state, reset };
 }
 
+/** 从接口读来、改了自动存回去的一份数据（术语表、读音词典这类不在配置里的）。deps 变了重新读。 */
+export function useRemote<T>(fetch: () => Promise<T>, save: (v: T) => Promise<unknown>, deps: unknown[], onError: (m: string) => void, delay = 800) {
+  const [v, setV] = useState<T | null>(null);
+  const [state, setState] = useState<SaveState>("saved");
+  const dirty = useRef(false);
+  const id = useRef(Symbol("remote"));
+  useEffect(() => { markUnsaved(id.current, state !== "saved"); }, [state]);
+  const vRef = useRef(v);
+  vRef.current = v;
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => () => {
+    markUnsaved(id.current, false);
+    if (dirty.current && vRef.current !== null) saveRef.current(vRef.current).catch((e) => onError((e as Error).message));
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  const reload = () => fetch().then((x) => { dirty.current = false; setV(x); setState("saved"); }).catch((e) => onError((e as Error).message));
+  useEffect(() => { if (!dirty.current) reload(); }, deps);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!dirty.current || v === null) return;
+    setState("pending");
+    const t = setTimeout(async () => {
+      dirty.current = false;
+      setState("saving");
+      try { await saveRef.current(v); setState(dirty.current ? "pending" : "saved"); } catch (e) { onError((e as Error).message); setState("pending"); }
+    }, delay);
+    return () => clearTimeout(t);
+  }, [v]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const update = (f: (cur: T) => T) => { dirty.current = true; setV((cur) => (cur === null ? cur : f(cur))); };
+  return { v, update, state, reload };
+}
+
 export function SaveChip({ state }: { state: SaveState }) {
   return <span className={`chip ${state === "saved" ? "" : "warn"}`} title="设置改了会自动保存">{state === "saved" ? "已自动保存" : state === "saving" ? "保存中…" : "待保存"}</span>;
 }
