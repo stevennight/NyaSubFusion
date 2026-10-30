@@ -1,6 +1,6 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
 import type { MediaInfo } from "./types";
-import type { Cfg, ConfigState, OverwriteDir, SeriesInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ConfigState, OverwriteDir, PresetDoc, PresetInfo, SeriesDoc, SeriesInfo, TemplateInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -86,7 +86,24 @@ export const api = {
   deleteKey: (name: string) => call<{ ok: boolean }>(`/api/settings/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
   testProvider: (body: { name?: string; base_url?: string; model?: string; key?: string }) =>
     call<{ ok: boolean; ms?: number; reply?: string; error?: string }>("/api/settings/test", json("POST", body)),
-  presets: () => call<{ id: string; name: string; desc: string }[]>("/api/presets"),
+  presets: () => call<PresetInfo[]>("/api/presets"),
+  preset: (id: string) => call<PresetDoc>(`/api/presets/${encodeURIComponent(id)}`),
+  putPreset: (id: string, raw: Cfg) => call<PresetDoc>(`/api/presets/${encodeURIComponent(id)}`, json("PUT", { raw })),
+  createPreset: (body: { name: string; from_pid?: string; from_preset?: string; include?: { process?: boolean; output?: boolean; langs?: boolean } }) =>
+    call<{ id: string; list: PresetInfo[] }>("/api/presets", json("POST", body)),
+  deletePreset: (id: string) => call<PresetInfo[]>(`/api/presets/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  defaultPreset: (id: string) => call<PresetInfo[]>(`/api/presets/${encodeURIComponent(id)}/default`, { method: "POST" }),
+  // 这一集的模板（作品默认设置 / 建它时选的预设），以及和模板不一样的项
+  template: (pid: string) => call<TemplateInfo>(`/api/projects/${pid}/template`),
+  applyTemplate: (pid: string, keys: string[][], to: "episode" | "template") =>
+    call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/template/apply`, json("POST", { keys, to })),
+  restoreLastRun: (pid: string) => call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/config/last_run`, { method: "POST" }),
+  seriesDoc: (name: string) => call<SeriesDoc>(`/api/series/${encodeURIComponent(name)}`),
+  putSeries: (name: string, raw: Cfg) => call<SeriesDoc>(`/api/series/${encodeURIComponent(name)}`, json("PUT", { raw })),
+  seriesValues: (name: string, keys: string[][]) =>
+    call<{ pid: string; name: string; running: boolean; values: unknown[] }[]>(`/api/series/${encodeURIComponent(name)}/values`, json("POST", { keys })),
+  seriesSync: (name: string, keys: string[][], pids: string[]) =>
+    call<{ synced: string[]; skipped: string[] }>(`/api/series/${encodeURIComponent(name)}/sync`, json("POST", { keys, pids })),
   setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string }) =>
     call<unknown>(`/api/projects/${pid}/setup`, json("POST", body)),
   series: () => call<SeriesInfo[]>("/api/series"),

@@ -417,10 +417,93 @@ def create_app(token: str | None = None) -> FastAPI:
                 out["probe"] = {"error": str(e)}
         return out
 
+    # ---------- 预设（内置的只读；自己的存在用户目录/presets） ----------
     @app.get("/api/presets")
     def get_presets():
         from .. import presets
 
+        return presets.listing()
+
+    def _preset_doc(preset_id):
+        from .. import presets
+
+        raw = presets.get_raw(preset_id)
+        if raw is None:
+            raise HTTPException(404, "没有这个预设")
+        eff = config_mod.load(None, None, raw, upgrade=False)[0]
+        builtin = not preset_id.startswith(presets.USER)
+        return {"id": preset_id, "name": presets.name_of(preset_id), "builtin": builtin,
+                "raw": config_mod.with_own_styles(raw, eff) if builtin else raw, "effective": eff.model_dump(mode="json"),
+                "factory": {"styles": {k: v.model_dump() for k, v in config_mod.DEFAULT_STYLES.items()}}}
+
+    def _user_preset(preset_id):
+        from .. import presets
+
+        if not preset_id.startswith(presets.USER):
+            raise HTTPException(400, "内置预设不能改：先复制成自己的")
+        return preset_id[len(presets.USER):]
+
+    @app.get("/api/presets/{preset_id}")
+    def get_preset(preset_id: str):
+        return _preset_doc(preset_id)
+
+    @app.put("/api/presets/{preset_id}")
+    def put_preset(preset_id: str, body: dict = Body(...)):
+        from .. import presets
+
+        name = _user_preset(preset_id)
+        if not presets.user_file(name).is_file():
+            raise HTTPException(404, "没有这个预设")
+        _checked(_owned(body.get("raw") or {}), presets.user_file(name))
+        presets.save_user(name, body.get("raw") or {})
+        return _preset_doc(preset_id)
+
+    @app.post("/api/presets")
+    def create_preset(body: dict = Body(...)):
+        """新建自己的预设：{"name", "from_pid"（从一集存）| "from_preset"（复制别的预设）, "include": {"process", "output", "langs"}}"""
+        from .. import presets
+
+        try:
+            name = presets.check_name(body.get("name"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if presets.user_file(name).is_file():
+            raise HTTPException(400, f"已经有叫「{name}」的预设了")
+        inc = {"process": True, "output": True, "langs": False, **(body.get("include") or {})}
+        if body.get("from_pid"):
+            _, proj = project_paths(body["from_pid"])
+            load_cfg(proj)  # 旧格式先升级
+            pf = proj / "project.toml"
+            raw = config_mod.read_toml(pf) if pf.exists() else {}
+            desc = f"从「{Path(projects.get(body['from_pid'])['video']).stem}」存的"
+        elif body.get("from_preset"):
+            raw = presets.get_raw(body["from_preset"]) or {}
+            desc = f"复制自「{presets.name_of(body['from_preset'])}」"
+        else:
+            raw, desc = {}, ""
+        raw = presets.strip_episode(raw, langs=inc["langs"])
+        if not inc["output"]:
+            raw.pop("render", None)
+        if not inc["process"]:
+            raw = {k: v for k, v in raw.items() if k in ("render", "project", "version")}
+        _owned(raw)  # 校验
+        presets.save_user(name, raw, body.get("desc") if body.get("desc") is not None else desc)
+        return {"id": presets.USER + name, "list": presets.listing()}
+
+    @app.delete("/api/presets/{preset_id}")
+    def delete_preset(preset_id: str):
+        from .. import presets
+
+        presets.delete_user(_user_preset(preset_id))
+        return presets.listing()
+
+    @app.post("/api/presets/{preset_id}/default")
+    def default_preset(preset_id: str):
+        from .. import presets
+
+        if presets.get_raw(preset_id) is None:
+            raise HTTPException(404, "没有这个预设")
+        presets.set_default(preset_id)
         return presets.listing()
 
     @app.post("/api/projects/{pid}/setup")
@@ -553,9 +636,177 @@ def create_app(token: str | None = None) -> FastAPI:
             shutil.copyfile(src, dst)
         return put_config(pid, {"project": project_raw} if which == "project" else {"series": series_raw})
 
+    # ---------- 模板：作品默认设置，或者建这一集时选的预设 ----------
+    def _template(pid):
+        """(这一集合并后的配置, 模板)。模板：{"kind": "series" | "preset", "id", "name", "editable", "raw", "cfg", "langs"}"""
+        from .. import presets
+
+        _, proj = project_paths(pid)
+        cfg, _ = load_cfg(proj)
+        series = cfg.project.series
+        if series and config_mod.has_series_settings(series):
+            raw = config_mod.read_series(series)
+            t = {"kind": "series", "id": series, "name": series, "editable": True, "raw": raw, "langs": True}
+        elif cfg.project.preset and (raw := presets.get_raw(cfg.project.preset)) is not None:
+            pr = raw.get("project") or {}
+            t = {"kind": "preset", "id": cfg.project.preset, "name": presets.name_of(cfg.project.preset),
+                 "editable": cfg.project.preset.startswith(presets.USER), "raw": raw, "langs": "source" in pr or "targets" in pr}
+        else:
+            return cfg, None
+        t["cfg"] = config_mod.load(None, None, t["raw"], upgrade=False)[0]
+        return cfg, t
+
+    @app.get("/api/projects/{pid}/template")
+    def get_template(pid: str):
+        """这一集的模板，以及和模板不一样的项（before = 这一集，after = 模板）。"""
+        cfg, t = _template(pid)
+        _, proj = project_paths(pid)
+        last = (proj / "backup" / "last-run.toml").exists()
+        if not t:
+            return {"kind": None, "last_run": last}
+        return {"kind": t["kind"], "id": t["id"], "name": t["name"], "editable": t["editable"], "last_run": last,
+                "effective": t["cfg"].model_dump(mode="json"), "changes": config_mod.template_diff(cfg, t["cfg"], t["langs"])}
+
+    @app.post("/api/projects/{pid}/template/apply")
+    def apply_template(pid: str, body: dict = Body(...)):
+        """{"keys": [[逐级的键], …], "to": "episode"（这几项恢复成模板的）| "template"（这几项存到模板）}。被改的那份先备份。"""
+        from .. import presets
+
+        cfg, t = _template(pid)
+        if not t:
+            raise HTTPException(400, "这一集没有模板（不属于有默认设置的作品，也不是用预设建的）")
+        keys = [list(k) for k in body.get("keys") or [] if k]
+        _, proj = project_paths(pid)
+        if body.get("to") == "episode":
+            pf = proj / "project.toml"
+            raw = config_mod.read_toml(pf) if pf.exists() else {}
+            src = t["cfg"].model_dump(mode="json")
+            for ks in keys:
+                config_mod.set_keys(raw, ks, config_mod.get_keys(src, ks))
+            if pf.exists():
+                config_mod.write_backup(pf, "before-template")
+            return put_config(pid, {"project": raw})
+        if body.get("to") == "template":
+            if not t["editable"]:
+                raise HTTPException(400, "内置预设不能改：先在「设置 › 预设」里复制成自己的")
+            raw = copy.deepcopy(t["raw"])
+            src = cfg.model_dump(mode="json")
+            for ks in keys:
+                config_mod.set_keys(raw, ks, config_mod.get_keys(src, ks))
+            if t["kind"] == "series":
+                _write_series(t["id"], raw)
+            else:
+                _owned(raw)
+                presets.save_user(t["name"], raw)
+            return {"config": get_config(pid), "plan": get_plan(pid)}
+        raise HTTPException(400, "to 只能是 episode / template")
+
+    @app.post("/api/projects/{pid}/config/last_run")
+    def restore_last_run(pid: str):
+        """回到上次运行时的设置（运行开始时存的那份）。现在的先备份。"""
+        _, proj = project_paths(pid)
+        last = proj / "backup" / "last-run.toml"
+        if not last.exists():
+            raise HTTPException(400, "还没有运行过，没有上次运行时的设置")
+        pf = proj / "project.toml"
+        if pf.exists():
+            config_mod.write_backup(pf, "before-last-run")
+        return put_config(pid, {"project": config_mod.read_toml(last)})
+
+    # ---------- 作品 ----------
+    def _write_series(name, raw):
+        sf = config_mod.series_file(name)
+        text = _checked(_owned(raw), sf)
+        if sf.exists():
+            config_mod.write_backup(sf, "old")
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text(text, encoding="utf-8")
+
+    def _episodes_of(name):
+        """登记过的项目里属于这部作品的（只读 project.toml 的 project.series，很快）。"""
+        import tomllib
+
+        for p in projects.all():
+            video = Path(p["video"])
+            root = Path(p["workdir"]) if p.get("workdir") else video.with_name(video.stem + ".nyasub")
+            try:
+                series = tomllib.loads((root / "project.toml").read_text(encoding="utf-8")).get("project", {}).get("series", "")
+            except Exception:
+                continue
+            if series == name:
+                yield p
+
+    @app.get("/api/series/{name}")
+    def get_series(name: str):
+        """作品的默认设置，以及各集和它不一样的项数。"""
+        if not config_mod.series_dir(name).is_dir() and not any(_episodes_of(name)):
+            raise HTTPException(404, "没有这部作品")
+        raw = config_mod.read_series(name)
+        scfg = config_mod.series_effective(name)
+        eps = []
+        for p in _episodes_of(name):
+            video = Path(p["video"])
+            item = {"pid": p["id"], "name": video.name, "video": str(video), "exists": video.is_file(),
+                    "running": bool((j := hub.status(p["id"])) and j["status"] == "running"), "diff": None}
+            if raw and video.is_file():
+                try:
+                    item["diff"] = len(config_mod.template_diff(load_cfg(project_paths(p["id"])[1])[0], scfg))
+                except Exception:
+                    pass
+            eps.append(item)
+        return {"name": name, "has_settings": bool(raw), "raw": raw, "effective": scfg.model_dump(mode="json"), "episodes": eps,
+                "factory": {"styles": {k: v.model_dump() for k, v in config_mod.DEFAULT_STYLES.items()}}}
+
+    @app.put("/api/series/{name}")
+    def put_series(name: str, body: dict = Body(...)):
+        """{"raw": 作品的默认设置}。只影响以后新建的集；已有的集要同步的话另外调 sync。"""
+        _write_series(name, config_mod.series_from_episode(body.get("raw") or {}))
+        return get_series(name)
+
+    @app.post("/api/series/{name}/values")
+    def series_values(name: str, body: dict = Body(...)):
+        """各集在这几项上现在是什么值：{"keys": [[…]]} → [{"pid", "name", "running", "values": […]}]"""
+        keys = [list(k) for k in body.get("keys") or []]
+        out = []
+        for p in _episodes_of(name):
+            try:
+                eff = load_cfg(project_paths(p["id"])[1])[0].model_dump(mode="json")
+            except Exception:
+                continue
+            out.append({"pid": p["id"], "name": Path(p["video"]).name, "running": bool((j := hub.status(p["id"])) and j["status"] == "running"),
+                        "values": [config_mod.get_keys(eff, ks) for ks in keys]})
+        return out
+
+    @app.post("/api/series/{name}/sync")
+    def series_sync(name: str, body: dict = Body(...)):
+        """作品默认设置里的这几项同步给这几集：{"keys": [[…]], "pids": […]}。每集先备份；正在运行的跳过。"""
+        keys = [list(k) for k in body.get("keys") or []]
+        src = config_mod.series_effective(name).model_dump(mode="json")
+        done, skipped = [], []
+        for pid in body.get("pids") or []:
+            job = hub.status(pid)
+            if job and job["status"] == "running":
+                skipped.append(pid)
+                continue
+            _, proj = project_paths(pid)
+            pf = proj / "project.toml"
+            raw = config_mod.read_toml(pf) if pf.exists() else {}
+            for ks in keys:
+                config_mod.set_keys(raw, ks, config_mod.get_keys(src, ks))
+            if pf.exists():
+                config_mod.write_backup(pf, "before-sync")
+            put_config(pid, {"project": raw})
+            done.append(pid)
+        return {"synced": done, "skipped": skipped}
+
     # ---------- 运行 ----------
     @app.post("/api/projects/{pid}/run")
     def run_project(pid: str, body: dict = Body(default={})):
+        _, proj = project_paths(pid)
+        pf = proj / "project.toml"
+        if pf.exists():  # 留一份这次运行时的设置（“回到上次运行时的设置”用）
+            (proj / "backup").mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(pf, proj / "backup" / "last-run.toml")
         run = make_run(pid, body.get("until") or "render", body.get("redo") or (), body.get("translate"))
         run.cancel = threading.Event()
         hub.start(pid, run.run, run.cancel)

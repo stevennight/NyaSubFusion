@@ -1,6 +1,6 @@
 // 正在编辑的那一份设置：这一集 / 作品默认设置 / 预设。处理页、输出页只认这一份，自动保存。
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Cfg, Style } from "./types";
+import type { Cfg, Change, Style, TemplateInfo } from "./types";
 
 export interface ConfigDoc {
   kind: "episode" | "series" | "preset";
@@ -10,6 +10,15 @@ export interface ConfigDoc {
   factory: Record<string, Style>;      // 出厂样式（只读）
   save: (raw: Cfg) => Promise<void>;
   onError: (msg: string) => void;
+  // 只有一集有：它的模板（作品默认设置 / 建它时选的预设），和模板不一样的项，恢复成模板 / 存到模板
+  template?: TemplateInfo | null;
+  applyTemplate?: (keys: string[][], to: "episode" | "template") => Promise<void>;
+}
+
+/** 这一项和模板不一样时，模板里的值（一样就是 undefined） */
+export function templateChange(doc: ConfigDoc | null, keys: string[]): Change | undefined {
+  const k = keys.join("\u0000");
+  return doc?.template?.changes?.find((c) => c.keys.join("\u0000") === k || c.keys.slice(0, keys.length).join("\u0000") === k);
 }
 
 const Ctx = createContext<ConfigDoc | null>(null);

@@ -13,7 +13,7 @@ def test_old_project_upgrades_with_backup(tmp_path, isolated_home):
     pf.write_text("[render.styles.sub]\nsize = 30\n\n[render.styles.my]\nfont = \"KaiTi\"\n", encoding="utf-8")
     cfg, _ = config.load(None, pf)
     raw = tomllib.loads(pf.read_text(encoding="utf-8"))
-    assert raw["version"] == 2 and set(raw["render"]["styles"]) == {"main", "sub", "orig_main", "info", "translit", "my"}
+    assert raw["version"] >= 2 and set(raw["render"]["styles"]) == {"main", "sub", "orig_main", "info", "translit", "my"}
     # 升级前合并出来的样子不变：项目改的、全局改的、出厂的都在
     assert cfg.render.styles["sub"].size == 30 and cfg.render.styles["sub"].font == "Yu Gothic"
     assert cfg.render.styles["info"].size == 50 and cfg.render.styles["my"].font == "KaiTi"
@@ -58,7 +58,7 @@ def test_bad_style_name_rejected(client, sample):
 def test_saved_project_owns_full_style_set(client, sample):
     pid, _ = opened(client, sample)
     r = client.get(f"/api/projects/{pid}/config").json()
-    assert r["project"]["version"] == 2 and "translit" in r["project"]["render"]["styles"]
+    assert r["project"]["version"] >= 2 and "translit" in r["project"]["render"]["styles"]
     assert set(r["factory"]["styles"]) == set(config.DEFAULT_STYLES)
     proj = r["project"]
     del proj["render"]["styles"]["translit"]

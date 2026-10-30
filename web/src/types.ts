@@ -163,4 +163,17 @@ export interface ConfigState {
 
 export interface SeriesInfo { name: string; terms: number; episodes: number; settings?: boolean }
 
-export type OverwriteDir = "to_episode" | "to_series";   // 用作品设置覆盖这一集 / 用这一集的设置覆盖作品
+export type OverwriteDir = "to_episode" | "to_series";
+
+/** 两份设置不一样的一项：keys 是逐级的键；before = 这一集，after = 模板 */
+export interface Change { path: string; keys: string[]; before: unknown; after: unknown }
+export interface TemplateInfo {
+  kind: "series" | "preset" | null; id?: string; name?: string; editable?: boolean; last_run: boolean;
+  effective?: Cfg; changes?: Change[];
+}
+export interface PresetInfo { id: string; name: string; desc: string; builtin: boolean; default: boolean }
+export interface PresetDoc { id: string; name: string; builtin: boolean; raw: Cfg; effective: Cfg; factory: { styles: Record<string, Style> } }
+export interface SeriesDoc {
+  name: string; has_settings: boolean; raw: Cfg; effective: Cfg; factory: { styles: Record<string, Style> };
+  episodes: { pid: string; name: string; video: string; exists: boolean; running: boolean; diff: number | null }[];
+}   // 用作品设置覆盖这一集 / 用这一集的设置覆盖作品

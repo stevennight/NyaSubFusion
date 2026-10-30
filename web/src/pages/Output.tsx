@@ -1,9 +1,9 @@
 // 输出：左边一份清单（字幕文件 · 视频 · 样式 · 通用），右边编辑 + 预览。改了自动保存。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { Modal } from "../components/Modal";
 import { Player, type PlayerHandle } from "../components/Player";
-import { SaveChip, useDoc, useDraft, type ConfigDoc } from "../doc";
+import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc } from "../doc";
 import { usePreview } from "../hooks";
 import { useStore } from "../store";
 import type { Annotate, Cfg, LangInfo, Layer, Profile, Style } from "../types";
@@ -137,12 +137,12 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
         <span className={`dot ${burnOn ? "done" : "off"}`} /><div className="t">压制硬字幕<small>{burnOn ? "运行完自动" : "手动"}</small></div></div>
 
       <div className="grp">样式</div>
-      {inUse.map((n) => <StyleItem key={n} r={r} name={n} sel={sel} setSel={setSel} />)}
+      {inUse.map((n) => <StyleItem key={n} r={r} name={n} sel={sel} setSel={setSel} doc={doc} />)}
       {unused.length > 0 && (<>
         <div className="grp" style={{ paddingTop: 4 }}>没在用
           <span className="link" style={{ marginLeft: 8, letterSpacing: 0 }} title="删掉所有没在用的样式（出厂样式以后还能加回来）"
                 onClick={() => update((x) => ({ ...x, styles: Object.fromEntries(Object.entries(x.styles).filter(([k]) => !unused.includes(k))) }))}>清理</span></div>
-        {unused.map((n) => <StyleItem key={n} r={r} name={n} sel={sel} setSel={setSel} />)}
+        {unused.map((n) => <StyleItem key={n} r={r} name={n} sel={sel} setSel={setSel} doc={doc} />)}
       </>)}
       <div style={{ position: "relative" }}>
         <div className="oadd" onClick={() => setMenu(!menu)}>＋ 新样式 ▾</div>
@@ -166,12 +166,13 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
   );
 }
 
-function StyleItem({ r, name, sel, setSel }: { r: R; name: string; sel: string; setSel: (s: string) => void }) {
+function StyleItem({ r, name, sel, setSel, doc }: { r: R; name: string; sel: string; setSel: (s: string) => void; doc: ConfigDoc }) {
   const st = r.styles[name], n = usedBy(r, name).length;
+  const mod = doc.kind === "episode" && !!templateChange(doc, ["render", "styles", name]);
   return (
     <div className={`oi${sel === `s:${name}` ? " sel" : ""}`} onClick={() => setSel(`s:${name}`)}>
       <Swatch st={st} />
-      <div className="t">{name}{name === r.fallback_style && <span className="chip mini">兜底</span>}
+      <div className="t">{name}{name === r.fallback_style && <span className="chip mini">兜底</span>}{mod && <span className="moddot" title="和模板不一样">●</span>}
         <small>{st.font} {st.size}{n ? ` · 用在 ${n} 处` : ""}</small></div>
     </div>
   );
@@ -476,6 +477,10 @@ function StyleEditor({ r, update, setSel, doc, name }: { r: R; update: Upd; setS
   const facKey = st.base && doc.factory[st.base] ? st.base : doc.factory[name] ? name : "";
   const fac = facKey ? doc.factory[facKey] : null;
   const upd = (patch: Partial<Style>) => update((x) => ({ ...x, styles: { ...x.styles, [name]: { ...x.styles[name], ...patch } } }));
+  const unsaved = useUnsaved();
+  const tplStyles = doc.template?.effective?.render?.styles as Record<string, Style> | undefined;
+  const tplHas = !!tplStyles?.[name];
+  const tplMod = doc.kind === "episode" && !!templateChange(doc, ["render", "styles", name]);
   const rename = () => {
     const n = nm.trim();
     if (n === name) return;
@@ -524,6 +529,10 @@ function StyleEditor({ r, update, setSel, doc, name }: { r: R; update: Upd; setS
       </div>
       <div className="row wrap restore">
         <span className="dim">恢复：</span>
+        {doc.kind === "episode" && doc.template?.kind && (
+          <button className={`btn sm${tplMod ? " tplb" : ""}`} disabled={!tplHas || !tplMod || unsaved}
+                  title={!tplHas ? "模板里没有这个样式" : !tplMod ? "和模板里一样" : "变回模板（作品默认设置 / 预设）里的样子"}
+                  onClick={() => doc.applyTemplate?.([["render", "styles", name]], "episode")}>恢复成模板里的样子</button>)}
         <button className="btn sm" disabled={!fac} title={fac ? "变回软件自带的样子（名字不变）" : "自己新建的样式没有出厂值"}
                 onClick={() => fac && upd({ ...fac, base: facKey === name ? undefined : facKey })}>恢复出厂{fac ? `（${facKey}）` : ""}</button>
         <span className="sp" />
@@ -581,13 +590,6 @@ function DeleteStyle({ r, name, fac, onClose, onDelete }: { r: R; name: string; 
       <button className="btn pri" onClick={() => onDelete(used.length ? rep : null)}>{used.length ? "替换并删除" : "删除"}</button>
     </div>
   </Modal>;
-}
-
-export function Modal({ onClose, children, width = 560 }: { onClose: () => void; children: ReactNode; width?: number }) {
-  return createPortal(
-    <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-body" style={{ width }}>{children}</div>
-    </div>, document.body);
 }
 
 function CleanEditor({ r, update }: { r: R; update: Upd }) {

@@ -1,8 +1,12 @@
 """分层配置：内置默认 < 用户全局 < 项目 < --config < 命令行参数。
 
 样式（render.styles）：version >= 2 的配置里写的是一整套样式，后面的层整套替换前面的，不再按名字补回内置样式
-（所以能删）；每个样式缺的字段按它来自的出厂样式（base，或同名的出厂样式）补齐。旧的项目 / 作品配置
-（没写 version）第一次读的时候升级：把当时合并出来的整套样式写进去（先备份）。
+（所以能删）；每个样式缺的字段按它来自的出厂样式（base，或同名的出厂样式）补齐。
+
+用户全局配置（version 3 起）只放跟这台电脑有关的项（MACHINE_KEYS：接口、显卡、下载镜像），不再实时影响项目。
+以前写在全局里的识别、输出参数第一次读的时候挪走：另存成“我的默认”预设（新项目默认用它），再留一份
+legacy_global.toml；旧的项目 / 作品配置第一次读的时候升级——写上当时合并出来的整套样式、补上以前从全局
+继承的项（结果不变），原文件备份到 backup/。还没有 project.toml 的新项目用默认预设。
 
 作品（series）的设置不参与合并：它只是新建这部作品的一集时复制过去的默认值，之后两份各自独立
 （可以用作品设置覆盖一集，或者用一集的设置覆盖作品，见文件末尾）。
@@ -108,6 +112,7 @@ class LlmCfg(_M):
     providers: list[ProviderCfg] = []        # 接口列表（设置页管理，存在用户全局配置里）
     translate: str = ""                      # 翻译用哪个接口（providers 里的 name）；空 = 用下面的旧写法
     vision: str = ""                         # 视觉复核用哪个接口；空 = 和翻译用同一个
+    asr: str = ""                            # 云端语音识别默认用哪个接口；空 = 和翻译用同一个（一集里可以用 asr.api_provider 单独换）
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     api_key_env: str = "OPENAI_API_KEY"
@@ -221,6 +226,8 @@ def factory_style(name: str, base: str = "") -> StyleCfg | None:
 def fill_style(name: str, st: dict) -> dict:
     """一个样式缺的字段按它的出厂样式补齐（不是出厂来的就用默认值）。"""
     st = st.model_dump() if isinstance(st, StyleCfg) else dict(st or {})
+    if st.get("base") == name:  # 来自同名的出厂样式：和不写一样
+        st["base"] = ""
     fac = factory_style(name, st.get("base", ""))
     return {**(fac.model_dump() if fac else {}), **st}
 
@@ -255,7 +262,15 @@ class RenderCfg(_M):
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包
 
 
-VERSION = 2   # 配置格式：2 = 样式是整套的（见文件开头）
+VERSION = 3   # 配置格式：2 = 样式是整套的；3 = 不再从全局配置继承识别、输出参数（见文件开头）
+
+# 用户全局配置里只留这些（跟这台电脑 / 这个人有关的），其余是每一集自己的处理参数
+MACHINE_KEYS = {
+    "llm": {"providers", "translate", "vision", "asr", "base_url", "api_key", "api_key_env", "model", "vision_model",
+            "timeout", "max_retries", "json_mode"},
+    "asr": {"device", "compute_type", "download_root", "hf_endpoint"},
+    "ocr": {"use_cuda", "hwaccel"},
+}
 
 
 class Config(_M):
@@ -286,7 +301,7 @@ class Config(_M):
         c = self.llm
         name = (c.vision or c.translate) if purpose == "vision" else c.translate
         if purpose == "asr":  # 云端语音识别：接口凭据和翻译共用一套，模型单独设
-            name = self.asr.api_provider or c.translate
+            name = self.asr.api_provider or c.asr or c.translate
         p = next((x for x in c.providers if x.name == name), None) if name else None
         if p:
             model = (p.vision_model or p.model) if purpose == "vision" else p.model
@@ -350,17 +365,94 @@ def merge_layers(layer_dicts: list[dict]) -> dict:
     return merged
 
 
+def split_machine(raw: dict) -> tuple[dict, dict]:
+    """配置拆成 (跟这台电脑有关的, 处理参数)。"""
+    machine, rest = {}, copy.deepcopy(raw or {})
+    for sec, keys in MACHINE_KEYS.items():
+        part = rest.get(sec)
+        if not isinstance(part, dict):
+            continue
+        for k in keys & set(part):
+            machine.setdefault(sec, {})[k] = part.pop(k)
+        if not part:
+            rest.pop(sec)
+    rest.pop("version", None)
+    return machine, rest
+
+
+def fill_missing(dst: dict, src: dict) -> dict:
+    """src 里有、dst 里没写的项补进 dst（dst 写了的不动）。"""
+    for k, v in src.items():
+        if k not in dst:
+            dst[k] = copy.deepcopy(v)
+        elif isinstance(v, dict) and isinstance(dst[k], dict):
+            fill_missing(dst[k], v)
+    return dst
+
+
+def _user_file() -> Path:
+    return env.home() / "config.toml"
+
+
+def legacy_file() -> Path:
+    return env.home() / "legacy_global.toml"
+
+
+def write_backup(path: Path, tag: str):
+    import time
+
+    path = Path(path)
+    bak = path.parent / "backup" / f"{path.stem}-{time.strftime('%Y%m%d-%H%M%S')}-{tag}{path.suffix}"
+    bak.parent.mkdir(parents=True, exist_ok=True)
+    bak.write_bytes(path.read_bytes())
+
+
+def migrate_global() -> bool:
+    """全局配置里的处理参数挪走：留一份 legacy_global.toml（给还没升级的旧项目补用），另存成“我的默认”预设。"""
+    import tomli_w
+
+    user = _user_file()
+    if not user.is_file():
+        return False
+    raw = read_toml(user)
+    machine, rest = split_machine(raw)
+    if not rest:
+        return False
+    lf = legacy_file()
+    legacy = read_toml(lf) if lf.is_file() else {}
+    lf.write_text(tomli_w.dumps(deep_merge(legacy, copy.deepcopy(rest))), encoding="utf-8")
+    from .. import presets
+
+    presets.absorb_legacy(rest)
+    write_backup(user, "v2")
+    user.write_text(tomli_w.dumps(machine), encoding="utf-8")
+    return True
+
+
+def legacy_global() -> dict:
+    """以前的全局配置（挪到 legacy_global.toml 的 + 现在的）。"""
+    out = read_toml(legacy_file()) if legacy_file().is_file() else {}
+    return deep_merge(out, read_toml(_user_file()) if _user_file().is_file() else {})
+
+
 def load(config_path=None, project_file=None, overrides: dict | None = None, upgrade=True) -> tuple[Config, list[str]]:
-    """按层合并配置，返回 (配置, 实际用到的文件列表)。旧格式的项目配置先升级。"""
+    """按层合并配置，返回 (配置, 实际用到的文件列表)。旧格式的项目配置先升级；还没有项目配置时用默认预设。"""
+    migrate_global()
     if project_file and upgrade:
-        upgrade_file(project_file, lambda: load(None, project_file, upgrade=False)[0])
+        upgrade_file(project_file)
     layers: list[tuple[str, dict]] = []
-    user = env.home() / "config.toml"
+    user = _user_file()
     if user.is_file():
-        layers.append((str(user), read_toml(user)))
+        layers.append((str(user), split_machine(read_toml(user))[0]))
     tail = []
     if project_file and Path(project_file).is_file():
         tail.append((str(project_file), read_toml(project_file)))
+    elif project_file:
+        from .. import presets
+
+        name, raw = presets.default_user()
+        if raw:
+            tail.append((f"预设「{name}」", raw))
     if config_path:
         tail.append((str(config_path), read_toml(config_path)))
     if overrides:
@@ -385,22 +477,28 @@ def with_own_styles(raw: dict, cfg: "Config") -> dict:
     return raw
 
 
-def upgrade_file(path, effective) -> bool:
-    """旧格式（version < 2）的项目 / 作品配置升级成新格式：写上当时合并出来的整套样式。原文件先备份到 backup/。"""
-    import time
-
+def upgrade_file(path) -> bool:
+    """旧格式的项目 / 作品配置升级（结果不变）：
+    version < 2：写上当时合并出来的整套样式；version < 3：以前从全局配置继承的处理参数补进来。原文件先备份到 backup/。"""
     import tomli_w
 
     path = Path(path)
     if not path.is_file():
         return False
     raw = read_toml(path)
-    if (raw.get("version") or 1) >= VERSION:
+    ver = raw.get("version") or 1
+    if ver >= VERSION:
         return False
-    new = with_own_styles(raw, effective())
-    bak = path.parent / "backup" / f"{path.stem}-{time.strftime('%Y%m%d-%H%M%S')}-v1{path.suffix}"
-    bak.parent.mkdir(parents=True, exist_ok=True)
-    bak.write_bytes(path.read_bytes())
+    old_global = legacy_global()
+    new = copy.deepcopy(raw)
+    if ver < 2:
+        new.pop("version", None)
+        new = with_own_styles(new, Config.model_validate(merge_layers([old_global, new])))
+    rest = split_machine(old_global)[1]
+    (rest.get("render") or {}).pop("styles", None)
+    fill_missing(new, rest)
+    new["version"] = VERSION
+    write_backup(path, f"v{ver}")
     path.write_text(tomli_w.dumps(new), encoding="utf-8")
     return True
 
@@ -423,7 +521,7 @@ def read_series(name: str) -> dict:
     f = series_file(name)
     if not (name and f.is_file()):
         return {}
-    upgrade_file(f, lambda: load(str(f))[0])
+    upgrade_file(f)
     return read_toml(f)
 
 
@@ -431,7 +529,7 @@ def series_effective(name: str) -> "Config":
     """作品的默认设置合并后是什么样（内置默认 < 用户全局 < 作品设置）。"""
     f = series_file(name)
     if name and f.is_file():
-        upgrade_file(f, lambda: load(str(f))[0])
+        upgrade_file(f)
     return load(str(f) if f.is_file() else None)[0]
 
 
@@ -465,14 +563,47 @@ def series_from_episode(project_raw: dict) -> dict:
     return split_episode(project_raw)[1]
 
 
-def diff_settings(a: dict, b: dict, prefix="") -> list[dict]:
-    """两份（合并后的）设置哪些项不一样：[{"path", "before", "after"}]。列表整体比较。"""
+def diff_settings(a: dict, b: dict, prefix="", keys=()) -> list[dict]:
+    """两份（合并后的）设置哪些项不一样：[{"path", "keys", "before", "after"}]。列表整体比较；keys 是逐级的键（样式名里可能有点）。"""
     out = []
     for k in sorted(set(a) | set(b)):
         x, y = a.get(k), b.get(k)
-        path = f"{prefix}{k}"
+        path, ks = f"{prefix}{k}", [*keys, k]
         if isinstance(x, dict) and isinstance(y, dict):
-            out += diff_settings(x, y, path + ".")
+            out += diff_settings(x, y, path + ".", ks)
         elif x != y:
-            out.append({"path": path, "before": x, "after": y})
+            out.append({"path": path, "keys": ks, "before": x, "after": y})
     return out
+
+
+def get_keys(d: dict, keys):
+    for k in keys:
+        if not isinstance(d, dict) or k not in d:
+            return None
+        d = d[k]
+    return d
+
+
+def set_keys(d: dict, keys, value) -> dict:
+    """按逐级的键写进去；value 是 None 时删掉这一项。"""
+    cur = d
+    for k in keys[:-1]:
+        if not isinstance(cur.get(k), dict):
+            cur[k] = {}
+        cur = cur[k]
+    if value is None:
+        cur.pop(keys[-1], None)
+    else:
+        cur[keys[-1]] = copy.deepcopy(value)
+    return d
+
+
+# 只属于一集、和模板比较时不算的项
+TEMPLATE_SKIP = {("project", "series"), ("project", "preset"), ("project", "context"), ("subs", "path"), ("subs", "track"), ("version",)}
+
+
+def template_diff(episode: "Config", template: "Config", langs=True) -> list[dict]:
+    """一集和它的模板哪些项不一样（before = 这一集，after = 模板）。langs=False 时语言不算（内置预设不管语言）。"""
+    skip = set(TEMPLATE_SKIP) | (set() if langs else {("project", "source"), ("project", "targets")})
+    return [c for c in diff_settings(episode.model_dump(mode="json"), template.model_dump(mode="json"))
+            if not any(tuple(c["keys"][:len(k)]) == k for k in skip)]

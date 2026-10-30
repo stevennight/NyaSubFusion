@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { EpisodeShell, type EpTab } from "./components/EpisodeShell";
 import { PageGuard } from "./components/PageGuard";
+import { TemplateEditor, type TplTarget } from "./components/TemplateEditor";
 import { ProjectsPage } from "./pages/Projects";
 import { QueuePage } from "./pages/Queue";
 import { SettingsPage } from "./pages/Settings";
 import { useStore } from "./store";
 
 // 左栏只放应用级的：库 · 任务 · 设置。打开一集以后，这一集的工作在页内标签里切换（处理 · 审校 · 输出 · 资料）。
-type View = "library" | "queue" | "settings" | "ep";
+type View = "library" | "queue" | "settings" | "ep" | "tpl";
 
 const NAV: { v: View; label: string; icon: ReactNode }[] = [
   { v: "library", label: "库", icon: <><path d="M4 5h6v14H4zM14 5h6v14h-6z" /><path d="M6.5 8h1M16.5 8h1" /></> },
@@ -34,6 +35,10 @@ export default function App() {
   useEffect(() => { localStorage.setItem("nyasub.epTab", tab); }, [tab]);
   useEffect(() => { if (!s.pid && view === "ep") setView("library"); }, [s.pid, view]);
   const openEp = (t: EpTab = "process") => { setTab(t); setView("ep"); };
+  // 改模板（作品默认设置 / 自己的预设）：从哪儿进来就回哪儿去
+  const [tpl, setTpl] = useState<{ target: TplTarget; back: View } | null>(null);
+  const openTpl = (target: TplTarget) => { setTpl({ target, back: view }); setView("tpl"); };
+  useEffect(() => { if (view === "tpl" && !tpl) setView("library"); }, [view, tpl]);
 
   const series = s.config?.effective?.project?.series as string | undefined;
   return (
@@ -44,11 +49,15 @@ export default function App() {
           <span>Nya<b>Sub</b>Fusion</span>
         </div>
         <div className="crumb">
-          {view === "ep" && s.summary ? (<>
+          {view === "tpl" && tpl ? (<>
+            <a onClick={() => setView(tpl.back)}>{tpl.target.kind === "series" ? "库" : "设置"}</a><span>›</span>
+            {tpl.target.kind === "series" ? <><span>{tpl.target.id}</span><span>›</span><strong className="tplc">默认设置</strong></>
+              : <><span>预设</span><span>›</span><strong className="tplc">{tpl.target.id.replace(/^user:/, "")}</strong></>}
+          </>) : view === "ep" && s.summary ? (<>
             <a onClick={() => setView("library")}>库</a>
             {series && <><span>›</span><span>{series}</span></>}
             <span>›</span><strong title={s.summary.video}>{s.summary.name}</strong>
-          </>) : view !== "ep" && s.summary ? (
+          </>) : s.summary ? (
             <a className="back" title="回到正在做的这一集" onClick={() => setView("ep")}>← 回到「{s.summary.name}」</a>
           ) : null}
         </div>
@@ -68,10 +77,11 @@ export default function App() {
       </nav>
       <main className={`main${view === "ep" ? " ep-main" : ""}`}>
         {s.error && <div className="errbar">⚠ {s.error}<span className="sp" /><button className="btn sm ghost" onClick={() => s.setError(null)}>关闭</button></div>}
-        <PageGuard key={view === "ep" ? `ep:${s.pid ?? ""}` : view} onBack={() => setView("library")}>
+        <PageGuard key={view === "ep" ? `ep:${s.pid ?? ""}` : view === "tpl" ? `tpl:${tpl?.target.kind}:${tpl?.target.id}` : view} onBack={() => setView("library")}>
           {view === "library" && <ProjectsPage onOpened={() => openEp("process")} />}
-          {view === "ep" && s.pid && <EpisodeShell tab={tab} setTab={setTab} />}
-          {view === "settings" && <SettingsPage />}
+          {view === "ep" && s.pid && <EpisodeShell tab={tab} setTab={setTab} onSeries={(name) => openTpl({ kind: "series", id: name })} />}
+          {view === "settings" && <SettingsPage onEditPreset={(id) => openTpl({ kind: "preset", id })} />}
+          {view === "tpl" && tpl && <TemplateEditor target={tpl.target} onDone={() => setView(tpl.back)} />}
           {view === "queue" && <QueuePage onOpenProject={() => openEp("process")} />}
         </PageGuard>
       </main>

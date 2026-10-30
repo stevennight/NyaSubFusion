@@ -484,3 +484,20 @@ table.tb { width: 100%; border-collapse: collapse }
 .scope { font-size: 11px; padding: 1px 6px; border-radius: 4px; white-space: nowrap }
 .scope.s { background: #b49cff22; color: var(--acc2) } .scope.e { background: #ff7aa822; color: var(--acc) } .scope.g { background: #7cc4ff22; color: var(--c-sub) }
 .scroll-table { max-height: calc(100vh - 260px); overflow: auto }
+
+/* ---------- 模板（作品默认设置 / 预设）：紫色 ---------- */
+.chip.tpl { color: var(--acc2); border-color: #b49cff55; background: #b49cff14 }
+.chip.click { cursor: pointer } .chip.click:hover { border-color: #6a6a7c }
+.btn.tplb { border-color: #b49cff88; color: var(--acc2) }
+.tplmode .steps, .tplmode .olist, .tplmode .detail .card, .tplmode .oed .card { border-color: #b49cff66 }
+.tplmode.page { padding: 16px }
+.tplbanner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; background: #b49cff14; border: 1px solid #b49cff55; color: #d6cbff; margin-bottom: 10px; flex-wrap: wrap }
+.crumb .tplc { color: var(--acc2) }
+.kv > .lbl.mod { color: var(--acc2) }
+.kv > .lbl.mod::before { content: "● "; font-size: 9px; vertical-align: 2px }
+.lbl .rv { border: 0; background: none; color: var(--acc2); padding: 0 0 0 4px; font-size: 13px }
+.lbl .rv:hover:not(:disabled) { color: #fff } .lbl .rv:disabled { opacity: .4 }
+.moddot { color: var(--acc2); font-size: 9px; margin-left: 5px; vertical-align: 2px }
+.prow-mini { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--bg2); border-radius: 7px; margin-bottom: 6px }
+.prow-mini b { font-weight: 500 }
+.prow-mini.light { background: none; padding: 4px 10px; margin-bottom: 0 }

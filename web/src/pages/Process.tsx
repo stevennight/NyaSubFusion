@@ -5,9 +5,10 @@ import { api } from "../api";
 import { RegionEditor, type Region } from "../components/RegionEditor";
 import { REDO_STAGES } from "../components/RunBar";
 import { SeriesPicker } from "../components/SeriesPicker";
-import { SaveChip, useDoc, useDraft, type ConfigDoc } from "../doc";
+import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc } from "../doc";
+import { showVal, stepOf } from "../settingLabels";
 import { useStore } from "../store";
-import type { Cfg, Provider, StageStatus } from "../types";
+import type { Cfg, Change, Provider, StageStatus } from "../types";
 import { deepGet, langName, pct, setIn, STAGE_LBL } from "../util";
 
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "要重做", missing: "未运行", running: "运行中",
@@ -61,7 +62,9 @@ export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes
   const note = (st: string) => (st === "render" ? s.summary?.render?.note : s.summary?.plan.find((p) => p.stage === st)?.note);
   const vmode = String(val("render.video.mode") ?? "off");
   const stepStatus = (id: StepId): string => (id === "basic" ? "" : id === "video" ? (vmode === "off" ? "off" : status[vmode] ?? "missing") : status[id] ?? "missing");
-  const ctx: StepCtx = { doc, val, set, episode, onTab, status: stepStatus, note, seconds };
+  const changes = doc.template?.changes ?? [];
+  const diffs = (id: StepId) => changes.filter((c) => stepOf(c.keys) === id);
+  const ctx: StepCtx = { doc, val, set, episode, onTab, status: stepStatus, note, seconds, diffs };
 
   return (
     <div className="page"><div className="wide">
@@ -87,6 +90,21 @@ interface StepCtx {
   doc: ConfigDoc; val: (p: string) => unknown; set: (p: string, v: unknown) => void; episode: boolean;
   onTab: (t: "review" | "output" | "notes") => void;
   status: (id: StepId) => string; note: (st: string) => string | undefined; seconds: (st: string) => number | null | undefined;
+  diffs: (id: StepId) => Change[];   // 这一步里和模板不一样的项
+}
+
+/** 设置项的标签：和模板不一样时标紫，旁边一个 ↺ 只把这一项恢复成模板的值 */
+function Lbl({ ctx, k, children }: { ctx: StepCtx; k: string | string[]; children: ReactNode }) {
+  const unsaved = useUnsaved();
+  const ch = (Array.isArray(k) ? k : [k]).map((p) => templateChange(ctx.doc, p.split("."))).filter(Boolean) as Change[];
+  if (!ch.length || !ctx.episode) return <span className="lbl">{children}</span>;
+  return (
+    <span className="lbl mod" title={`和模板不一样，模板里是：${ch.map((c) => showVal(c.after)).join(" / ")}`}>
+      {children}
+      <button className="rv" disabled={unsaved} title={`恢复成模板的值：${ch.map((c) => showVal(c.after)).join(" / ")}`}
+              onClick={() => ctx.doc.applyTemplate?.(ch.map((c) => c.keys), "episode")}>↺</button>
+    </span>
+  );
 }
 
 function summary(id: StepId, val: (p: string) => unknown, langs: { code: string; name: string }[]): string {
@@ -121,7 +139,8 @@ function StepRow({ id, ctx, sel, onClick }: { id: StepId; ctx: StepCtx; sel: boo
     <div className={`step${sel ? " sel" : ""}${on === false ? " offs" : ""}`} onClick={onClick}>
       <span className={`dot ${ctx.episode && st ? DOT[st] ?? "na" : "na"}`} />
       <div className="nm">
-        <b>{STEP_NAME[id]}{["annotate", "render", "video"].includes(id) && <span className="dim"> ↗</span>}{redo && <span className="chip mini warn" title="下次运行一定重做">↻</span>}</b>
+        <b>{STEP_NAME[id]}{["annotate", "render", "video"].includes(id) && <span className="dim"> ↗</span>}{redo && <span className="chip mini warn" title="下次运行一定重做">↻</span>}
+          {ctx.episode && ctx.diffs(id).length > 0 && <span className="moddot" title={`和模板不一样：${ctx.diffs(id).length} 项`}>●</span>}</b>
         <small>{p && p.total > 0 ? `${p.label || "运行中"} ${pct(p)}%` : summary(id, ctx.val, s.langs)}</small>
       </div>
       {tg ? <button className={`sw${on ? " on" : ""}`} title={on ? "开（点一下关掉）" : "关（点一下打开）"} onClick={(e) => { e.stopPropagation(); ctx.set(tg[0], on ? tg[2] : tg[1]); }} />
@@ -157,12 +176,16 @@ function StepHead({ id, ctx }: { id: StepId; ctx: StepCtx }) {
   const all = s.runOpts.redo.includes("all");
   const redo = canRedo && (all || s.runOpts.redo.includes(id));
   const tg = TOGGLE[id];
+  const unsaved = useUnsaved();
+  const diffs = ctx.episode ? ctx.diffs(id) : [];
   return (
     <div className="dh">
       <h2>{STEP_NAME[id]}</h2>
       {ctx.episode && st && <span className={`chip ${DOT[st] === "done" ? "ok" : DOT[st] === "fail" ? "bad" : DOT[st] === "stale" ? "warn" : ""}`}>{STATUS_LBL[st] ?? st}</span>}
       {ctx.episode && note && <span className="hint">{note}</span>}
       <span className="sp" />
+      {diffs.length > 0 && <button className="btn sm tplb" disabled={unsaved} title={`这一步有 ${diffs.length} 项和模板不一样，全部恢复成模板的值（先备份）`}
+                                   onClick={() => ctx.doc.applyTemplate?.(diffs.map((c) => c.keys), "episode")}>↺ 这一步恢复成模板</button>}
       {tg && <label className="row dim"><button className={`sw${ctx.val(tg[0]) === tg[1] ? " on" : ""}`} onClick={() => ctx.set(tg[0], ctx.val(tg[0]) === tg[1] ? tg[2] : tg[1])} />{ctx.val(tg[0]) === tg[1] ? "开" : "关"}</label>}
       {ctx.episode && canRedo && !s.running && (
         <button className={`btn sm${redo ? " warn" : ""}`} title={redo ? "已勾选：下次运行一定重做这一步（再点取消）" : "下次运行一定重做这一步（平时不用：改了设置会自动重做）"}
@@ -201,11 +224,11 @@ function BasicStep({ ctx }: { ctx: StepCtx }) {
   return (
     <div className="card">
       <div className="kv">
-        <span className="lbl">源语言</span>
+        <Lbl ctx={ctx} k="project.source">源语言</Lbl>
         <select className="inp" style={{ maxWidth: 220 }} value={String(val("project.source"))} onChange={(e) => set("project.source", e.target.value)}>
           <option value="auto">自动判断</option>{s.langs.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
         </select>
-        <span className="lbl">翻译成</span>
+        <Lbl ctx={ctx} k="project.targets">翻译成</Lbl>
         <div className="row wrap">
           {s.langs.map((l) => {
             const on = targets.includes(l.code);
@@ -256,23 +279,23 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
   return (
     <div className="card">
       <div className="kv">
-        <span className="lbl">识别方式</span>
+        <Lbl ctx={ctx} k="asr.backend">识别方式</Lbl>
         <div className="row"><Seg value={backend} options={[["local", "本机"], ["api", "云端接口"]]} onChange={(v) => set("asr.backend", v)} />
           <span className="hint">{backend === "api" ? "按音频时长付费，一小时节目约 0.2~0.4 美元" : "faster-whisper，免费，要显卡才快"}</span></div>
         {backend === "api" ? (<>
-          <span className="lbl">接口</span>
+          <Lbl ctx={ctx} k="asr.api_provider">接口</Lbl>
           <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
             <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
             {providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
-          <span className="lbl">接口类型</span>
+          <Lbl ctx={ctx} k="asr.api_kind">接口类型</Lbl>
           <div className="row"><div className="seg">{(Object.keys(ASR_API_KINDS) as (keyof typeof ASR_API_KINDS)[]).map((k) =>
             <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div><Tip text={ASR_API_KINDS[kind].desc} /></div>
-          <span className="lbl">模型</span>
+          <Lbl ctx={ctx} k="asr.api_model">模型</Lbl>
           <div className="row"><input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[kind].model} onChange={(e) => set("asr.api_model", e.target.value)} />
             <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0" /></div>
         </>) : (<>
-          <span className="lbl">模型</span>
+          <Lbl ctx={ctx} k="asr.model">模型</Lbl>
           <div className="row">
             <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>
               {(models.length ? models : [{ id: String(val("asr.model")), label: String(val("asr.model")), desc: "" }]).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
@@ -281,14 +304,14 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
             {cur?.desc && <Tip text={cur.desc} />}
           </div>
         </>)}
-        <span className="lbl">人声分离</span>
+        <Lbl ctx={ctx} k="asr.separate">人声分离</Lbl>
         <div className="row"><Seg value={String(val("asr.separate") ?? "auto")} options={Object.entries(SEP_LBL)} onChange={(v) => set("asr.separate", v)} />
           <span className="hint">先去掉背景音乐再识别；自动 = 没有字幕时才做</span></div>
       </div>
       <Adv>
         <div className="kv">
           {backend === "api" ? (<>
-            <span className="lbl">每块时长</span>
+            <Lbl ctx={ctx} k="asr.api_chunk_seconds">每块时长</Lbl>
             <div className="row">
               <select className="inp" value={String(Number(val("asr.api_chunk_seconds") ?? 0))} onChange={(e) => set("asr.api_chunk_seconds", Number(e.target.value))}>
                 <option value="0">自动（OpenRouter 3 分钟，其它 10 分钟）</option>
@@ -297,7 +320,7 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
               <Tip text="音频切成多长一块上传。太长可能超过接口的处理时间上限（OpenRouter 是 60 秒）而失败；太短切点多，句子被切断的机会多一点" />
             </div>
           </>) : (<>
-            <span className="lbl">人声门槛</span>
+            <Lbl ctx={ctx} k="asr.vad_threshold">人声门槛</Lbl>
             <div className="row"><input type="range" min={0.1} max={0.6} step={0.05} value={Number(val("asr.vad_threshold"))} onChange={(e) => set("asr.vad_threshold", Number(e.target.value))} />
               <span className="dim">{String(val("asr.vad_threshold"))}</span>
               <Tip text="多大的声音算有人说话。调低：小声、远处的话不容易漏，但杂音也可能被当成台词；调高则相反。" /></div>
@@ -315,11 +338,11 @@ function OcrStep({ ctx }: { ctx: StepCtx }) {
   return (
     <div className="card">
       <div className="kv">
-        <span className="lbl">每秒看几帧</span>
+        <Lbl ctx={ctx} k="ocr.fps">每秒看几帧</Lbl>
         <div className="row"><input type="range" min={1} max={10} step={0.5} value={fps} onChange={(e) => set("ocr.fps", Number(e.target.value))} />
           <span className="dim">{fps} 帧/秒 · 时间误差约 ±{(0.5 / fps).toFixed(2)} 秒</span>
           <Tip text="越大，画面字出现 / 消失的时间越准、越不容易漏掉一闪而过的字，但扫描越慢。台词类画面字建议 2~3；片尾滚动字幕、跑马灯可以调到 6~10。" /></div>
-        <span className="lbl">识别区域</span>
+        <Lbl ctx={ctx} k="ocr.regions">识别区域</Lbl>
         {ctx.episode && s.pid && s.summary?.meta?.video ? (
           <div className="src-region"><RegionEditor pid={s.pid} duration={s.summary.meta.duration} aspect={s.summary.meta.video.aspect}
             regions={(val("ocr.regions") as Region[]) ?? [{ rect: [0, 0, 1, 1] }]} boxes={s.data?.ocr ?? []} onChange={(r) => set("ocr.regions", r)} /></div>
@@ -336,14 +359,14 @@ function RefineStep({ ctx }: { ctx: StepCtx }) {
     <div className="card">
       <div className="hint" style={{ marginBottom: 10 }}>视觉大模型看每处字的特写重新转写，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。用「设置 › 用途」里的“画面字复核”接口，接口要支持图片。</div>
       <div className="kv" style={on ? undefined : { opacity: 0.45, pointerEvents: "none" }}>
-        <span className="lbl">特写</span>
+        <Lbl ctx={ctx} k="ocr.refine_boxed">特写</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("ocr.refine_boxed")} onChange={(e) => set("ocr.refine_boxed", e.target.checked)} />框出要转写的字
           <Tip text="用截图那一刻的画面重新截每处字的特写，并用红框框出要转写的字（镜头移动时，原来的特写会把片名、别处的字截进来）。" /></label>
-        <span className="lbl">每批几处</span>
+        <Lbl ctx={ctx} k="ocr.refine_batch">每批几处</Lbl>
         <div className="row"><select className="inp" value={Number(val("ocr.refine_batch") ?? 4)} onChange={(e) => set("ocr.refine_batch", Number(e.target.value))}>
           <option value={1}>1（每处单独问，不会串图）</option><option value={2}>2</option><option value={4}>4（默认）</option><option value={6}>6（最省）</option></select>
           <Tip text="几处字放在一次请求里问。越多越省；模型偶尔会把同一批另一张图上的字写过来（串图）。" /></div>
-        <span className="lbl">整帧画面</span>
+        <Lbl ctx={ctx} k={["ocr.refine_context", "ocr.refine_frame_width"]}>整帧画面</Lbl>
         <div className="row"><select className="inp" value={val("ocr.refine_context") ? Number(val("ocr.refine_frame_width") ?? 640) : 0}
           onChange={(e) => { const w = Number(e.target.value); set("ocr.refine_context", !!w); if (w) set("ocr.refine_frame_width", w); }}>
           <option value={0}>不附</option><option value={640}>640 宽（省）</option><option value={1024}>1024 宽</option><option value={1280}>1280 宽（最清楚）</option></select>
@@ -363,14 +386,14 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
   return (
     <div className="card">
       <div className="kv">
-        <span className="lbl">方式</span>
+        <Lbl ctx={ctx} k="llm.mode">方式</Lbl>
         <div className="row"><Seg value={mode} options={Object.entries(LLM_MODE)} onChange={(v) => set("llm.mode", v)} />
           <span className="hint">{mode === "export" ? "把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次" : mode === "off" ? "只做识别和合并，不输出译文" : mode === "auto" ? "配了接口就调接口，否则导出任务文件" : ""}</span></div>
-        <span className="lbl">接口</span>
+        <Lbl ctx={ctx} k="llm.translate">接口</Lbl>
         <div className="row"><select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
           <option value="">跟随设置</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}</select>
           <span className="hint">接口在「设置」里管理</span></div>
-        <span className="lbl">参考画面</span>
+        <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
           <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网）。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
         {ctx.episode && (<>

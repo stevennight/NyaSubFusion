@@ -1,9 +1,9 @@
-// 全局设置：大模型接口（Key 存系统凭据库）、用途分配、下载镜像。存在用户全局配置里，所有项目共用。
+// 全局设置：大模型接口（Key 存系统凭据库）、用途分配、预设、下载镜像。只放跟这台电脑有关的，所有项目共用。
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { GpuComponents } from "../components/GpuComponents";
 import { useStore } from "../store";
-import type { Cfg, Provider, Settings } from "../types";
+import type { Cfg, PresetInfo, Provider, Settings, Style } from "../types";
 import { deepGet, setIn } from "../util";
 
 // 常用服务：一键填入地址和推荐模型（模型名以服务商文档为准，可以改）
@@ -15,7 +15,7 @@ const PRESETS: (Provider & { label: string })[] = [
   { label: "本地 Ollama", name: "ollama", base_url: "http://127.0.0.1:11434/v1", model: "qwen2.5:14b" },
 ];
 
-export function SettingsPage() {
+export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => void }) {
   const s = useStore();
   const [st, setSt] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Cfg>({});
@@ -107,13 +107,19 @@ export function SettingsPage() {
           <span className="lbl">翻译用</span>
           <select className="inp" style={{ maxWidth: 260 }} value={val("llm.translate") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.translate", e.target.value))}>
             <option value="">（不用接口列表，按旧的 [llm] 配置）</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
-          <span className="lbl">视觉复核用</span>
+          <span className="lbl">画面字复核用</span>
           <select className="inp" style={{ maxWidth: 260 }} value={val("llm.vision") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.vision", e.target.value))}>
             <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          <span className="lbl">云端语音识别用</span>
+          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.asr") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.asr", e.target.value))}>
+            <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          <span /><span className="hint">一集里可以单独换（在「处理」的对应步骤里），不换就用这里的。</span>
           <span className="lbl">当前翻译</span>
           <span className="dim">{st.translate.model ? `${st.translate.name || "旧配置"} · ${st.translate.model} @ ${st.translate.base_url}` : "未配置 → 导出任务文件"}</span>
         </div>
       </div>
+      <div className="gap" />
+      <PresetsCard onEdit={onEditPreset} />
       <div className="gap" />
       <GpuComponents />
       <div className="gap" />
@@ -126,5 +132,56 @@ export function SettingsPage() {
         </div>
       </div>
     </div></div>
+  );
+}
+
+/** 预设：内置的只读（可以复制成自己的），自己的能改、删、设成新项目默认；旁边列出出厂样式 */
+function PresetsCard({ onEdit }: { onEdit: (id: string) => void }) {
+  const s = useStore();
+  const [list, setList] = useState<PresetInfo[]>([]);
+  const [factory, setFactory] = useState<Record<string, Style>>({});
+  useEffect(() => {
+    api.presets().then(setList).catch((e) => s.setError(e.message));
+    api.preset("custom").then((p) => setFactory(p.factory.styles)).catch(() => {});
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  const act = async (f: () => Promise<PresetInfo[]>) => { try { setList(await f()); } catch (e) { s.setError((e as Error).message); } };
+  const copy = async (p: PresetInfo) => {
+    const name = prompt("自己的预设叫什么？", `${p.name}（我的）`);
+    if (!name) return;
+    try { const r = await api.createPreset({ name, from_preset: p.id }); setList(r.list); s.toast(`已复制成「${name}」`); } catch (e) { s.setError((e as Error).message); }
+  };
+  const mine = list.filter((p) => !p.builtin), builtin = list.filter((p) => p.builtin);
+  return (
+    <div className="grid2" style={{ gridTemplateColumns: "1.25fr 1fr", alignItems: "start" }}>
+      <div className="card">
+        <div className="row" style={{ marginBottom: 8 }}><h3 style={{ margin: 0 }}>预设</h3>
+          <span className="hint">新建项目时选；建好后复制一份给那一集，之后各自独立。一集的设置也能在页头“存成预设…”</span></div>
+        <div className="dim" style={{ fontSize: 11.5, margin: "4px 0" }}>我的</div>
+        {mine.length === 0 && <div className="dim" style={{ padding: "4px 10px 8px" }}>还没有。可以复制下面的内置预设，或者在一集里“存成预设…”。</div>}
+        {mine.map((p) => (
+          <div key={p.id} className="prow-mini">
+            <b>{p.name}</b>{p.default && <span className="chip acc">新项目默认用它</span>}<span className="dim" style={{ fontSize: 11.5 }}>{p.desc}</span><span className="sp" />
+            <button className="btn sm" onClick={() => onEdit(p.id)}>编辑</button>
+            {!p.default && <button className="btn sm ghost" onClick={() => act(() => api.defaultPreset(p.id))}>设为默认</button>}
+            <button className="btn sm ghost" onClick={() => { if (confirm(`删除预设「${p.name}」？（会先备份；用它建的项目不受影响）`)) act(() => api.deletePreset(p.id)); }}>删除</button>
+          </div>
+        ))}
+        <div className="dim" style={{ fontSize: 11.5, margin: "10px 0 4px" }}>内置（只读，随软件更新）</div>
+        {builtin.map((p) => (
+          <div key={p.id} className="prow-mini light">
+            <span className="muted">{p.name}</span>{p.default && <span className="chip acc">新项目默认用它</span>}<span className="dim" style={{ fontSize: 11.5 }}>{p.desc}</span><span className="sp" />
+            {!p.default && <button className="btn sm ghost" onClick={() => act(() => api.defaultPreset(p.id))}>设为默认</button>}
+            <button className="btn sm ghost" onClick={() => copy(p)}>复制成我的</button>
+          </div>
+        ))}
+      </div>
+      <div className="card">
+        <h3>出厂样式 <span className="dim" style={{ fontWeight: 400 }}>只读</span></h3>
+        <div className="usedby">{Object.entries(factory).map(([k, f]) => (
+          <div key={k}><span className="swatch" style={{ color: f.color, textShadow: `0 0 2px ${f.outline_color}` }}>字</span>{k}<span className="dim">{f.font} {f.size}</span></div>
+        ))}</div>
+        <div className="hint" style={{ marginTop: 8 }}>软件自带，改不了也删不掉。每一集、每个预设的样式都是从这里复制出去的：改乱了可以在样式上点“恢复出厂”，删掉了可以“＋ 新样式 › 从出厂样式添加”。</div>
+      </div>
+    </div>
   );
 }

@@ -45,7 +45,7 @@ def test_series_and_episode_are_independent(client, sample):
 
     # 用作品设置覆盖这一集：变化里有帧率；所属作品、外挂字幕文件留着；原来的设置备份了
     pre = client.get(f"/api/projects/{pid}/series/overwrite", params={"direction": "to_episode"}).json()
-    assert {"path": "ocr.fps", "before": 2.0, "after": 7.0} in pre["changes"]
+    assert {"path": "ocr.fps", "keys": ["ocr", "fps"], "before": 2.0, "after": 7.0} in pre["changes"]
     assert all(not c["path"].startswith(("project.series", "subs.path")) for c in pre["changes"])
     r = client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_episode"}).json()["config"]
     assert r["effective"]["ocr"]["fps"] == 7.0 and r["effective"]["project"]["series"] == "测试作品"

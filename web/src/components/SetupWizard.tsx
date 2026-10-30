@@ -15,7 +15,7 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
   const [seriesName, setSeriesName] = useState("");
   const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api.presets().then(setPresets); }, []);
+  useEffect(() => { api.presets().then((l) => { setPresets(l); const d = l.find((x) => x.default); if (d) setPreset(d.id); }); }, []);
   const follow = !!picked?.settings;   // 作品有默认设置：复制一份给这一集，不用选语言和预设
 
   const p = summary.probe ?? {};
@@ -74,7 +74,7 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
               {presets.map((x) => (
                 <div key={x.id} onClick={() => setPreset(x.id)} style={{ cursor: "pointer", border: `1px solid ${preset === x.id ? "var(--acc)" : "var(--line2)"}`,
                   background: preset === x.id ? "#ff7aa812" : "var(--bg2)", borderRadius: 8, padding: 10 }}>
-                  <b>{x.name}</b><div className="dim" style={{ fontSize: 12 }}>{x.desc}</div>
+                  <b>{x.name}</b>{"builtin" in x && !x.builtin && <span className="chip" style={{ marginLeft: 6 }}>我的</span>}<div className="dim" style={{ fontSize: 12 }}>{x.desc}</div>
                 </div>
               ))}
             </div>
