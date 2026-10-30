@@ -763,6 +763,60 @@ def create_app(token: str | None = None) -> FastAPI:
         _write_series(name, config_mod.series_from_episode(body.get("raw") or {}))
         return get_series(name)
 
+    @app.get("/api/series/{name}/glossary")
+    def series_glossary(name: str):
+        """作品共用的术语表（各集翻译时整理出来的 + 手动加的）。"""
+        f = config_mod.series_dir(name) / "glossary.json"
+        return {"series": name, "context": (config_mod.read_series(name).get("project") or {}).get("context", ""),
+                "summary": "", "path": str(f), "episode": "", "terms": load_json(f, {"terms": []})["terms"]}
+
+    @app.put("/api/series/{name}/glossary")
+    def put_series_glossary(name: str, body: dict = Body(...)):
+        terms = [{k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from") and v not in (None, "")}
+                 | {"from": t.get("from") or "manual"} for t in body.get("terms") or [] if (t.get("src") or "").strip()]
+        save_json(config_mod.series_dir(name) / "glossary.json", {"terms": terms})
+        return {"terms": terms}
+
+    def _series_reading_files(name):
+        return {"global": env.home() / "readings.json", "series": config_mod.series_dir(name) / "readings.json"}
+
+    @app.get("/api/series/{name}/readings")
+    def series_readings(name: str):
+        return {k: load_json(f, {"entries": []})["entries"] for k, f in _series_reading_files(name).items()}
+
+    @app.put("/api/series/{name}/readings")
+    def put_series_readings(name: str, body: dict = Body(...)):
+        """{"global": [...], "series": [...]}：整表替换。各集下次打开 / 运行时重新注音。"""
+        for k, f in _series_reading_files(name).items():
+            if k in body:
+                save_json(f, {"entries": [{kk: vv for kk, vv in e.items() if kk in ("lang", "src", "reading", "proper")}
+                                          for e in body[k] if (e.get("src") or "").strip() and (e.get("reading") or "").strip()]})
+        return series_readings(name)
+
+    @app.post("/api/series/{name}/rename")
+    def rename_series(name: str, body: dict = Body(...)):
+        """作品改名：作品目录改名，各集的所属作品一起改（每集先备份）。"""
+        new = (body.get("name") or "").strip()
+        if not new or any(c in new for c in '\\/:*?"<>|'):
+            raise HTTPException(400, "作品名不能是空的，也不能有 \\ / : * ? \" < > |")
+        if new == name:
+            return get_series(name)
+        if config_mod.series_dir(new).exists() or any(_episodes_of(new)):
+            raise HTTPException(400, f"已经有叫「{new}」的作品了")
+        if any((j := hub.status(p["id"])) and j["status"] == "running" for p in _episodes_of(name)):
+            raise HTTPException(409, "这部作品有一集正在运行，等它跑完再改名")
+        eps = list(_episodes_of(name))
+        if config_mod.series_dir(name).is_dir():
+            config_mod.series_dir(name).rename(config_mod.series_dir(new))
+        for p in eps:
+            _, proj = project_paths(p["id"])
+            pf = proj / "project.toml"
+            raw = config_mod.read_toml(pf)
+            raw.setdefault("project", {})["series"] = new
+            config_mod.write_backup(pf, "before-rename")
+            pf.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
+        return get_series(new)
+
     @app.post("/api/series/{name}/values")
     def series_values(name: str, body: dict = Body(...)):
         """各集在这几项上现在是什么值：{"keys": [[…]]} → [{"pid", "name", "running", "values": […]}]"""
@@ -1268,14 +1322,31 @@ def create_app(token: str | None = None) -> FastAPI:
     # ---------- 术语与读音词典 ----------
     @app.get("/api/series")
     def list_series():
+        """所有作品：有作品目录的，加上登记过的项目里写了所属作品的。episodes = 登记过的集数。"""
         root = env.home() / "series"
+        counts: dict[str, int] = {}
+        for p in projects.all():
+            sname = _brief_series(p)
+            if sname:
+                counts[sname] = counts.get(sname, 0) + 1
+        names = {d.name for d in root.iterdir() if d.is_dir()} if root.is_dir() else set()
         out = []
-        for d in sorted(root.iterdir()) if root.is_dir() else []:
-            if d.is_dir():
-                terms = load_json(d / "glossary.json", {"terms": []})["terms"]
-                out.append({"name": d.name, "terms": len(terms), "episodes": len({t.get("from") for t in terms} - {None, "manual"}),
-                            "settings": (d / "series.toml").is_file()})  # 有共享的设置：新建这部作品的项目时直接跟随
+        for name in sorted(names | set(counts)):
+            d = root / name
+            terms = load_json(d / "glossary.json", {"terms": []})["terms"]
+            out.append({"name": name, "terms": len(terms), "episodes": counts.get(name, 0),
+                        "settings": (d / "series.toml").is_file()})  # 有默认设置：新建这部作品的集时复制一份
         return out
+
+    def _brief_series(p):
+        import tomllib
+
+        video = Path(p["video"])
+        root = Path(p["workdir"]) if p.get("workdir") else video.with_name(video.stem + ".nyasub")
+        try:
+            return tomllib.loads((root / "project.toml").read_text(encoding="utf-8")).get("project", {}).get("series", "")
+        except Exception:
+            return ""
 
     @app.get("/api/projects/{pid}/glossary")
     def get_glossary(pid: str):

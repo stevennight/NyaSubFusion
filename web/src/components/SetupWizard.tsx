@@ -5,14 +5,14 @@ import { useStore } from "../store";
 import type { ProjectSummary, SeriesInfo } from "../types";
 import { SeriesPicker } from "./SeriesPicker";
 
-export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSummary; onDone: () => void; onCancel: () => void }) {
+export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summary: ProjectSummary; onDone: () => void; onCancel: () => void; series?: string }) {
   const s = useStore();
   const [presets, setPresets] = useState<{ id: string; name: string; desc: string }[]>([]);
   const [picked, setPicked] = useState<SeriesInfo | null>(null);   // 选了已有的作品
   const [preset, setPreset] = useState("documentary");
   const [source, setSource] = useState("auto");
   const [targets, setTargets] = useState<string[]>(["zh-Hans"]);
-  const [seriesName, setSeriesName] = useState("");
+  const [seriesName, setSeriesName] = useState(series);   // 从作品页“加一集”进来时已经选好
   const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => { api.presets().then((l) => { setPresets(l); const d = l.find((x) => x.default); if (d) setPreset(d.id); }); }, []);

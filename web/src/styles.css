@@ -501,3 +501,17 @@ table.tb { width: 100%; border-collapse: collapse }
 .prow-mini { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--bg2); border-radius: 7px; margin-bottom: 6px }
 .prow-mini b { font-weight: 500 }
 .prow-mini.light { background: none; padding: 4px 10px; margin-bottom: 0 }
+
+/* ---------- 库、作品页 ---------- */
+.series-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); margin-bottom: 12px; overflow: hidden }
+.series-card .sh { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel2); cursor: pointer }
+.series-card .sh:hover { background: #2d2d3a }
+.series-card .sh.plain { cursor: default } .series-card .sh.plain:hover { background: var(--panel2) }
+.series-card .sh b { font-size: 14.5px }
+.ep { display: grid; grid-template-columns: 22px minmax(0, 1.6fr) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid #2a2a35; cursor: pointer }
+.ep:hover { background: #24242f }
+.ep.gone { opacity: .55; cursor: default }
+.ep.add { display: block; color: var(--tx3); font-size: 12.5px } .ep.add:hover { color: var(--acc) }
+.ep .epname { min-width: 0 } .ep .epname b { font-weight: 500 }
+.ep .epname small { display: block; color: var(--tx3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.chip.mini { margin-left: 6px }

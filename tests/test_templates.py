@@ -117,3 +117,20 @@ def test_restore_last_run(client, sample):
     client.put(f"/api/projects/{pid}/config", json={"project": proj})
     r = client.post(f"/api/projects/{pid}/config/last_run").json()
     assert r["config"]["effective"]["ocr"]["fps"] == fps
+
+
+def test_series_glossary_readings_and_rename(client, sample):
+    pid, _ = opened(client, sample)
+    proj = client.get(f"/api/projects/{pid}/config").json()["project"]
+    proj.setdefault("project", {})["series"] = "作品C"
+    client.put(f"/api/projects/{pid}/config", json={"project": proj})
+    client.put("/api/series/作品C/glossary", json={"terms": [{"src": "深浦", "tr": "深浦"}, {"src": ""}]})
+    assert [t["src"] for t in client.get("/api/series/作品C/glossary").json()["terms"]] == ["深浦"]
+    client.put("/api/series/作品C/readings", json={"series": [{"lang": "ja", "src": "深浦", "reading": "ふかうら"}]})
+    assert client.get("/api/series/作品C/readings").json()["series"][0]["reading"] == "ふかうら"
+    assert next(x for x in client.get("/api/series").json() if x["name"] == "作品C")["episodes"] == 1
+    r = client.post("/api/series/作品C/rename", json={"name": "作品D"}).json()
+    assert r["name"] == "作品D" and [e["pid"] for e in r["episodes"]] == [pid]
+    assert client.get(f"/api/projects/{pid}/config").json()["effective"]["project"]["series"] == "作品D"
+    assert client.get("/api/series/作品D/glossary").json()["terms"][0]["src"] == "深浦"
+    assert client.post("/api/series/作品D/rename", json={"name": "a/b"}).status_code == 400

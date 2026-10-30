@@ -100,6 +100,11 @@ export const api = {
   restoreLastRun: (pid: string) => call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/config/last_run`, { method: "POST" }),
   seriesDoc: (name: string) => call<SeriesDoc>(`/api/series/${encodeURIComponent(name)}`),
   putSeries: (name: string, raw: Cfg) => call<SeriesDoc>(`/api/series/${encodeURIComponent(name)}`, json("PUT", { raw })),
+  seriesGlossary: (name: string) => call<Glossary>(`/api/series/${encodeURIComponent(name)}/glossary`),
+  putSeriesGlossary: (name: string, terms: Term[]) => call<{ terms: Term[] }>(`/api/series/${encodeURIComponent(name)}/glossary`, json("PUT", { terms })),
+  seriesReadings: (name: string) => call<Record<string, Reading[]>>(`/api/series/${encodeURIComponent(name)}/readings`),
+  putSeriesReadings: (name: string, body: Record<string, Reading[]>) => call<Record<string, Reading[]>>(`/api/series/${encodeURIComponent(name)}/readings`, json("PUT", body)),
+  renameSeries: (name: string, to: string) => call<SeriesDoc>(`/api/series/${encodeURIComponent(name)}/rename`, json("POST", { name: to })),
   seriesValues: (name: string, keys: string[][]) =>
     call<{ pid: string; name: string; running: boolean; values: unknown[] }[]>(`/api/series/${encodeURIComponent(name)}/values`, json("POST", { keys })),
   seriesSync: (name: string, keys: string[][], pids: string[]) =>

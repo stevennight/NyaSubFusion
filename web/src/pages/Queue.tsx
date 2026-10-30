@@ -63,7 +63,7 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
   return (
     <div className="page"><div className="wide">
       <div className="row" style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>批量队列</h2>
+        <h2 style={{ margin: 0 }}>任务</h2>
         <span className="dim">{q.items.length} 项 · 待处理 {counts.pending ?? 0} · 完成 {counts.done ?? 0}{counts.failed ? ` · 失败 ${counts.failed}` : ""}</span>
         <span className="sp" />
         {q.paused ? <span className="chip warn">已暂停</span> : q.running ? <span className="chip acc">● 处理中</span> : <span className="chip">空闲</span>}
