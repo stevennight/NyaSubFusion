@@ -46,14 +46,18 @@ def listing():
 
 
 def build(preset_id, source="auto", targets=None, series="", context=""):
-    """生成 project.toml 的内容（dict）。作品已经有共享的设置（series.toml）时，这一集只记下所属作品和说明，
-    其他设置都跟随作品（不再写一整套预设进来盖掉作品设置）。"""
+    """生成 project.toml 的内容（dict）。作品已经有默认设置（series.toml）时，复制一份作品设置作为这一集的设置
+    （填了节目说明就用填的），不用预设；之后这一集和作品各自独立。"""
     import copy
 
-    from .core.config import has_series_settings
+    from .core.config import has_series_settings, read_series
 
     if series and has_series_settings(series):
-        return {"project": {"series": series, **({"context": context} if context else {})}}
+        cfg = read_series(series)
+        cfg.setdefault("project", {})["series"] = series
+        if context:
+            cfg["project"]["context"] = context
+        return cfg
     cfg = copy.deepcopy(PRESETS.get(preset_id, PRESETS["custom"])["config"])
     project = {"source": source or "auto", "preset": preset_id}
     if targets:

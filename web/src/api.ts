@@ -1,6 +1,6 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
 import type { MediaInfo } from "./types";
-import type { Cfg, ConfigState, SeriesInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ConfigState, OverwriteDir, SeriesInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -30,12 +30,15 @@ export const api = {
   project: (pid: string) => call<ProjectSummary>(`/api/projects/${pid}`),
   plan: (pid: string) => call<PlanItem[]>(`/api/projects/${pid}/plan`),
   config: (pid: string) => call<ConfigState>(`/api/projects/${pid}/config`),
-  // {project}：这一集的设置；{series}：所属作品共享的设置（可以一起给）
+  // {project}：这一集的设置；{series}：所属作品的默认设置（两份各自独立）
   putConfig: (pid: string, body: { project?: Cfg; series?: Cfg }) =>
     call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/config`, json("PUT", body)),
-  // 把这一集的设置设为作品默认；mode "follow"：只清掉这一集单独设的项，全部跟随作品
-  adoptSeries: (pid: string, mode?: "follow") =>
-    call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/series/adopt`, json("POST", mode ? { mode } : {})),
+  // 覆盖：to_episode 用作品设置覆盖这一集 / to_series 用这一集的设置覆盖作品。先看会变哪些项
+  overwritePreview: (pid: string, direction: OverwriteDir) =>
+    call<{ target: "project" | "series"; changes: { path: string; before: unknown; after: unknown }[] }>(
+      `/api/projects/${pid}/series/overwrite?direction=${direction}`),
+  overwrite: (pid: string, direction: OverwriteDir) =>
+    call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/series/overwrite`, json("POST", { direction })),
   run: (pid: string, body: { until?: string; redo?: string[]; translate?: string }) =>
     call<{ started: boolean }>(`/api/projects/${pid}/run`, json("POST", body)),
   log: (pid: string) => call<LiveEvent[]>(`/api/projects/${pid}/log`),

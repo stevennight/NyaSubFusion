@@ -49,11 +49,12 @@ def test_config_layers(tmp_path, isolated_home):
     proj = tmp_path / "project.toml"
     proj.write_text('[project]\nseries = "show"\n', encoding="utf-8")
     cfg, files = config.load(None, proj, {"llm": {"model": "cli-model"}})
-    assert cfg.project.context == "作品说明"   # 作品层生效
-    assert cfg.asr.model == "medium"           # 作品层覆盖用户层
+    # 作品设置不参与合并：只是新建一集时复制过去的默认值（见 test_series_settings）
+    assert cfg.project.context == "" and cfg.asr.model == "small"   # 用户层
     assert cfg.llm.model == "cli-model"        # 命令行最高
-    assert files[-1] == "命令行"
-    assert cfg.pick("asr.model", "project.series") == {"asr.model": "medium", "project.series": "show"}
+    assert files[-1] == "命令行" and not any("series" in f for f in files)
+    assert cfg.pick("asr.model", "project.series") == {"asr.model": "small", "project.series": "show"}
+    assert config.series_effective("show").asr.model == "medium"   # 作品的默认设置本身：用户层 + 作品设置
 
 
 def test_llm_mode_auto(monkeypatch):

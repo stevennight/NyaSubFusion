@@ -71,6 +71,7 @@ input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var
 .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: #2f2f3c; border: 1px solid var(--line2); padding: 9px 16px; border-radius: 8px; z-index: 99; box-shadow: 0 8px 30px #0008 }
 .errbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin: 10px 16px 0; border-radius: 8px; background: #3a1d22; border: 1px solid #ff6b6b66; color: #ffb3b3 }
 .banner { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; background: #2a2516; border: 1px solid #ffc35a66; color: #ffd98f; margin-bottom: 12px }
+.banner.ok { background: #16261e; border-color: #5fd39a55; color: #9fe3bf }  /* 只是说明当前状态，不用处理 */
 table.tb { width: 100%; border-collapse: collapse }
 .tb th { font-weight: 500; color: var(--tx3); font-size: 12px; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 1 }
 .tb td { padding: 6px 8px; border-bottom: 1px solid #2a2a35; vertical-align: top }

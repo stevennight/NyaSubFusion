@@ -8,6 +8,7 @@ import asyncio
 import copy
 import hashlib
 import os
+import shutil
 import sys
 import threading
 import time
@@ -443,8 +444,9 @@ def create_app(token: str | None = None) -> FastAPI:
     # ---------- 配置 ----------
     @app.get("/api/projects/{pid}/config")
     def get_config(pid: str):
-        """project：这一集自己的设置（project.toml）；effective：合并后实际用的；
-        series：所属作品的共享设置 {"name", "raw"（series.toml）, "effective"（不含这一集的）}，没有所属作品时为 null。"""
+        """project：这一集的设置（project.toml）；effective：这一集合并后实际用的（全局 + 这一集）；
+        series：所属作品的默认设置 {"name", "raw"（series.toml）, "effective"（全局 + 作品设置）}，没有所属作品时为 null。
+        作品设置只在新建一集时复制过去，和这一集各自独立。"""
         _, proj = project_paths(pid)
         cfg, files = load_cfg(proj)
         pf = proj / "project.toml"
@@ -454,63 +456,92 @@ def create_app(token: str | None = None) -> FastAPI:
                    "effective": config_mod.series_effective(name).model_dump(mode="json")} if name else None)
         return {"project": raw, "effective": cfg.model_dump(mode="json"), "files": files, "series": series}
 
-    @app.put("/api/projects/{pid}/config")
-    def put_config(pid: str, body: dict = Body(...)):
-        """{"project": 这一集的设置}、{"series": 所属作品的共享设置}，给哪个存哪个（可以一起给，一起校验）。"""
-        _, proj = project_paths(pid)
-        pf = proj / "project.toml"
-        raw = body["project"] if "project" in body else (config_mod.read_toml(pf) if pf.exists() else {})
-        raw = raw or {}
-        name = ((raw.get("project") or {}).get("series") or "").strip()
-        if "series" in body and not name:
-            raise HTTPException(400, "这一集没有所属作品，不能保存作品设置")
-        sf = config_mod.series_file(name) if name else None
-        series_raw = _clean(body.get("series") or {})
+    def _checked(raw, path):
+        """先写到临时文件里校验（全局 + 这一份合起来要合法），再写成 path。"""
+        tmp = Path(str(path) + ".check")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
         try:
-            # 先校验：用户层 + 作品层 + 新的项目层合起来要合法（作品设置先写到临时文件里试）
-            pf_tmp = proj / "project.toml.check"
-            pf_tmp.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
-            if "series" in body:
-                sf.parent.mkdir(parents=True, exist_ok=True)
-                old = sf.read_bytes() if sf.exists() else None
-                sf.write_text(tomli_w.dumps(series_raw), encoding="utf-8")
-                try:
-                    config_mod.load(None, pf_tmp)
-                except Exception:
-                    if old is None:
-                        sf.unlink()
-                    else:
-                        sf.write_bytes(old)
-                    raise
-            else:
-                config_mod.load(None, pf_tmp)
+            tmp.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
+            config_mod.load(str(tmp))
         except Exception as e:
             raise HTTPException(400, f"配置不合法：{e}")
         finally:
-            if pf_tmp.exists():
-                pf_tmp.unlink()
+            if tmp.exists():
+                tmp.unlink()
+        return tomli_w.dumps(_clean(raw))
+
+    def _series_name(proj, raw=None):
+        pf = proj / "project.toml"
+        raw = raw if raw is not None else (config_mod.read_toml(pf) if pf.exists() else {})
+        return ((raw.get("project") or {}).get("series") or "").strip()
+
+    @app.put("/api/projects/{pid}/config")
+    def put_config(pid: str, body: dict = Body(...)):
+        """{"project": 这一集的设置}、{"series": 所属作品的默认设置}，给哪个存哪个（两份各自独立）。"""
+        _, proj = project_paths(pid)
+        out = []
         if "project" in body:
-            pf.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
+            out.append((proj / "project.toml", _checked(body["project"] or {}, proj / "project.toml")))
+        if "series" in body:
+            name = _series_name(proj, body.get("project"))
+            if not name:
+                raise HTTPException(400, "这一集没有所属作品，不能保存作品设置")
+            sf = config_mod.series_file(name)
+            out.append((sf, _checked(body["series"] or {}, sf)))
+        for path, text in out:  # 两份都校验过了再写
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
         return {"config": get_config(pid), "plan": get_plan(pid)}
 
-    @app.post("/api/projects/{pid}/series/adopt")
-    def adopt_series(pid: str, body: dict = Body(default={})):
-        """把这一集的设置设为作品的默认设置：这一集自己的设置（外挂字幕、这一集的说明除外）并进作品设置，
-        这一集只留下只属于它的项，以后跟着作品走。{"mode": "follow"}：不动作品设置，只清掉这一集单独设的项（全部跟随作品）。
-        这一集实际用的设置在 adopt 前后不变（follow 时会变成作品的设置）。"""
-        _, proj = project_paths(pid)
+    def _overwrite(proj, direction):
+        """覆盖后的 (这一集的设置, 作品的设置, 会变的那一份是哪个, 变化列表)。"""
         pf = proj / "project.toml"
         raw = config_mod.read_toml(pf) if pf.exists() else {}
-        name = ((raw.get("project") or {}).get("series") or "").strip()
+        name = _series_name(proj, raw)
         if not name:
             raise HTTPException(400, "这一集没有所属作品")
-        mine, shared = config_mod.split_episode(raw)
-        body_out = {"project": mine}
-        if body.get("mode") != "follow":
-            series_raw = config_mod.read_series(name)
-            config_mod.deep_merge(series_raw, shared)
-            body_out["series"] = series_raw
-        return put_config(pid, body_out)
+        series_raw = config_mod.read_series(name)
+        if direction == "to_episode":
+            if not config_mod.has_series_settings(name):
+                raise HTTPException(400, f"「{name}」还没有作品设置")
+            new = config_mod.episode_from_series(raw, series_raw)
+            before = load_cfg(proj)[0]
+            after = config_mod.load(None, None, new)[0]
+            return new, series_raw, "project", before, after
+        if direction == "to_series":
+            new = config_mod.series_from_episode(raw)
+            before = config_mod.series_effective(name)
+            after = config_mod.load(None, None, new)[0]
+            return raw, new, "series", before, after
+        raise HTTPException(400, "direction 只能是 to_episode / to_series")
+
+    @app.get("/api/projects/{pid}/series/overwrite")
+    def overwrite_preview(pid: str, direction: str):
+        """覆盖之前看看会变哪些项：direction = to_episode（用作品设置覆盖这一集）/ to_series（用这一集的设置覆盖作品）。"""
+        _, proj = project_paths(pid)
+        _, _, which, before, after = _overwrite(proj, direction)
+        b, a = before.model_dump(mode="json"), after.model_dump(mode="json")
+        for d in (b, a):  # 只属于这一集的项不比
+            d["project"].pop("series", None)
+            d["subs"].pop("path", None)
+            d["subs"].pop("track", None)
+        return {"target": which, "changes": config_mod.diff_settings(b, a)}
+
+    @app.post("/api/projects/{pid}/series/overwrite")
+    def overwrite(pid: str, body: dict = Body(...)):
+        """用作品设置覆盖这一集 / 用这一集的设置覆盖作品。被覆盖的那份先备份（项目或作品文件夹里的 backup/）。"""
+        _, proj = project_paths(pid)
+        project_raw, series_raw, which, _, _ = _overwrite(proj, body.get("direction"))
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        if which == "project":
+            src, dst = proj / "project.toml", proj / "backup" / f"project-{stamp}.toml"
+        else:
+            src = config_mod.series_file(_series_name(proj))
+            dst = src.parent / "backup" / f"series-{stamp}.toml"
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+        return put_config(pid, {"project": project_raw} if which == "project" else {"series": series_raw})
 
     # ---------- 运行 ----------
     @app.post("/api/projects/{pid}/run")

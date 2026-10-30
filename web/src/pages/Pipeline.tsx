@@ -4,7 +4,7 @@ import { api } from "../api";
 import { SeriesPicker } from "../components/SeriesPicker";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
-import type { Cfg, Progress, Provider, StageStatus } from "../types";
+import type { Cfg, OverwriteDir, Progress, Provider, StageStatus } from "../types";
 import { deepGet, pct, setIn, STAGE_LBL } from "../util";
 
 // 步骤图：从左到右大致按实际运行顺序排（节点上的数字就是运行顺序），连线是“用到了谁的结果”。
@@ -64,8 +64,8 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const pDirty = JSON.stringify(pdraft) !== JSON.stringify(s.config?.project ?? {});
   const sDirty = !!series && JSON.stringify(sdraft) !== JSON.stringify(series.raw ?? {});
   const dirty = pDirty || sDirty;
-  // 这一集单独设过、不跟作品走的项数（只属于每一集的项不算）
-  const own = countLeaves(withoutEpisode(s.config?.project ?? {}));
+  const hasSeriesCfg = !!series && Object.keys(series.raw ?? {}).length > 0;
+  const [confirm, setConfirm] = useState<{ dir: OverwriteDir; changes: { path: string; before: unknown; after: unknown }[] } | null>(null);
 
   const status = useMemo(() => {
     const m: Record<string, StageStatus> = {};
@@ -88,7 +88,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
 
   // 改作品设置时，没写的项显示作品这一层合并后的值（不含这一集自己的）
   const val = (path: string) => deepGet(draft, path) ?? deepGet(inSeries ? series!.effective : s.config?.effective, path);
-  const inProject = (path: string) => deepGet(draft, path) !== undefined;  // 这一层单独设过（标亮）
+  const inProject = (path: string) => deepGet(draft, path) !== undefined;  // 这一份设置里写了（标亮；没写的用全局设置）
   // 各来源的“更多”展开了哪些：记在本机，下次打开还是这样
   const [more, setMoreRaw] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem(MORE_KEY) ?? "{}"); } catch { return {}; } });
   const setMore = (f: Record<string, boolean> | ((m: Record<string, boolean>) => Record<string, boolean>)) => setMoreRaw((m) => {
@@ -117,14 +117,21 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
     const body = { ...(pDirty ? { project: pdraft } : {}), ...(sDirty ? { series: sdraft } : {}) };
     try {
       await s.saveConfig(body);
-      s.toast(sDirty ? `已保存${pDirty ? "这一集和" : ""}「${series!.name}」的作品设置（这部作品的各集都会用）` : "配置已保存");
+      s.toast(sDirty ? `已保存${pDirty ? "这一集的设置和" : ""}「${series!.name}」的默认设置（以后新建的集会用；已有的集不受影响）` : "这一集的设置已保存");
     } catch (e) { adopt.current = false; s.setError((e as Error).message); } finally { setSaving(false); }
   };
-  const adoptSeries = async (mode?: "follow") => {
+  // 覆盖：先列出会变的项，确认了再做
+  const askOverwrite = async (dir: OverwriteDir) => {
+    if (!s.pid) return;
+    try { setConfirm({ dir, changes: (await api.overwritePreview(s.pid, dir)).changes }); } catch (e) { s.setError((e as Error).message); }
+  };
+  const doOverwrite = async (dir: OverwriteDir) => {
     adopt.current = true;
+    setConfirm(null);
     try {
-      await s.adoptSeries(mode);
-      s.toast(mode === "follow" ? "这一集已改成全部跟随作品设置" : `这一集的设置已设为「${series?.name}」的作品默认，以后跟着作品走`);
+      await s.overwriteSeries(dir);
+      s.toast(dir === "to_episode" ? `已用「${series?.name}」的默认设置覆盖这一集（原来的设置备份在项目的 backup 文件夹）`
+        : `已用这一集的设置覆盖「${series?.name}」的默认设置（原来的作品设置已备份）`);
     } catch (e) { adopt.current = false; s.setError((e as Error).message); }
   };
 
@@ -160,14 +167,15 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         <div className="pl-main">
           <div className="row pl-cfghead">
             <h3 style={{ margin: 0 }}>配置</h3>
-            {series ? (
-              <div className="seg" title="改这一集自己的设置，还是整部作品共用的设置（这部作品的各集都会用）">
-                <button className={!inSeries ? "on" : ""} onClick={() => setScope("project")}>这一集{pDirty ? " •" : ""}</button>
-                <button className={inSeries ? "on" : ""} onClick={() => setScope("series")}>作品：{series.name}{sDirty ? " •" : ""}</button>
+            {series ? (<>
+              <span className="dim">正在编辑</span>
+              <div className="seg" title="两份设置各自独立：改哪份、保存哪份，互不影响">
+                <button className={!inSeries ? "on" : ""} onClick={() => setScope("project")}>这一集的设置{pDirty ? " •" : ""}</button>
+                <button className={inSeries ? "on" : ""} onClick={() => setScope("series")}>「{series.name}」的默认设置{sDirty ? " •" : ""}</button>
               </div>
-            ) : null}
-            <span className="dim" style={{ fontSize: 12 }}>{inSeries ? "这部作品各集共用；标亮的是作品设置里写了的项"
-              : series ? "标亮的是这一集单独设的项（不跟作品走）" : "保存在项目的 project.toml；没写的项用全局配置。填了所属作品，各集可以共用设置"}</span>
+            </>) : null}
+            <span className="dim" style={{ fontSize: 12 }}>{inSeries ? "新建这部作品的集时复制过去；改了不影响已有的集"
+              : series ? "这一集运行时只用这一份；改了不影响作品" : "保存在项目的 project.toml；没写的项用全局设置"}</span>
             <span className="sp" />
             <button className="btn sm" title="展开 / 收起各块的“更多”设置（会记住）" onClick={() => setMore(allOpen ? {} : Object.fromEntries(MORE_KEYS.map((k) => [k, true])))}>{allOpen ? "全部收起" : "全部展开"}</button>
             {dirty && <span className="chip warn">未保存</span>}
@@ -176,17 +184,36 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
           </div>
 
-          {series && (!series.raw || Object.keys(series.raw).length === 0) && !inSeries ? (
-            <div className="banner">「{series.name}」还没有作品设置：这部作品的各集各用各的设置。
-              <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "这一集现在的设置存成作品设置，以后这部作品的各集（包括新建的）都用它"}
-                      onClick={() => adoptSeries()}>把这一集的设置设为作品默认</button></div>
-          ) : series && own > 0 ? (
-            <div className="banner">这一集单独设了 {own} 项，这些项不跟「{series.name}」的作品设置走。
-              {!inSeries && <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "这一集单独设的项并进作品设置（作品的其他集也会用），这一集以后跟着作品走"}
-                                    onClick={() => adoptSeries()}>设为作品默认</button>}
-              <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "清掉这一集单独设的项，全部用作品设置（外挂字幕、这一集的说明不动）"}
-                      onClick={() => adoptSeries("follow")}>全部跟随作品</button></div>
-          ) : null}
+          {series && (
+            <div className="row wrap" style={{ marginBottom: 10, gap: 8 }}>
+              <span className="dim" style={{ fontSize: 12 }}>{hasSeriesCfg ? `「${series.name}」有默认设置` : `「${series.name}」还没有默认设置`}</span>
+              <button className="btn sm" disabled={dirty || !hasSeriesCfg} title={dirty ? "先保存或还原改动" : !hasSeriesCfg ? "作品还没有默认设置" : "这一集的设置换成作品的默认设置（所属作品、外挂字幕文件不变）；先列出会变的项"}
+                      onClick={() => askOverwrite("to_episode")}>用作品设置覆盖这一集</button>
+              <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "作品的默认设置换成这一集的设置（以后新建的集会用；已有的集不受影响）；先列出会变的项"}
+                      onClick={() => askOverwrite("to_series")}>用这一集的设置{hasSeriesCfg ? "覆盖作品" : "作为作品默认设置"}</button>
+            </div>
+          )}
+          {confirm && series && createPortal(
+            <div style={{ position: "fixed", inset: 0, background: "#000a", display: "grid", placeItems: "center", zIndex: 70 }} onClick={() => setConfirm(null)}>
+              <div className="card" style={{ width: 640, maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+                <h3>{confirm.dir === "to_episode" ? `用「${series.name}」的默认设置覆盖这一集` : `用这一集的设置覆盖「${series.name}」的默认设置`}</h3>
+                <div className="dim" style={{ fontSize: 12, marginBottom: 8 }}>
+                  {confirm.dir === "to_episode" ? "这一集的设置会变成下面右边的值；所属作品、外挂字幕文件不变。原来的设置会备份。"
+                    : "作品的默认设置会变成下面右边的值；已有的集不受影响，以后新建的集会用。原来的作品设置会备份。"}
+                </div>
+                <div style={{ overflow: "auto", flex: 1 }}>
+                  {confirm.changes.length === 0 ? <div className="dim">两份设置一样，覆盖了也不会有变化。</div> : (
+                    <table className="outtab"><thead><tr><th>设置项</th><th>现在</th><th>覆盖后</th></tr></thead><tbody>
+                      {confirm.changes.map((c) => <tr key={c.path}><td style={{ textAlign: "left" }}><code>{c.path}</code></td>
+                        <td>{showVal(c.before)}</td><td>{showVal(c.after)}</td></tr>)}
+                    </tbody></table>)}
+                </div>
+                <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
+                  <button className="btn" onClick={() => setConfirm(null)}>取消</button>
+                  <button className="btn pri" onClick={() => doOverwrite(confirm.dir)}>覆盖{confirm.changes.length ? `（${confirm.changes.length} 项）` : ""}</button>
+                </div>
+              </div>
+            </div>, document.body)}
 
           <div className="grid2" style={{ gridTemplateColumns: "1.25fr 1fr", alignItems: "stretch" }}>
             <div className="card">
@@ -199,11 +226,10 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                 <span className="lbl">翻译成</span>
                 <LangChips value={(val("project.targets") as string[]) ?? []} onChange={(v) => set("project.targets", v)} />
                 <span className="lbl">所属作品</span>
-                {inSeries ? <span className="dim">只属于每一集，在「这一集」里改</span>
+                {inSeries ? <span className="dim">{series!.name}（所属作品在「这一集的设置」里改）</span>
                   : <SeriesPicker value={String(val("project.series") ?? "")} onChange={(v) => set("project.series", v)} />}
                 <span className="lbl">节目说明</span>
-                {inSeries ? <span className="dim">只属于每一集，在「这一集」里改</span>
-                  : <textarea className="inp" rows={3} placeholder="会告诉大模型，例如：北海道渔村纪录片，有大量方言采访" value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} />}
+                <textarea className="inp" rows={3} placeholder="会告诉大模型，例如：北海道渔村纪录片，有大量方言采访" value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} />
               </div>
             </div>
             <div className="card">
@@ -760,22 +786,9 @@ function RedoPicker({ redo, setRedo, noCache, setNoCache, clearEdits, setClearEd
   );
 }
 
-// 只属于每一集、不算进“单独设的项”的设置（和内核 config.EPISODE_KEYS 一致）
-const EPISODE_KEYS: Record<string, string[]> = { project: ["series", "context", "preset"], subs: ["path", "track"] };
-
-function withoutEpisode(cfg: Cfg): Cfg {
-  const out: Cfg = {};
-  for (const [sec, v] of Object.entries(cfg ?? {})) {
-    if (v && typeof v === "object" && !Array.isArray(v) && EPISODE_KEYS[sec]) {
-      const rest = Object.fromEntries(Object.entries(v as Cfg).filter(([k]) => !EPISODE_KEYS[sec].includes(k)));
-      if (Object.keys(rest).length) out[sec] = rest;
-    } else out[sec] = v;
-  }
-  return out;
-}
-
-/** 设置里写了几项（嵌套的逐项数，列表算一项） */
-function countLeaves(v: unknown): number {
-  if (v && typeof v === "object" && !Array.isArray(v)) return Object.values(v as Cfg).reduce<number>((n, x) => n + countLeaves(x), 0);
-  return v === undefined ? 0 : 1;
+/** 覆盖确认里显示一项设置的值（列表、对象压成一行，太长截断） */
+function showVal(v: unknown): string {
+  if (v === undefined || v === null || v === "") return "（空）";
+  const t = typeof v === "string" ? v : JSON.stringify(v);
+  return t.length > 60 ? t.slice(0, 60) + "…" : t;
 }

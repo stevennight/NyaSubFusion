@@ -1,4 +1,7 @@
-"""分层配置：内置默认 < 用户全局 < 作品（series） < 项目 < --config < 命令行参数。
+"""分层配置：内置默认 < 用户全局 < 项目 < --config < 命令行参数。
+
+作品（series）的设置不参与合并：它只是新建这部作品的一集时复制过去的默认值，之后两份各自独立
+（可以用作品设置覆盖一集，或者用一集的设置覆盖作品，见文件末尾）。
 
 所有层都是 TOML，按键深度合并（列表整体替换），最后用 pydantic 校验。
 """
@@ -316,21 +319,13 @@ def load(config_path=None, project_file=None, overrides: dict | None = None) -> 
     merged: dict = {}
     for _, d in layers + tail:
         deep_merge(merged, d)
-    series = (merged.get("project") or {}).get("series")
-    if series:
-        sf = series_dir(series) / "series.toml"
-        if sf.is_file():
-            # 作品层在用户层之后、项目层之前
-            layers.append((str(sf), read_toml(sf)))
-            merged = {}
-            for _, d in layers + tail:
-                deep_merge(merged, d)
     return Config.model_validate(merged), [name for name, _ in layers + tail]
 
 
-# ---------------- 作品（series）共享的设置 ----------------
-# 只属于这一集、不放进作品设置的项（外挂字幕文件、这一集的说明……）
-EPISODE_KEYS = {"project": ("series", "context", "preset"), "subs": ("path", "track")}
+# ---------------- 作品（series）的默认设置 ----------------
+# 新建这部作品的一集时复制一份过去；之后一集和作品各自独立。
+# 只属于这一集、复制 / 覆盖时都不动的项：所属作品、外挂字幕文件
+EPISODE_KEYS = {"project": ("series",), "subs": ("path", "track")}
 
 
 def series_file(name: str) -> Path:
@@ -347,8 +342,9 @@ def read_series(name: str) -> dict:
 
 
 def series_effective(name: str) -> "Config":
-    """作品这一层合并后的设置（内置默认 < 用户全局 < 作品），不含任何一集自己的设置。"""
-    return load(None, None, {"project": {"series": name}})[0]
+    """作品的默认设置合并后是什么样（内置默认 < 用户全局 < 作品设置）。"""
+    f = series_file(name)
+    return load(str(f) if f.is_file() else None)[0]
 
 
 def split_episode(raw: dict) -> tuple[dict, dict]:
@@ -365,3 +361,30 @@ def split_episode(raw: dict) -> tuple[dict, dict]:
         if not part:
             raw.pop(sec)
     return mine, raw
+
+
+def episode_from_series(project_raw: dict, series_raw: dict) -> dict:
+    """用作品设置覆盖一集：作品设置复制一份，这一集的所属作品、外挂字幕文件留着。"""
+    mine, _ = split_episode(project_raw)
+    out = copy.deepcopy(series_raw or {})
+    for sec, part in mine.items():
+        out.setdefault(sec, {}).update(part)
+    return out
+
+
+def series_from_episode(project_raw: dict) -> dict:
+    """用一集的设置覆盖作品：这一集的设置去掉只属于它的项。"""
+    return split_episode(project_raw)[1]
+
+
+def diff_settings(a: dict, b: dict, prefix="") -> list[dict]:
+    """两份（合并后的）设置哪些项不一样：[{"path", "before", "after"}]。列表整体比较。"""
+    out = []
+    for k in sorted(set(a) | set(b)):
+        x, y = a.get(k), b.get(k)
+        path = f"{prefix}{k}"
+        if isinstance(x, dict) and isinstance(y, dict):
+            out += diff_settings(x, y, path + ".")
+        elif x != y:
+            out.append({"path": path, "before": x, "after": y})
+    return out

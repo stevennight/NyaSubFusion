@@ -28,7 +28,7 @@ export function SeriesPicker({ value, onChange, onPicked }: {
       <option value="">（不属于任何作品）</option>
       {list.map((x) => (
         <option key={x.name} value={x.name}>
-          {x.name}{x.episodes ? ` · ${x.episodes} 集` : ""}{x.terms ? ` · ${x.terms} 条术语` : ""}{x.settings ? " · 有共享设置" : ""}
+          {x.name}{x.episodes ? ` · ${x.episodes} 集` : ""}{x.terms ? ` · ${x.terms} 条术语` : ""}{x.settings ? " · 有默认设置" : ""}
         </option>
       ))}
       <option value={"\u0000new"}>＋ 新作品…</option>

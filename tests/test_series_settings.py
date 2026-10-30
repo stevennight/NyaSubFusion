@@ -1,5 +1,5 @@
-"""同一作品的各集共用设置：作品设置（series.toml）在全局之后、这一集之前；可以把一集的设置设为作品默认；
-新建这部作品的项目直接跟随作品设置。"""
+"""作品的默认设置：新建这部作品的一集时复制一份过去，之后一集和作品各自独立；
+可以用作品设置覆盖一集、用一集的设置覆盖作品（先看会变哪些项，被覆盖的那份先备份）。"""
 import tomllib
 
 from nyasub.core import config
@@ -11,49 +11,66 @@ def _cfg(client, pid):
     return client.get(f"/api/projects/{pid}/config").json()
 
 
-def test_series_settings_shared(client, sample):
-    pid, _ = opened(client, sample)
-    cfg = _cfg(client, pid)
-    project = cfg["project"]
-    project.setdefault("project", {})["series"] = "测试作品"
-    client.put(f"/api/projects/{pid}/config", json={"project": project})
-    cfg = _cfg(client, pid)
-    assert cfg["series"]["name"] == "测试作品" and cfg["series"]["raw"] == {}
+def _set_series(client, pid, name):
+    project = _cfg(client, pid)["project"]
+    project.setdefault("project", {})["series"] = name
+    return client.put(f"/api/projects/{pid}/config", json={"project": project}).json()["config"]
 
-    # 把这一集的设置设为作品默认：实际用的设置不变，这一集只留下只属于它的项
+
+def test_series_and_episode_are_independent(client, sample):
+    pid, _ = opened(client, sample)
+    cfg = _set_series(client, pid, "测试作品")
+    assert cfg["series"] == {"name": "测试作品", "raw": {}, "effective": cfg["series"]["effective"]}
+
+    # 用这一集的设置覆盖作品：先看会变哪些项
+    pre = client.get(f"/api/projects/{pid}/series/overwrite", params={"direction": "to_series"}).json()
+    assert pre["target"] == "series" and pre["changes"]
     before = cfg["effective"]
-    r = client.post(f"/api/projects/{pid}/series/adopt").json()["config"]
-    assert r["effective"] == before
-    assert set(r["project"]) <= {"project", "subs"} and r["project"]["project"]["series"] == "测试作品"
+    r = client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_series"}).json()["config"]
+    assert r["effective"] == before                       # 这一集不变
+    assert "series" not in r["series"]["raw"].get("project", {})   # 作品设置里不记所属作品
     assert r["series"]["raw"].get("render") and config.has_series_settings("测试作品")
 
-    # 改作品设置：这一集跟着变
+    # 改作品设置：这一集不受影响（两份各自独立）
     series = r["series"]["raw"]
     series.setdefault("ocr", {})["fps"] = 7.0
     r = client.put(f"/api/projects/{pid}/config", json={"series": series}).json()["config"]
-    assert r["effective"]["ocr"]["fps"] == 7.0 and r["series"]["effective"]["ocr"]["fps"] == 7.0
-    # 这一集单独设的项优先；“全部跟随作品”清掉它
+    assert r["series"]["effective"]["ocr"]["fps"] == 7.0 and r["effective"]["ocr"]["fps"] == before["ocr"]["fps"]
+    # 改这一集：作品不受影响
     p = r["project"]
     p.setdefault("ocr", {})["fps"] = 2.0
+    p.setdefault("subs", {})["path"] = "这一集的字幕.srt"
     r = client.put(f"/api/projects/{pid}/config", json={"project": p}).json()["config"]
-    assert r["effective"]["ocr"]["fps"] == 2.0
-    r = client.post(f"/api/projects/{pid}/series/adopt", json={"mode": "follow"}).json()["config"]
-    assert r["effective"]["ocr"]["fps"] == 7.0 and "ocr" not in r["project"]
+    assert r["effective"]["ocr"]["fps"] == 2.0 and r["series"]["effective"]["ocr"]["fps"] == 7.0
+
+    # 用作品设置覆盖这一集：变化里有帧率；所属作品、外挂字幕文件留着；原来的设置备份了
+    pre = client.get(f"/api/projects/{pid}/series/overwrite", params={"direction": "to_episode"}).json()
+    assert {"path": "ocr.fps", "before": 2.0, "after": 7.0} in pre["changes"]
+    assert all(not c["path"].startswith(("project.series", "subs.path")) for c in pre["changes"])
+    r = client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_episode"}).json()["config"]
+    assert r["effective"]["ocr"]["fps"] == 7.0 and r["effective"]["project"]["series"] == "测试作品"
+    assert r["effective"]["subs"]["path"] == "这一集的字幕.srt"
+    proj = sample.with_name("sample.nyasub")
+    assert any(proj.glob("backup/project-*.toml"))
 
     # 不合法的作品设置不会写进去
     assert client.put(f"/api/projects/{pid}/config", json={"series": {"ocr": {"fps": "很快"}}}).status_code == 400
     assert tomllib.loads(config.series_file("测试作品").read_text(encoding="utf-8"))["ocr"]["fps"] == 7.0
 
-    # 作品列表标出有共享设置的；新建这部作品的项目只记下作品，其他跟随
-    assert next(x for x in client.get("/api/series").json() if x["name"] == "测试作品")["settings"]
+
+def test_new_episode_copies_series_defaults(client, sample):
     from nyasub import presets
 
-    assert presets.build("documentary", "ja", ["zh-Hans"], "测试作品", "第二集") == \
-        {"project": {"series": "测试作品", "context": "第二集"}}
+    pid, _ = opened(client, sample)
+    _set_series(client, pid, "测试作品")
+    client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_series"})
+    assert next(x for x in client.get("/api/series").json() if x["name"] == "测试作品")["settings"]
+    cfg = presets.build("documentary", "ja", ["zh-Hans"], "测试作品", "第二集")
+    assert cfg["project"]["series"] == "测试作品" and cfg["project"]["context"] == "第二集" and cfg.get("render")
     assert "render" in presets.build("documentary", "ja", ["zh-Hans"], "别的作品")
 
 
 def test_series_needs_name(client, sample):
     pid, _ = opened(client, sample)
     assert client.put(f"/api/projects/{pid}/config", json={"series": {"ocr": {"fps": 2.0}}}).status_code == 400
-    assert client.post(f"/api/projects/{pid}/series/adopt").status_code == 400
+    assert client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_series"}).status_code == 400

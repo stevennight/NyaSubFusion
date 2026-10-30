@@ -16,7 +16,7 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
   const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => { api.presets().then(setPresets); }, []);
-  const follow = !!picked?.settings;   // 作品有共享设置：这一集直接跟随，不用选语言和预设
+  const follow = !!picked?.settings;   // 作品有默认设置：复制一份给这一集，不用选语言和预设
 
   const p = summary.probe ?? {};
   const textSubs = (p.subtitles ?? []).filter((t) => !["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"].includes(t.codec));
@@ -51,7 +51,7 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
             )}
             <h3 style={{ marginTop: 14 }}>作品</h3>
             <SeriesPicker value={seriesName} onChange={setSeriesName} onPicked={setPicked} />
-            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有共享设置：这一集的语言、识别和输出设置都跟随作品（之后在「流程」里可以给这一集单独改）。</div>}
+            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：这一集会复制一份作品的设置（语言、识别、输出都用它）。之后这一集和作品各自独立，在「流程」里改这一集不影响作品。节目说明不填就用作品的。</div>}
             <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
                       value={context} onChange={(e) => setContext(e.target.value)} />
             {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
@@ -69,7 +69,7 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
             </div></>}
           </div>
           <div style={follow ? { opacity: 0.4, pointerEvents: "none" } : undefined}>
-            <h3>内容预设{follow ? <span className="dim" style={{ fontWeight: 400, fontSize: 12 }}>（跟随作品设置，不用选）</span> : null}</h3>
+            <h3>内容预设{follow ? <span className="dim" style={{ fontWeight: 400, fontSize: 12 }}>（用作品的默认设置，不用选）</span> : null}</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {presets.map((x) => (
                 <div key={x.id} onClick={() => setPreset(x.id)} style={{ cursor: "pointer", border: `1px solid ${preset === x.id ? "var(--acc)" : "var(--line2)"}`,

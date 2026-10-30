@@ -151,10 +151,12 @@ export interface MediaInfo {
   segments?: number; seconds?: number; complete?: boolean; done?: number; total?: number;
 }
 
-/** 项目的配置：这一集自己的、合并后实际用的、所属作品共享的（没有所属作品时 series 为 null） */
+/** 项目的配置：这一集的、这一集合并后实际用的、所属作品的默认设置（两份各自独立；没有所属作品时 series 为 null） */
 export interface ConfigState {
   project: Cfg; effective: Cfg; files?: string[];
   series?: { name: string; raw: Cfg; effective: Cfg } | null;
 }
 
 export interface SeriesInfo { name: string; terms: number; episodes: number; settings?: boolean }
+
+export type OverwriteDir = "to_episode" | "to_series";   // 用作品设置覆盖这一集 / 用这一集的设置覆盖作品

@@ -4,7 +4,7 @@ import { Player, type PlayerHandle } from "../components/Player";
 import { usePreview } from "../hooks";
 import { useStore } from "../store";
 import type { Annotate, Cfg, Layer, Profile, Style } from "../types";
-import { deepGet, fmt, langName, setIn } from "../util";
+import { fmt, langName, setIn } from "../util";
 
 const ROLE_LBL = { original: "原文", translation: "译文", transliteration: "整行转写" } as const;
 const ANN_LBL: Record<string, string> = { none: "无", furigana: "振假名", pinyin: "拼音", zhuyin: "注音符号" };
@@ -23,12 +23,10 @@ export function LayersPage() {
   const [li, setLi] = useState(0);
   const [state, setState] = useState<"saved" | "pending" | "saving">("saved");
   const loaded = useRef(false);
-  // 这套方案 / 样式存在哪：这一集自己的，还是所属作品共用的（作品的各集都会用）。
-  // 一打开：这一集没单独设过、作品里有，就是作品的；否则是这一集的
+  // 正在编辑哪一份：这一集的设置，还是所属作品的默认设置（两份各自独立，切换只是换一份来看和改）
   const series = s.config?.series ?? null;
-  const LOOK = ["profiles", "styles", "strip_marks"];
-  const ownLook = LOOK.some((k) => deepGet(s.config?.project ?? {}, `render.${k}`) !== undefined);
-  const [target, setTarget] = useState<"project" | "series">(() => (series && !ownLook && deepGet(series.raw, "render.profiles") !== undefined ? "series" : "project"));
+  const [target, setTarget] = useState<"project" | "series">("project");
+  const skipSave = useRef(false);   // 切换编辑哪一份时换上那一份的内容，不算改动
   const player = useRef<PlayerHandle>(null);
   const [, setTime] = useState(0);
   const onTime = useCallback((t: number) => setTime(t), []);
@@ -46,6 +44,7 @@ export function LayersPage() {
   useEffect(() => {
     if (!loaded.current || !s.config) return;
     if (first.current) { first.current = false; return; }
+    if (skipSave.current) { skipSave.current = false; return; }
     setState("pending");
     const t = setTimeout(async () => {
       setState("saving");
@@ -55,20 +54,25 @@ export function LayersPage() {
           out = setIn(out, "render.styles", styles);
           return setIn(out, "render.strip_marks", marks.split(/\s+/).filter(Boolean));
         };
-        if (target === "series" && series) {
-          // 存进作品；这一集自己的方案 / 样式去掉，跟着作品走
-          const project = structuredClone(s.config!.project);
-          const r = project.render as Cfg | undefined;
-          if (r) { for (const k of LOOK) delete r[k]; if (!Object.keys(r).length) delete project.render; }
-          await s.saveConfig({ project, series: look(series.raw ?? {}) });
-        } else {
-          await s.setConfig(look(s.config!.project));
-        }
+        if (target === "series" && series) await s.saveConfig({ series: look(series.raw ?? {}) });
+        else await s.setConfig(look(s.config!.project));
         setState("saved");
       } catch (e) { s.setError((e as Error).message); setState("pending"); }
     }, 500);
     return () => clearTimeout(t);
-  }, [profiles, styles, marks, target]);
+  }, [profiles, styles, marks]);
+  // 换一份来编辑：换上那一份的方案 / 样式
+  const pickTarget = (t: "project" | "series") => {
+    const src = t === "series" && series ? series.effective : eff;
+    if (t === target || !src) return;
+    skipSave.current = true;
+    setTarget(t);
+    setProfiles(src.render.profiles);
+    setStyles(src.render.styles);
+    setMarks(((src.render.strip_marks as string[] | undefined) ?? ["➡"]).join(" "));
+    setPi(0);
+    setLi(0);
+  };
 
   const prof = profiles[pi];
   const preview = usePreview(prof?.name);
@@ -117,9 +121,9 @@ export function LayersPage() {
           <div className="row" style={{ marginBottom: 8 }}>
             <h3 style={{ margin: 0 }}>输出方案</h3>
             {series && (
-              <div className="seg" title="这套方案和样式存在哪：这一集自己用，还是作品的各集共用（换了会把现在这套存过去）">
-                <button className={target === "project" ? "on" : ""} onClick={() => setTarget("project")}>这一集</button>
-                <button className={target === "series" ? "on" : ""} onClick={() => setTarget("series")}>作品：{series.name}</button>
+              <div className="seg" title="正在编辑哪一份：两份各自独立，改哪份存哪份。预览和导出总是这一集的样子">
+                <button className={target === "project" ? "on" : ""} onClick={() => pickTarget("project")}>这一集</button>
+                <button className={target === "series" ? "on" : ""} onClick={() => pickTarget("series")}>「{series.name}」的默认</button>
               </div>
             )}
             <span className="sp" />
