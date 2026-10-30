@@ -2,19 +2,21 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
-import type { ProjectSummary } from "../types";
+import type { ProjectSummary, SeriesInfo } from "../types";
+import { SeriesPicker } from "./SeriesPicker";
 
 export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSummary; onDone: () => void; onCancel: () => void }) {
   const s = useStore();
   const [presets, setPresets] = useState<{ id: string; name: string; desc: string }[]>([]);
-  const [series, setSeries] = useState<{ name: string; terms: number; episodes: number }[]>([]);
+  const [picked, setPicked] = useState<SeriesInfo | null>(null);   // 选了已有的作品
   const [preset, setPreset] = useState("documentary");
   const [source, setSource] = useState("auto");
   const [targets, setTargets] = useState<string[]>(["zh-Hans"]);
   const [seriesName, setSeriesName] = useState("");
   const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api.presets().then(setPresets); api.series().then(setSeries); }, []);
+  useEffect(() => { api.presets().then(setPresets); }, []);
+  const follow = !!picked?.settings;   // 作品有共享设置：这一集直接跟随，不用选语言和预设
 
   const p = summary.probe ?? {};
   const textSubs = (p.subtitles ?? []).filter((t) => !["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"].includes(t.codec));
@@ -47,7 +49,12 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
                 <div className="row"><span className="badge b-o">画面字</span>{p.video ? `${p.video.width}×${p.video.height} ${p.video.codec ?? ""}` : <span className="dim">纯音频，不识别画面字</span>}</div>
               </div>
             )}
-            <h3 style={{ marginTop: 14 }}>语言</h3>
+            <h3 style={{ marginTop: 14 }}>作品</h3>
+            <SeriesPicker value={seriesName} onChange={setSeriesName} onPicked={setPicked} />
+            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有共享设置：这一集的语言、识别和输出设置都跟随作品（之后在「流程」里可以给这一集单独改）。</div>}
+            <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
+                      value={context} onChange={(e) => setContext(e.target.value)} />
+            {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
             <div className="kv">
               <span className="lbl">源语言</span>
               <select className="inp" value={source} onChange={(e) => setSource(e.target.value)}>
@@ -59,15 +66,10 @@ export function SetupWizard({ summary, onDone, onCancel }: { summary: ProjectSum
                 <label key={l.code} className={`chip ${targets.includes(l.code) ? "acc" : ""}`} style={{ cursor: "pointer" }}>
                   <input type="checkbox" checked={targets.includes(l.code)} onChange={() => toggle(l.code)} style={{ display: "none" }} />{l.name}
                 </label>))}</div>
-            </div>
-            <h3 style={{ marginTop: 14 }}>作品</h3>
-            <input className="inp" list="wizard-series" placeholder="同一作品的各集共享术语表、读音词典（可不填）" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} />
-            <datalist id="wizard-series">{series.map((x) => <option key={x.name} value={x.name}>{x.terms} 条术语 · {x.episodes} 集</option>)}</datalist>
-            <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
-                      value={context} onChange={(e) => setContext(e.target.value)} />
+            </div></>}
           </div>
-          <div>
-            <h3>内容预设</h3>
+          <div style={follow ? { opacity: 0.4, pointerEvents: "none" } : undefined}>
+            <h3>内容预设{follow ? <span className="dim" style={{ fontWeight: 400, fontSize: 12 }}>（跟随作品设置，不用选）</span> : null}</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {presets.map((x) => (
                 <div key={x.id} onClick={() => setPreset(x.id)} style={{ cursor: "pointer", border: `1px solid ${preset === x.id ? "var(--acc)" : "var(--line2)"}`,

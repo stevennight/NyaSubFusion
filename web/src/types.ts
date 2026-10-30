@@ -150,3 +150,11 @@ export interface MediaInfo {
   status?: "building" | "ready" | "failed"; error?: string;
   segments?: number; seconds?: number; complete?: boolean; done?: number; total?: number;
 }
+
+/** 项目的配置：这一集自己的、合并后实际用的、所属作品共享的（没有所属作品时 series 为 null） */
+export interface ConfigState {
+  project: Cfg; effective: Cfg; files?: string[];
+  series?: { name: string; raw: Cfg; effective: Cfg } | null;
+}
+
+export interface SeriesInfo { name: string; terms: number; episodes: number; settings?: boolean }

@@ -1,6 +1,7 @@
 // 批量队列：一次加入多个文件 / 文件夹，按顺序处理。
 import { useEffect, useState } from "react";
 import { api, subscribe } from "../api";
+import { SeriesPicker } from "../components/SeriesPicker";
 import { useStore } from "../store";
 import type { QueueItem, QueueOptions, QueueState, TauriGlobal } from "../types";
 import { pct, STAGE_LBL } from "../util";
@@ -95,7 +96,7 @@ export function QueuePage({ onOpenProject }: { onOpenProject: () => void }) {
                 return <span key={l.code} className={`chip ${on ? "acc" : ""}`} style={{ cursor: "pointer" }}
                              onClick={() => setOpt({ ...opt, targets: on ? opt.targets!.filter((t) => t !== l.code) : [...(opt.targets ?? []), l.code] })}>{l.name}</span>;
               })}</div>
-              <span className="lbl">作品</span><input className="inp" value={opt.series} placeholder="可不填" onChange={(e) => setOpt({ ...opt, series: e.target.value })} />
+              <span className="lbl">作品</span><SeriesPicker value={opt.series ?? ""} onChange={(v) => setOpt({ ...opt, series: v })} />
               <span className="lbl">做到</span>
               <select className="inp" value={opt.until} onChange={(e) => setOpt({ ...opt, until: e.target.value })}>
                 {["fuse", "translate", "render"].map((x) => <option key={x} value={x}>{STAGE_LBL[x]}</option>)}</select>

@@ -443,28 +443,74 @@ def create_app(token: str | None = None) -> FastAPI:
     # ---------- 配置 ----------
     @app.get("/api/projects/{pid}/config")
     def get_config(pid: str):
+        """project：这一集自己的设置（project.toml）；effective：合并后实际用的；
+        series：所属作品的共享设置 {"name", "raw"（series.toml）, "effective"（不含这一集的）}，没有所属作品时为 null。"""
         _, proj = project_paths(pid)
         cfg, files = load_cfg(proj)
         pf = proj / "project.toml"
         raw = config_mod.read_toml(pf) if pf.exists() else {}
-        return {"project": raw, "effective": cfg.model_dump(mode="json"), "files": files}
+        name = cfg.project.series
+        series = ({"name": name, "raw": config_mod.read_series(name),
+                   "effective": config_mod.series_effective(name).model_dump(mode="json")} if name else None)
+        return {"project": raw, "effective": cfg.model_dump(mode="json"), "files": files, "series": series}
 
     @app.put("/api/projects/{pid}/config")
     def put_config(pid: str, body: dict = Body(...)):
+        """{"project": 这一集的设置}、{"series": 所属作品的共享设置}，给哪个存哪个（可以一起给，一起校验）。"""
         _, proj = project_paths(pid)
-        raw = body.get("project") or {}
+        pf = proj / "project.toml"
+        raw = body["project"] if "project" in body else (config_mod.read_toml(pf) if pf.exists() else {})
+        raw = raw or {}
+        name = ((raw.get("project") or {}).get("series") or "").strip()
+        if "series" in body and not name:
+            raise HTTPException(400, "这一集没有所属作品，不能保存作品设置")
+        sf = config_mod.series_file(name) if name else None
+        series_raw = _clean(body.get("series") or {})
         try:
-            # 先校验：用户层 + 作品层 + 新的项目层合起来要合法
+            # 先校验：用户层 + 作品层 + 新的项目层合起来要合法（作品设置先写到临时文件里试）
             pf_tmp = proj / "project.toml.check"
             pf_tmp.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
-            config_mod.load(None, pf_tmp)
+            if "series" in body:
+                sf.parent.mkdir(parents=True, exist_ok=True)
+                old = sf.read_bytes() if sf.exists() else None
+                sf.write_text(tomli_w.dumps(series_raw), encoding="utf-8")
+                try:
+                    config_mod.load(None, pf_tmp)
+                except Exception:
+                    if old is None:
+                        sf.unlink()
+                    else:
+                        sf.write_bytes(old)
+                    raise
+            else:
+                config_mod.load(None, pf_tmp)
         except Exception as e:
             raise HTTPException(400, f"配置不合法：{e}")
         finally:
             if pf_tmp.exists():
                 pf_tmp.unlink()
-        (proj / "project.toml").write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
+        if "project" in body:
+            pf.write_text(tomli_w.dumps(_clean(raw)), encoding="utf-8")
         return {"config": get_config(pid), "plan": get_plan(pid)}
+
+    @app.post("/api/projects/{pid}/series/adopt")
+    def adopt_series(pid: str, body: dict = Body(default={})):
+        """把这一集的设置设为作品的默认设置：这一集自己的设置（外挂字幕、这一集的说明除外）并进作品设置，
+        这一集只留下只属于它的项，以后跟着作品走。{"mode": "follow"}：不动作品设置，只清掉这一集单独设的项（全部跟随作品）。
+        这一集实际用的设置在 adopt 前后不变（follow 时会变成作品的设置）。"""
+        _, proj = project_paths(pid)
+        pf = proj / "project.toml"
+        raw = config_mod.read_toml(pf) if pf.exists() else {}
+        name = ((raw.get("project") or {}).get("series") or "").strip()
+        if not name:
+            raise HTTPException(400, "这一集没有所属作品")
+        mine, shared = config_mod.split_episode(raw)
+        body_out = {"project": mine}
+        if body.get("mode") != "follow":
+            series_raw = config_mod.read_series(name)
+            config_mod.deep_merge(series_raw, shared)
+            body_out["series"] = series_raw
+        return put_config(pid, body_out)
 
     # ---------- 运行 ----------
     @app.post("/api/projects/{pid}/run")
@@ -935,7 +981,8 @@ def create_app(token: str | None = None) -> FastAPI:
         for d in sorted(root.iterdir()) if root.is_dir() else []:
             if d.is_dir():
                 terms = load_json(d / "glossary.json", {"terms": []})["terms"]
-                out.append({"name": d.name, "terms": len(terms), "episodes": len({t.get("from") for t in terms} - {None, "manual"})})
+                out.append({"name": d.name, "terms": len(terms), "episodes": len({t.get("from") for t in terms} - {None, "manual"}),
+                            "settings": (d / "series.toml").is_file()})  # 有共享的设置：新建这部作品的项目时直接跟随
         return out
 
     @app.get("/api/projects/{pid}/glossary")

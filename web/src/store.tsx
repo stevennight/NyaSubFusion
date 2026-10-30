@@ -1,13 +1,13 @@
 // 全局状态：当前项目、数据、配置、运行中的实时事件。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, subscribe } from "./api";
-import type { Cfg, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
+import type { Cfg, ConfigState, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
 
 interface Store {
   pid: string | null;
   summary: ProjectSummary | null;
   data: ProjectData | null;
-  config: { project: Cfg; effective: Cfg } | null;
+  config: ConfigState | null;
   langs: LangInfo[];
   logs: LogLine[];
   stageProg: Record<string, Progress>;   // 正在跑的步骤的进度（步骤图上显示）
@@ -20,6 +20,8 @@ interface Store {
   open: (pid: string | null) => void;
   reload: () => Promise<void>;
   setConfig: (project: Cfg) => Promise<void>;
+  saveConfig: (body: { project?: Cfg; series?: Cfg }) => Promise<void>;   // 这一集 / 所属作品的设置（可以一起存）
+  adoptSeries: (mode?: "follow") => Promise<void>;   // 这一集的设置设为作品默认（follow：全部跟随作品）
   run: (body?: { until?: string; redo?: string[]; translate?: string }) => Promise<void>;
   exportVideo: (mode: "mux" | "burn", profiles?: string[]) => Promise<void>;
   cancel: () => Promise<void>;
@@ -39,7 +41,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [pid, setPid] = useState<string | null>(() => localStorage.getItem(LAST));
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [data, setData] = useState<ProjectData | null>(null);
-  const [config, setCfg] = useState<{ project: Cfg; effective: Cfg } | null>(null);
+  const [config, setCfg] = useState<ConfigState | null>(null);
   const [langs, setLangs] = useState<LangInfo[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [stageProg, setStageProg] = useState<Record<string, Progress>>({});
@@ -143,9 +145,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, [pid, reload]);
 
-  const setConfig = useCallback(async (project: Cfg) => {
+  const saveConfig = useCallback(async (body: { project?: Cfg; series?: Cfg }) => {
     if (!pid) return;
-    const r = await api.putConfig(pid, project);
+    const r = await api.putConfig(pid, body);
+    setCfg(r.config);
+    setSummary((s) => (s ? { ...s, plan: r.plan } : s));
+    setVersion((v) => v + 1);
+  }, [pid]);
+  const setConfig = useCallback((project: Cfg) => saveConfig({ project }), [saveConfig]);
+  const adoptSeries = useCallback(async (mode?: "follow") => {
+    if (!pid) return;
+    const r = await api.adoptSeries(pid, mode);
     setCfg(r.config);
     setSummary((s) => (s ? { ...s, plan: r.plan } : s));
     setVersion((v) => v + 1);
@@ -189,8 +199,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
-    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction]);
+    open, reload, setConfig, saveConfig, adoptSeries, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction,
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, saveConfig, adoptSeries, run, exportVideo, cancel, bump, toast, toastMsg, toastAction]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

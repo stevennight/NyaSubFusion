@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import { SeriesPicker } from "../components/SeriesPicker";
 import { useStore } from "../store";
 import { RegionEditor, type Region } from "../components/RegionEditor";
 import type { Cfg, Progress, Provider, StageStatus } from "../types";
@@ -32,7 +33,9 @@ const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编�
 
 export function PipelinePage({ onReview }: { onReview: () => void }) {
   const s = useStore();
-  const [draft, setDraft] = useState<Cfg>({});
+  const [pdraft, setPdraft] = useState<Cfg>({});   // 这一集的设置（草稿）
+  const [sdraft, setSdraft] = useState<Cfg>({});   // 所属作品共享的设置（草稿）
+  const [scope, setScope] = useState<"project" | "series">("project");   // 正在改哪一层
   const [until, setUntil] = useState("render");
   const [redo, setRedo] = useState<string[]>([]);    // 要重做的步骤（"all" = 全部）
   const [noCache, setNoCache] = useState(false);       // 重做的步骤不用以前的缓存（大模型、云端语音识别重新请求）
@@ -40,7 +43,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const [saving, setSaving] = useState(false);
   // 服务器上的配置变了（保存、运行结束后刷新）：只有没在改的时候才跟着换；正在改、还没保存的不能被冲掉
   // 刚保存完：一定换成服务器上的（服务器会整理一下再写：去掉空值、调整顺序，和草稿逐字比较会一直显示“未保存”）
-  const synced = useRef<{ pid: string | null; cfg: string }>({ pid: null, cfg: "" });
+  const synced = useRef<{ pid: string | null; cfg: string; scfg: string }>({ pid: null, cfg: "", scfg: "" });
   const adopt = useRef(false);
   useEffect(() => {
     if (!s.config) return;
@@ -48,10 +51,21 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
     const other = synced.current.pid !== s.pid;  // 换了项目：一定换
     const take = other || adopt.current;
     adopt.current = false;
-    setDraft((d) => (take || JSON.stringify(d) === synced.current.cfg ? s.config!.project : d));
-    synced.current = { pid: s.pid, cfg: fresh };
+    const freshS = JSON.stringify(s.config.series?.raw ?? {});
+    setPdraft((d) => (take || JSON.stringify(d) === synced.current.cfg ? s.config!.project : d));
+    setSdraft((d) => (take || JSON.stringify(d) === synced.current.scfg ? s.config!.series?.raw ?? {} : d));
+    if (other) setScope("project");
+    synced.current = { pid: s.pid, cfg: fresh, scfg: freshS };
   }, [s.config, s.pid]);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(s.config?.project ?? {});
+  const series = s.config?.series ?? null;
+  const inSeries = scope === "series" && !!series;
+  const draft = inSeries ? sdraft : pdraft;
+  const setDraft = inSeries ? setSdraft : setPdraft;
+  const pDirty = JSON.stringify(pdraft) !== JSON.stringify(s.config?.project ?? {});
+  const sDirty = !!series && JSON.stringify(sdraft) !== JSON.stringify(series.raw ?? {});
+  const dirty = pDirty || sDirty;
+  // 这一集单独设过、不跟作品走的项数（只属于每一集的项不算）
+  const own = countLeaves(withoutEpisode(s.config?.project ?? {}));
 
   const status = useMemo(() => {
     const m: Record<string, StageStatus> = {};
@@ -72,8 +86,9 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const [logStage, setLogStage] = useState<string | null>(null);   // 点开了哪一步的日志（"all" = 全部）
   useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
 
-  const val = (path: string) => deepGet(draft, path) ?? deepGet(s.config?.effective, path);
-  const inProject = (path: string) => deepGet(draft, path) !== undefined;  // 这个项目单独设过（不跟随全局 / 作品配置）
+  // 改作品设置时，没写的项显示作品这一层合并后的值（不含这一集自己的）
+  const val = (path: string) => deepGet(draft, path) ?? deepGet(inSeries ? series!.effective : s.config?.effective, path);
+  const inProject = (path: string) => deepGet(draft, path) !== undefined;  // 这一层单独设过（标亮）
   // 各来源的“更多”展开了哪些：记在本机，下次打开还是这样
   const [more, setMoreRaw] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem(MORE_KEY) ?? "{}"); } catch { return {}; } });
   const setMore = (f: Record<string, boolean> | ((m: Record<string, boolean>) => Record<string, boolean>)) => setMoreRaw((m) => {
@@ -99,7 +114,18 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
   const save = async () => {
     setSaving(true);
     adopt.current = true;
-    try { await s.setConfig(draft); s.toast("配置已保存"); } catch (e) { adopt.current = false; s.setError((e as Error).message); } finally { setSaving(false); }
+    const body = { ...(pDirty ? { project: pdraft } : {}), ...(sDirty ? { series: sdraft } : {}) };
+    try {
+      await s.saveConfig(body);
+      s.toast(sDirty ? `已保存${pDirty ? "这一集和" : ""}「${series!.name}」的作品设置（这部作品的各集都会用）` : "配置已保存");
+    } catch (e) { adopt.current = false; s.setError((e as Error).message); } finally { setSaving(false); }
+  };
+  const adoptSeries = async (mode?: "follow") => {
+    adopt.current = true;
+    try {
+      await s.adoptSeries(mode);
+      s.toast(mode === "follow" ? "这一集已改成全部跟随作品设置" : `这一集的设置已设为「${series?.name}」的作品默认，以后跟着作品走`);
+    } catch (e) { adopt.current = false; s.setError((e as Error).message); }
   };
 
   return (
@@ -134,14 +160,33 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
         <div className="pl-main">
           <div className="row pl-cfghead">
             <h3 style={{ margin: 0 }}>配置</h3>
-            <span className="dim" style={{ fontSize: 12 }}>保存在项目的 project.toml；没写的项用全局 / 作品配置</span>
+            {series ? (
+              <div className="seg" title="改这一集自己的设置，还是整部作品共用的设置（这部作品的各集都会用）">
+                <button className={!inSeries ? "on" : ""} onClick={() => setScope("project")}>这一集{pDirty ? " •" : ""}</button>
+                <button className={inSeries ? "on" : ""} onClick={() => setScope("series")}>作品：{series.name}{sDirty ? " •" : ""}</button>
+              </div>
+            ) : null}
+            <span className="dim" style={{ fontSize: 12 }}>{inSeries ? "这部作品各集共用；标亮的是作品设置里写了的项"
+              : series ? "标亮的是这一集单独设的项（不跟作品走）" : "保存在项目的 project.toml；没写的项用全局配置。填了所属作品，各集可以共用设置"}</span>
             <span className="sp" />
             <button className="btn sm" title="展开 / 收起各块的“更多”设置（会记住）" onClick={() => setMore(allOpen ? {} : Object.fromEntries(MORE_KEYS.map((k) => [k, true])))}>{allOpen ? "全部收起" : "全部展开"}</button>
             {dirty && <span className="chip warn">未保存</span>}
             {s.running && <span className="chip warn" title="运行开始时就读好了配置：现在保存的改动，要等这次停下或跑完、再运行一次才生效">正在运行：改动下次运行才生效</span>}
-            <button className="btn" disabled={!dirty} onClick={() => setDraft(s.config?.project ?? {})}>还原</button>
+            <button className="btn" disabled={!dirty} onClick={() => { setPdraft(s.config?.project ?? {}); setSdraft(series?.raw ?? {}); }}>还原</button>
             <button className="btn pri" disabled={!dirty || saving} onClick={save}>保存配置</button>
           </div>
+
+          {series && (!series.raw || Object.keys(series.raw).length === 0) && !inSeries ? (
+            <div className="banner">「{series.name}」还没有作品设置：这部作品的各集各用各的设置。
+              <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "这一集现在的设置存成作品设置，以后这部作品的各集（包括新建的）都用它"}
+                      onClick={() => adoptSeries()}>把这一集的设置设为作品默认</button></div>
+          ) : series && own > 0 ? (
+            <div className="banner">这一集单独设了 {own} 项，这些项不跟「{series.name}」的作品设置走。
+              {!inSeries && <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "这一集单独设的项并进作品设置（作品的其他集也会用），这一集以后跟着作品走"}
+                                    onClick={() => adoptSeries()}>设为作品默认</button>}
+              <button className="btn sm" disabled={dirty} title={dirty ? "先保存或还原改动" : "清掉这一集单独设的项，全部用作品设置（外挂字幕、这一集的说明不动）"}
+                      onClick={() => adoptSeries("follow")}>全部跟随作品</button></div>
+          ) : null}
 
           <div className="grid2" style={{ gridTemplateColumns: "1.25fr 1fr", alignItems: "stretch" }}>
             <div className="card">
@@ -154,9 +199,11 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
                 <span className="lbl">翻译成</span>
                 <LangChips value={(val("project.targets") as string[]) ?? []} onChange={(v) => set("project.targets", v)} />
                 <span className="lbl">所属作品</span>
-                <input className="inp" placeholder="可不填：同一作品的各集共用节目说明和术语表" value={String(val("project.series") ?? "")} onChange={(e) => set("project.series", e.target.value)} />
+                {inSeries ? <span className="dim">只属于每一集，在「这一集」里改</span>
+                  : <SeriesPicker value={String(val("project.series") ?? "")} onChange={(v) => set("project.series", v)} />}
                 <span className="lbl">节目说明</span>
-                <textarea className="inp" rows={3} placeholder="会告诉大模型，例如：北海道渔村纪录片，有大量方言采访" value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} />
+                {inSeries ? <span className="dim">只属于每一集，在「这一集」里改</span>
+                  : <textarea className="inp" rows={3} placeholder="会告诉大模型，例如：北海道渔村纪录片，有大量方言采访" value={String(val("project.context") ?? "")} onChange={(e) => set("project.context", e.target.value)} />}
               </div>
             </div>
             <div className="card">
@@ -711,4 +758,24 @@ function RedoPicker({ redo, setRedo, noCache, setNoCache, clearEdits, setClearEd
       )}
     </div>
   );
+}
+
+// 只属于每一集、不算进“单独设的项”的设置（和内核 config.EPISODE_KEYS 一致）
+const EPISODE_KEYS: Record<string, string[]> = { project: ["series", "context", "preset"], subs: ["path", "track"] };
+
+function withoutEpisode(cfg: Cfg): Cfg {
+  const out: Cfg = {};
+  for (const [sec, v] of Object.entries(cfg ?? {})) {
+    if (v && typeof v === "object" && !Array.isArray(v) && EPISODE_KEYS[sec]) {
+      const rest = Object.fromEntries(Object.entries(v as Cfg).filter(([k]) => !EPISODE_KEYS[sec].includes(k)));
+      if (Object.keys(rest).length) out[sec] = rest;
+    } else out[sec] = v;
+  }
+  return out;
+}
+
+/** 设置里写了几项（嵌套的逐项数，列表算一项） */
+function countLeaves(v: unknown): number {
+  if (v && typeof v === "object" && !Array.isArray(v)) return Object.values(v as Cfg).reduce<number>((n, x) => n + countLeaves(x), 0);
+  return v === undefined ? 0 : 1;
 }

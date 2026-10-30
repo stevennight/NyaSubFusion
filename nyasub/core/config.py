@@ -326,3 +326,42 @@ def load(config_path=None, project_file=None, overrides: dict | None = None) -> 
             for _, d in layers + tail:
                 deep_merge(merged, d)
     return Config.model_validate(merged), [name for name, _ in layers + tail]
+
+
+# ---------------- 作品（series）共享的设置 ----------------
+# 只属于这一集、不放进作品设置的项（外挂字幕文件、这一集的说明……）
+EPISODE_KEYS = {"project": ("series", "context", "preset"), "subs": ("path", "track")}
+
+
+def series_file(name: str) -> Path:
+    return series_dir(name) / "series.toml"
+
+
+def has_series_settings(name: str) -> bool:
+    return bool(name) and series_file(name).is_file()
+
+
+def read_series(name: str) -> dict:
+    f = series_file(name)
+    return read_toml(f) if name and f.is_file() else {}
+
+
+def series_effective(name: str) -> "Config":
+    """作品这一层合并后的设置（内置默认 < 用户全局 < 作品），不含任何一集自己的设置。"""
+    return load(None, None, {"project": {"series": name}})[0]
+
+
+def split_episode(raw: dict) -> tuple[dict, dict]:
+    """项目配置拆成 (只属于这一集的, 可以放进作品的)。"""
+    raw = copy.deepcopy(raw or {})
+    mine: dict = {}
+    for sec, keys in EPISODE_KEYS.items():
+        part = raw.get(sec)
+        if not isinstance(part, dict):
+            continue
+        for k in keys:
+            if k in part:
+                mine.setdefault(sec, {})[k] = part.pop(k)
+        if not part:
+            raw.pop(sec)
+    return mine, raw

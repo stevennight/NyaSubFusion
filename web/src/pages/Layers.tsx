@@ -3,8 +3,8 @@ import { api } from "../api";
 import { Player, type PlayerHandle } from "../components/Player";
 import { usePreview } from "../hooks";
 import { useStore } from "../store";
-import type { Annotate, Layer, Profile, Style } from "../types";
-import { fmt, langName, setIn } from "../util";
+import type { Annotate, Cfg, Layer, Profile, Style } from "../types";
+import { deepGet, fmt, langName, setIn } from "../util";
 
 const ROLE_LBL = { original: "原文", translation: "译文", transliteration: "整行转写" } as const;
 const ANN_LBL: Record<string, string> = { none: "无", furigana: "振假名", pinyin: "拼音", zhuyin: "注音符号" };
@@ -23,6 +23,12 @@ export function LayersPage() {
   const [li, setLi] = useState(0);
   const [state, setState] = useState<"saved" | "pending" | "saving">("saved");
   const loaded = useRef(false);
+  // 这套方案 / 样式存在哪：这一集自己的，还是所属作品共用的（作品的各集都会用）。
+  // 一打开：这一集没单独设过、作品里有，就是作品的；否则是这一集的
+  const series = s.config?.series ?? null;
+  const LOOK = ["profiles", "styles", "strip_marks"];
+  const ownLook = LOOK.some((k) => deepGet(s.config?.project ?? {}, `render.${k}`) !== undefined);
+  const [target, setTarget] = useState<"project" | "series">(() => (series && !ownLook && deepGet(series.raw, "render.profiles") !== undefined ? "series" : "project"));
   const player = useRef<PlayerHandle>(null);
   const [, setTime] = useState(0);
   const onTime = useCallback((t: number) => setTime(t), []);
@@ -44,15 +50,25 @@ export function LayersPage() {
     const t = setTimeout(async () => {
       setState("saving");
       try {
-        let project = setIn(s.config!.project, "render.profiles", profiles);
-        project = setIn(project, "render.styles", styles);
-        project = setIn(project, "render.strip_marks", marks.split(/\s+/).filter(Boolean));
-        await s.setConfig(project);
+        const look = (cfg: Cfg) => {
+          let out = setIn(cfg, "render.profiles", profiles);
+          out = setIn(out, "render.styles", styles);
+          return setIn(out, "render.strip_marks", marks.split(/\s+/).filter(Boolean));
+        };
+        if (target === "series" && series) {
+          // 存进作品；这一集自己的方案 / 样式去掉，跟着作品走
+          const project = structuredClone(s.config!.project);
+          const r = project.render as Cfg | undefined;
+          if (r) { for (const k of LOOK) delete r[k]; if (!Object.keys(r).length) delete project.render; }
+          await s.saveConfig({ project, series: look(series.raw ?? {}) });
+        } else {
+          await s.setConfig(look(s.config!.project));
+        }
         setState("saved");
       } catch (e) { s.setError((e as Error).message); setState("pending"); }
     }, 500);
     return () => clearTimeout(t);
-  }, [profiles, styles, marks]);
+  }, [profiles, styles, marks, target]);
 
   const prof = profiles[pi];
   const preview = usePreview(prof?.name);
@@ -99,7 +115,14 @@ export function LayersPage() {
       <div className="lyside">
         <div className="card">
           <div className="row" style={{ marginBottom: 8 }}>
-            <h3 style={{ margin: 0 }}>输出方案</h3><span className="sp" />
+            <h3 style={{ margin: 0 }}>输出方案</h3>
+            {series && (
+              <div className="seg" title="这套方案和样式存在哪：这一集自己用，还是作品的各集共用（换了会把现在这套存过去）">
+                <button className={target === "project" ? "on" : ""} onClick={() => setTarget("project")}>这一集</button>
+                <button className={target === "series" ? "on" : ""} onClick={() => setTarget("series")}>作品：{series.name}</button>
+              </div>
+            )}
+            <span className="sp" />
             <span className={`chip ${state === "saved" ? "ok" : "warn"}`}>{state === "saved" ? "已应用" : state === "saving" ? "应用中…" : "待应用"}</span>
             <button className="btn sm" onClick={() => { setProfiles([...profiles, { ...prof, name: `${prof.name}-副本` }]); setPi(profiles.length); }}>复制</button>
             <button className="btn sm" disabled={profiles.length <= 1} onClick={() => { setProfiles(profiles.filter((_, i) => i !== pi)); setPi(0); setLi(0); }}>删除</button>

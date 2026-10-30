@@ -1,6 +1,6 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
 import type { MediaInfo } from "./types";
-import type { Cfg, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, ConfigState, SeriesInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -29,9 +29,13 @@ export const api = {
   open: (path: string) => call<ProjectSummary>("/api/projects", json("POST", { path })),
   project: (pid: string) => call<ProjectSummary>(`/api/projects/${pid}`),
   plan: (pid: string) => call<PlanItem[]>(`/api/projects/${pid}/plan`),
-  config: (pid: string) => call<{ project: Cfg; effective: Cfg; files: string[] }>(`/api/projects/${pid}/config`),
-  putConfig: (pid: string, project: Cfg) =>
-    call<{ config: { project: Cfg; effective: Cfg }; plan: PlanItem[] }>(`/api/projects/${pid}/config`, json("PUT", { project })),
+  config: (pid: string) => call<ConfigState>(`/api/projects/${pid}/config`),
+  // {project}：这一集的设置；{series}：所属作品共享的设置（可以一起给）
+  putConfig: (pid: string, body: { project?: Cfg; series?: Cfg }) =>
+    call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/config`, json("PUT", body)),
+  // 把这一集的设置设为作品默认；mode "follow"：只清掉这一集单独设的项，全部跟随作品
+  adoptSeries: (pid: string, mode?: "follow") =>
+    call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/series/adopt`, json("POST", mode ? { mode } : {})),
   run: (pid: string, body: { until?: string; redo?: string[]; translate?: string }) =>
     call<{ started: boolean }>(`/api/projects/${pid}/run`, json("POST", body)),
   log: (pid: string) => call<LiveEvent[]>(`/api/projects/${pid}/log`),
@@ -82,7 +86,7 @@ export const api = {
   presets: () => call<{ id: string; name: string; desc: string }[]>("/api/presets"),
   setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string }) =>
     call<unknown>(`/api/projects/${pid}/setup`, json("POST", body)),
-  series: () => call<{ name: string; terms: number; episodes: number }[]>("/api/series"),
+  series: () => call<SeriesInfo[]>("/api/series"),
   glossary: (pid: string) => call<Glossary>(`/api/projects/${pid}/glossary`),
   putGlossary: (pid: string, terms: Term[]) => call<{ terms: Term[]; plan: PlanItem[] }>(`/api/projects/${pid}/glossary`, json("PUT", { terms })),
   readings: (pid: string) => call<Record<string, Reading[]>>(`/api/projects/${pid}/readings`),
