@@ -1,0 +1,1015 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NyaSubFusion 界面 v2 原型</title>
+<style>
+:root {
+  --bg: #141419; --bg2: #1b1b22; --panel: #20202a; --panel2: #272733; --line: #33333f; --line2: #41414f;
+  --tx: #e9e9f0; --tx2: #a9a9b8; --tx3: #7a7a8a;
+  --acc: #ff7aa8; --acc2: #b49cff; --ok: #5fd39a; --warn: #ffc35a; --bad: #ff6b6b;
+  --c-sub: #7cc4ff; --c-ocr: #ffb35c; --c-asr: #9be38a; --c-fuse: #b49cff; --c-tr: #ff7aa8;
+  --note: #ffe48a; --r: 8px;
+  --ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --ja: "Yu Gothic UI", "Yu Gothic", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--tx); font: 13px/1.5 var(--ui) }
+button, input, select, textarea { font: inherit; color: inherit }
+button { cursor: pointer }
+.ja { font-family: var(--ja) }
+.dim { color: var(--tx3) } .muted { color: var(--tx2) }
+.sp { flex: 1 }
+.row { display: flex; align-items: center; gap: 8px } .wrap { flex-wrap: wrap }
+.col { display: flex; flex-direction: column; gap: 8px }
+
+/* 原型工具条（不是界面的一部分） */
+.proto { position: sticky; top: 0; z-index: 90; display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #2a2340; border-bottom: 1px solid #4a3d73; font-size: 12px }
+.proto b { color: var(--acc2); margin-right: 6px }
+.proto button { border: 1px solid #4a3d73; background: transparent; border-radius: 5px; padding: 2px 8px; color: #cfc4ff }
+.proto button.on { background: #4a3d73; color: #fff }
+.note { display: none; border: 1px dashed #d8c060; background: #3a3420cc; color: var(--note); border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.55; margin: 6px 0 }
+.note::before { content: "改动说明 · "; font-weight: 700 }
+body.notes .note { display: block }
+
+/* 外壳 */
+.app { display: grid; grid-template-columns: 72px minmax(0, 1fr); grid-template-rows: 46px minmax(0, 1fr); height: calc(100vh - 31px); min-width: 1180px }
+.top { grid-column: 1/3; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--bg2); border-bottom: 1px solid var(--line) }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px } .logo b { color: var(--acc) }
+.crumb { display: flex; align-items: center; gap: 6px; margin-left: 14px; color: var(--tx2) }
+.crumb a { color: var(--tx2); cursor: pointer; text-decoration: none } .crumb a:hover { color: var(--tx) }
+.crumb strong { color: var(--tx) }
+.nav { background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px }
+.nav button { width: 60px; padding: 8px 0 6px; border: 0; border-radius: 8px; background: none; color: var(--tx3); display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11.5px }
+.nav button:hover { color: var(--tx); background: var(--panel) }
+.nav button.on { color: var(--acc); background: #ff7aa814 }
+.nav svg { width: 20px; height: 20px }
+.nav .badge-n { font-size: 10px; background: var(--acc); color: #2a0d18; border-radius: 99px; padding: 0 5px; margin-top: -2px }
+.main { overflow: auto; min-height: 0 }
+.page { padding: 18px 22px; max-width: 1480px; margin: 0 auto }
+
+/* 通用部件 */
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line2); font-size: 12px; color: var(--tx2); white-space: nowrap }
+.chip.acc { color: var(--acc); border-color: #ff7aa855; background: #ff7aa814 }
+.chip.ok { color: var(--ok); border-color: #5fd39a55; background: #5fd39a12 }
+.chip.warn { color: var(--warn); border-color: #ffc35a55; background: #ffc35a12 }
+.chip.bad { color: var(--bad); border-color: #ff6b6b55; background: #ff6b6b12 }
+.chip.tpl { color: var(--acc2); border-color: #b49cff55; background: #b49cff14 }
+.chip.click { cursor: pointer } .chip.click:hover { border-color: #6a6a7c }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line2); background: var(--panel2); white-space: nowrap }
+.btn:hover:not(:disabled) { border-color: #5a5a6c; background: #2e2e3b }
+.btn.pri { background: var(--acc); border-color: var(--acc); color: #2a0d18; font-weight: 600 }
+.btn.tplb { border-color: #b49cff88; color: var(--acc2) }
+.btn.sm { padding: 3px 8px; font-size: 12px } .btn.ghost { background: transparent }
+.btn:disabled { opacity: .45; cursor: not-allowed }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px }
+.card h3, h3 { margin: 0 0 10px; font-size: 13.5px; font-weight: 600 }
+h2 { margin: 0; font-size: 18px }
+.inp { width: 100%; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line2); background: var(--bg2); outline: none }
+.inp:focus { border-color: var(--acc) }
+select.inp { width: auto; min-width: 160px }
+.kv { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 10px 12px; align-items: center }
+.kv > .lbl { color: var(--tx2); text-align: right; font-size: 12.5px }
+.kv > .lbl.mod::after { content: " ●"; color: var(--acc2); font-size: 10px }
+.seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden }
+.seg button { border: 0; background: var(--bg2); padding: 4px 11px; color: var(--tx2) }
+.seg button + button { border-left: 1px solid var(--line2) }
+.seg button.on { background: #ff7aa822; color: var(--acc) }
+.sw { width: 30px; height: 17px; border-radius: 99px; background: var(--line2); position: relative; border: 0; flex: none; padding: 0 }
+.sw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%; background: #ccc; transition: .15s }
+.sw.on { background: var(--acc) } .sw.on::after { left: 15px; background: #fff }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 14px }
+.tabs button { border: 0; background: none; padding: 9px 16px; color: var(--tx2); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px }
+.tabs button.on { color: var(--tx); border-bottom-color: var(--acc); font-weight: 600 }
+.tabs button small { color: var(--tx3); margin-left: 4px }
+table.tb { width: 100%; border-collapse: collapse }
+.tb th { text-align: left; font-weight: 500; color: var(--tx3); font-size: 12px; padding: 5px 8px; border-bottom: 1px solid var(--line) }
+.tb td { padding: 6px 8px; border-bottom: 1px solid #2a2a35 }
+.tb tr.off td { opacity: .45 }
+.adv { margin-top: 12px; border-top: 1px dashed var(--line2); padding-top: 10px }
+.adv > summary { cursor: pointer; color: var(--tx2); font-size: 12.5px; margin-bottom: 10px }
+.hint { font-size: 12px; color: var(--tx3) }
+.link { color: var(--acc); cursor: pointer } .link:hover { text-decoration: underline }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none }
+.dot.done { background: var(--ok) } .dot.stale { background: var(--warn) } .dot.fail { background: var(--bad) }
+.dot.off { background: transparent; border: 1px solid var(--tx3) } .dot.run { background: var(--acc); box-shadow: 0 0 0 3px #ff7aa833 }
+.dot.na { background: var(--line2) }
+.badge { font-size: 11px; padding: 0 6px; border-radius: 4px; font-weight: 600 }
+.b-c { background: #7cc4ff22; color: var(--c-sub) } .b-a { background: #9be38a22; color: var(--c-asr) } .b-o { background: #ffb35c22; color: var(--c-ocr) }
+.b-f { background: #b49cff22; color: var(--c-fuse) } .b-t { background: #ff7aa822; color: var(--c-tr) }
+
+/* 库 */
+.lib-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px }
+.drop { border: 1.5px dashed var(--line2); border-radius: 10px; padding: 14px; text-align: center; color: var(--tx2); margin-bottom: 16px }
+.series-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); margin-bottom: 12px; overflow: hidden }
+.series-card .sh { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: var(--panel2); cursor: pointer }
+.series-card .sh:hover { background: #2d2d3a }
+.series-card .sh b { font-size: 14.5px }
+.ep { display: grid; grid-template-columns: 22px minmax(0, 1.4fr) 1fr 1fr auto; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid #2a2a35; cursor: pointer }
+.ep:hover { background: #24242f }
+
+/* 一集：页头 + 运行条 */
+.ephead { display: flex; align-items: center; gap: 10px; padding: 12px 22px 0; flex-wrap: wrap }
+.runbar { display: flex; align-items: center; gap: 8px }
+.runbar .pending { font-size: 12px; color: var(--warn); max-width: 420px; text-align: right; line-height: 1.35 }
+.epbody { padding: 0 22px 22px }
+.menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 50; width: 300px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; padding: 10px; box-shadow: 0 8px 30px #0008 }
+.menu label { display: flex; gap: 6px; align-items: center; padding: 3px 0 }
+.menu hr { border: 0; border-top: 1px solid var(--line2); margin: 8px 0 }
+
+/* 处理：步骤列表 + 详情 */
+.md { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; align-items: start }
+.steps { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; position: sticky; top: 0 }
+.grp { font-size: 11px; color: var(--tx3); padding: 8px 8px 3px; letter-spacing: .05em }
+.step { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 7px; cursor: pointer; position: relative }
+.step:hover { background: var(--panel2) }
+.step.sel { background: #ff7aa816; box-shadow: inset 2px 0 0 var(--acc) }
+.step .nm { display: flex; flex-direction: column; min-width: 0 }
+.step .nm b { font-weight: 500; font-size: 13px }
+.step .nm small { color: var(--tx3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.step.offs .nm b { color: var(--tx3) }
+.step .moddot { position: absolute; right: 44px; top: 9px; color: var(--acc2); font-size: 10px }
+.step.lead { opacity: .7 }
+.vline { margin-left: 14px; border-left: 1px solid var(--line2); padding-left: 0 }
+.detail .dh { display: flex; align-items: center; gap: 10px; margin-bottom: 12px }
+.detail .dh h2 { font-size: 17px }
+.logbox { background: #101015; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.6 Consolas, monospace; color: #b8b8c8; max-height: 160px; overflow: auto; white-space: pre-wrap }
+.region { position: relative; aspect-ratio: 16/9; max-width: 420px; border-radius: 8px; overflow: hidden; background: linear-gradient(160deg, #2d4a5e, #1a2a33 60%, #3a3226) }
+.region .r { position: absolute; border: 1.5px solid var(--c-ocr); background: #ffb35c18 }
+.region .r.x { border-color: var(--bad); background: #ff6b6b22 }
+.region .r span { position: absolute; left: 3px; top: 1px; font-size: 10.5px; color: #fff }
+
+/* 输出 */
+.out { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; align-items: start }
+.olist { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; position: sticky; top: 0 }
+.oi { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer }
+.oi:hover { background: var(--panel2) }
+.oi.sel { background: #ff7aa816; box-shadow: inset 2px 0 0 var(--acc) }
+.oi .t { flex: 1; min-width: 0 } .oi .t small { display: block; color: var(--tx3); font-size: 11.5px }
+.oi.na { opacity: .45 }
+.oi .swatch { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #0006; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: none }
+.oadd { padding: 5px 8px; color: var(--tx3); cursor: pointer; font-size: 12.5px } .oadd:hover { color: var(--acc) }
+.oed { display: grid; grid-template-columns: minmax(0, 1fr) 470px; gap: 14px; align-items: start }
+.stack { display: flex; flex-direction: column; gap: 6px }
+.lay { border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2) }
+.lay .lh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer }
+.lay .grip { color: var(--tx3); cursor: grab }
+.lay.sel { border-color: var(--acc) }
+.lay .lb { border-top: 1px solid var(--line); padding: 10px 12px }
+.screen { aspect-ratio: 16/9; border-radius: 8px; position: relative; overflow: hidden; background: radial-gradient(ellipse at 70% 30%, #4f6b7d, #22313a 55%, #151d22); }
+.screen .sky { position: absolute; inset: 0; background: linear-gradient(transparent 55%, #0006) }
+.screen .info { position: absolute; left: 4%; top: 6%; color: #ffe680; font-size: 15px; font-weight: 600; text-shadow: 0 0 3px #000, 0 0 3px #000 }
+.screen .subs { position: absolute; left: 0; right: 0; bottom: 5%; text-align: center; display: flex; flex-direction: column; gap: 2px; align-items: center }
+.screen .l1 { color: #fff; font-size: 22px; font-weight: 600; text-shadow: 0 0 3px #101010, 0 0 3px #101010, 0 0 3px #101010 }
+.screen .l2 { color: #e8e8e8; font-size: 14px; text-shadow: 0 0 2px #101010, 0 0 2px #101010; font-family: var(--ja) }
+.screen .l2 rt { font-size: 8px }
+.screen .hl { outline: 1.5px dashed var(--acc); outline-offset: 2px; border-radius: 2px }
+.timebar { display: flex; align-items: center; gap: 8px; margin-top: 8px }
+.timebar .tl { flex: 1; height: 4px; background: var(--line2); border-radius: 2px; position: relative }
+.timebar .tl i { position: absolute; left: 0; top: 0; bottom: 0; width: 38%; background: var(--acc); border-radius: 2px }
+.usedby { display: flex; flex-direction: column; gap: 4px }
+.usedby div { display: flex; gap: 8px; align-items: center; padding: 4px 8px; background: var(--bg2); border-radius: 6px }
+
+/* 资料 */
+.notes-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 14px; align-items: start }
+.scope { font-size: 11px; padding: 0 6px; border-radius: 4px }
+.scope.s { background: #b49cff22; color: var(--acc2) } .scope.e { background: #ff7aa822; color: var(--acc) } .scope.g { background: #7cc4ff22; color: var(--c-sub) }
+
+/* 模板模式：紫色 */
+.tplmode .steps, .tplmode .olist, .tplmode .detail > .card, .tplmode .oed > .card { border-color: #b49cff66 }
+.tplbanner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; background: #b49cff14; border: 1px solid #b49cff55; color: #d6cbff; margin-bottom: 12px }
+
+/* 对话框 */
+.modal { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 80 }
+.modal .card { width: 760px; max-height: 84vh; overflow: auto }
+
+/* 说明页 */
+.doc { max-width: 1060px; margin: 0 auto; padding: 22px; line-height: 1.75 }
+.doc h1 { font-size: 22px; margin: 0 0 4px }
+.doc h2 { font-size: 16px; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line) }
+.doc li { margin: 3px 0 } .doc b { color: #fff }
+.doc table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12.5px }
+.doc th, .doc td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top }
+.doc th { background: var(--panel2); font-weight: 500; color: var(--tx2) }
+.doc code { background: var(--panel2); padding: 0 4px; border-radius: 3px; font-size: 12px }
+.ia { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0 }
+.ia > div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 12.5px }
+.ia h4 { margin: 0 0 4px; font-size: 13px; color: var(--acc) }
+</style>
+</head>
+<body class="notes">
+<div class="proto">
+  <b>原型 v2</b>
+  <button data-go="doc">设计说明</button>
+  <button data-go="library">库</button>
+  <button data-go="series">作品页</button>
+  <button data-go="ep:process">一集 · 处理</button>
+  <button data-go="ep:output">一集 · 输出</button>
+  <button data-go="ep:notes">一集 · 资料</button>
+  <button data-go="settings">设置</button>
+  <span class="sp"></span>
+  <label class="row" style="color:#cfc4ff"><input type="checkbox" id="shownotes" checked> 显示改动说明（黄色虚线框）</label>
+</div>
+<div class="app">
+  <header class="top">
+    <div class="logo">
+      <svg width="24" height="24" viewBox="0 0 32 32"><path d="M5 8 L9 3 L13 9 Q16 8 19 9 L23 3 L27 8 Q29 13 28 19 Q26 28 16 28 Q6 28 4 19 Q3 13 5 8Z" fill="#ff7aa8"/><circle cx="11.5" cy="16" r="2" fill="#2a0d18"/><circle cx="20.5" cy="16" r="2" fill="#2a0d18"/><path d="M14 21 Q16 23 18 21" stroke="#2a0d18" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="7" y="23.5" width="18" height="2.2" rx="1.1" fill="#fff" opacity=".85"/></svg>
+      <span>Nya<b>Sub</b>Fusion</span>
+    </div>
+    <div class="crumb" id="crumb"></div>
+    <div class="sp"></div>
+    <span class="chip acc" id="jobchip" style="cursor:pointer" data-go="queue">● 任务：1 个运行中</span>
+  </header>
+  <nav class="nav" id="nav"></nav>
+  <main class="main" id="main"></main>
+</div>
+<div id="modal"></div>
+
+<script>
+// ---------------- 假数据 ----------------
+const SERIES = [
+  { name: "海辺の暮らし", tpl: true, terms: 86, readings: 14, eps: [
+    { name: "第1集", st: "done", note: "已输出 3 个字幕文件 · MKV" },
+    { name: "第2集", st: "review", note: "待审校 12 条" },
+    { name: "第3集", st: "stale", note: "改了设置：4 步待运行", cur: true },
+    { name: "第4集", st: "run", note: "语音识别 42%" },
+  ]},
+  { name: "ゆるキャン△ S3", tpl: true, terms: 41, readings: 3, eps: [
+    { name: "#01", st: "done", note: "已输出 2 个字幕文件" },
+    { name: "#02", st: "none", note: "还没运行" },
+  ]},
+];
+const LOOSE = [
+  { name: "NHKスペシャル 深海の巨大生物", st: "done", note: "已输出 1 个字幕文件" },
+  { name: "ラジオ深夜便 2026-10-12", st: "none", note: "还没运行" },
+];
+const ST_LBL = { done: ["完成", "ok"], review: ["待审校", "warn"], stale: ["待运行", "warn"], run: ["运行中", "acc"], none: ["未运行", ""] };
+
+// 处理：步骤（竖排的步骤图；点一步右边就是它的设置和日志）
+const STEPS = [
+  { g: "开始" },
+  { id: "basic", name: "语言与作品", sum: "日语 → 简体中文 · 海辺の暮らし", st: "none" },
+  { g: "来源", sub: "识别出原文" },
+  { id: "subs", name: "读取字幕", badge: ["字幕", "b-c"], sum: "内封 ARIB 字幕 · 412 条", st: "done", t: "4s", on: true },
+  { id: "asr", name: "语音识别", badge: ["语音", "b-a"], sum: "本机 · large-v3 · 人声分离自动", st: "done", t: "3m12s", on: true },
+  { id: "ocr", name: "画面字识别", badge: ["画面字", "b-o"], sum: "4 帧/秒 · 2 个区域", st: "stale", t: "", on: true, mod: true },
+  { id: "ocr_refine", name: "画面字复核", sum: "关 · 用视觉大模型逐处确认", st: "off", on: false },
+  { g: "合成", sub: "合成一份字幕" },
+  { id: "align", name: "字幕对时", sum: "按语音校准字幕时间", st: "done", t: "6s" },
+  { id: "fuse", name: "合并来源", sum: "三路结果合成一份", st: "stale" },
+  { id: "translate", name: "整理与翻译", badge: ["大模型", "b-t"], sum: "deepseek · 附画面截图", st: "stale", mod: true },
+  { g: "输出", sub: "设置在「输出」页" },
+  { id: "annotate", name: "注音", sum: "2 个图层有注音", st: "stale", jump: true },
+  { id: "render", name: "生成字幕文件", sum: "3 个文件", st: "stale", jump: true },
+  { id: "video", name: "生成视频", sum: "运行完自动封装 MKV", st: "stale", jump: true },
+];
+const STEP_ST = { done: ["可复用", "ok", "done"], stale: ["要重做", "warn", "stale"], off: ["关", "", "off"], none: ["", "", "na"], fail: ["失败", "bad", "fail"] };
+
+// 输出：字幕文件 / 视频 / 样式
+// 出厂样式：软件自带、只读，随时可以从这里加回来或恢复
+const FACTORY = {
+  main: { label: "正文", font: "Microsoft YaHei", size: 60, color: "#FFFFFF", outline: "#101010", ow: 3 },
+  sub: { label: "小字", font: "Yu Gothic", size: 38, color: "#E8E8E8", outline: "#101010", ow: 2.4 },
+  info: { label: "说明", font: "Microsoft YaHei", size: 42, color: "#FFE680", outline: "#101010", ow: 2.4 },
+  orig_main: { label: "原文大字", font: "Yu Gothic", size: 54, color: "#FFFFFF", outline: "#101010", ow: 3 },
+  translit: { label: "转写", font: "Segoe UI", size: 30, color: "#A8D8FF", outline: "#101010", ow: 2 },
+};
+// 这一集的样式：一整套，可以改、改名、删；base = 从哪个出厂样式来的（恢复出厂用）
+const STYLES = {
+  main: { ...FACTORY.main, base: "main" },
+  sub: { ...FACTORY.sub, size: 44, base: "sub", mod: "字号 44（模板里是 38）" },
+  info: { ...FACTORY.info, base: "info" },
+  orig_main: { ...FACTORY.orig_main, base: "orig_main" },
+  translit: { ...FACTORY.translit, base: "translit" },
+  big: { label: "综艺大字", font: "Microsoft YaHei", size: 72, color: "#FFD23F", outline: "#3A1500", ow: 4, base: "main" },
+};
+const FILES = [
+  { id: "bilingual", name: "双语", fmt: "ASS", out: true, fn: "{stem}.{tr}.{ext}", info: "info", layers: [
+    { role: "译文", lang: "简体中文", style: "main", show: "开", ann: "" },
+    { role: "原文", lang: "日语", style: "sub", show: "自动", ann: "振假名 · 难读" },
+  ]},
+  { id: "translation", name: "纯译文", fmt: "SRT", out: true, fn: "{stem}.{tr}.{ext}", layers: [
+    { role: "译文", lang: "简体中文", style: "main", show: "开", ann: "" },
+  ]},
+  { id: "learn", name: "学日语", fmt: "ASS", out: false, fn: "{stem}.learn.{ext}", info: "info", layers: [
+    { role: "原文", lang: "日语", style: "orig_main", show: "开", ann: "振假名 · 全部" },
+    { role: "整行转写", lang: "原文 → 罗马字", style: "translit", show: "开", ann: "" },
+    { role: "译文", lang: "简体中文", style: "sub", show: "开", ann: "" },
+  ]},
+];
+
+// ---------------- 状态 ----------------
+const S = { view: "ep", tab: "process", step: "ocr", out: "f:bilingual", layer: 1, seriesTab: "eps", runMenu: false, termScope: "all", noteTab: "terms", auto: "mux", tpl: false,
+  tplOf: "series", fallback: "main", newMenu: false, delStyle: null, sync: false, savePreset: false };
+// 一个样式用在哪些地方：图层 + 各 ASS 字幕文件的说明文字（兜底单独标）
+const usedBy = (k) => [
+  ...FILES.flatMap((f) => f.layers.filter((l) => l.style === k).map((l) => `${f.name} › ${l.role}层`)),
+  ...FILES.filter((f) => f.fmt === "ASS" && f.info === k).map((f) => `${f.name} › 说明文字`),
+];
+
+// ---------------- 小工具 ----------------
+const h = (strs, ...vals) => strs.reduce((a, s, i) => a + s + (i < vals.length ? (Array.isArray(vals[i]) ? vals[i].join("") : vals[i] ?? "") : ""), "");
+const note = (t) => `<div class="note">${t}</div>`;
+const seg = (opts, on) => `<div class="seg">${opts.map((o) => `<button class="${o === on ? "on" : ""}">${o}</button>`).join("")}</div>`;
+const sw = (on, act = "") => `<button class="sw ${on ? "on" : ""}" ${act}></button>`;
+const icon = {
+  lib: '<path d="M4 5h6v14H4zM14 5h6v14h-6z"/><path d="M6.5 8h1M16.5 8h1"/>',
+  queue: '<path d="M4 6h16M4 12h16M4 18h10"/><path d="M17 16l3 2-3 2z"/>',
+  set: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+};
+
+// ---------------- 外壳 ----------------
+function renderNav() {
+  const on = (v) => (S.view === v || (v === "library" && ["series", "ep"].includes(S.view)) ? "on" : "");
+  document.getElementById("nav").innerHTML = h`
+    <button class="${on("library")}" data-go="library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${icon.lib}</svg>库</button>
+    <button class="${on("queue")}" data-go="queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${icon.queue}</svg>任务<span class="badge-n">1</span></button>
+    <div class="sp"></div>
+    <button class="${on("settings")}" data-go="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${icon.set}</svg>设置</button>`;
+  const c = document.getElementById("crumb");
+  c.innerHTML = S.view === "ep" ? `<a data-go="library">库</a> › <a data-go="series">海辺の暮らし</a> › <strong>第3集</strong>`
+    : S.view === "series" && S.tpl && S.tplOf === "preset" ? `<a data-go="settings">设置</a> › 预设 › <strong style='color:var(--acc2)'>NHK 纪录片 4K</strong>`
+    : S.view === "series" ? `<a data-go="library">库</a> › <strong>海辺の暮らし</strong>${S.tpl ? " › <strong style='color:var(--acc2)'>默认设置</strong>" : ""}`
+    : "";
+  document.querySelectorAll(".proto button[data-go]").forEach((b) => {
+    const g = b.dataset.go;
+    b.classList.toggle("on", g === S.view || g === `ep:${S.tab}` && S.view === "ep");
+  });
+}
+
+// ---------------- 库 ----------------
+function library() {
+  return h`<div class="page">
+    <div class="lib-head"><h2>库</h2><span class="dim">2 部作品 · 8 集</span><span class="sp"></span>
+      <input class="inp" style="width:220px" placeholder="搜索作品、集…">
+      <button class="btn">批量加入…</button><button class="btn pri">＋ 新建项目</button></div>
+    ${note("原来的「项目」页改成「库」：按作品分组。作品第一次成了能点进去的东西（各集、默认设置、共享术语都在作品页）。左栏只剩应用级的 库 / 任务 / 设置，不再有“没打开项目就变灰”的按钮；一集里的工作在打开那一集后用页内标签切换。")}
+    <div class="drop">把视频 / 音频拖到窗口里新建项目（拖一个文件夹 = 批量加入队列）</div>
+    ${SERIES.map((s, i) => h`<div class="series-card">
+      <div class="sh" data-go="series"><b>${s.name}</b><span class="chip">${s.eps.length} 集</span>
+        ${s.tpl ? `<span class="chip tpl">有默认设置</span>` : ""}<span class="chip">术语 ${s.terms}</span>
+        <span class="sp"></span><span class="dim">进入作品 ›</span></div>
+      ${s.eps.map((e) => h`<div class="ep" data-go="ep:process">
+        <span class="dot ${e.st === "done" ? "done" : e.st === "run" ? "run" : e.st === "none" ? "na" : "stale"}"></span>
+        <b style="font-weight:500">${e.name}${e.cur ? ' <span class="chip acc">当前</span>' : ""}</b>
+        <span class="dim">日语 → 简体中文</span>
+        <span class="muted">${e.note}</span>
+        <span class="chip ${ST_LBL[e.st][1]}">${ST_LBL[e.st][0]}</span></div>`)}
+      <div class="ep" style="color:var(--tx3)"><span></span><span>＋ 给这部作品加一集（复制作品的默认设置）</span><span></span><span></span><span></span></div>
+    </div>`)}
+    <div class="series-card">
+      <div class="sh"><b>未归入作品</b><span class="chip">${LOOSE.length} 个</span><span class="sp"></span><span class="dim">每个项目独立设置、独立术语表</span></div>
+      ${LOOSE.map((e) => h`<div class="ep" data-go="ep:process"><span class="dot ${e.st === "done" ? "done" : "na"}"></span>
+        <b style="font-weight:500">${e.name}</b><span class="dim">日语 → 简体中文</span><span class="muted">${e.note}</span>
+        <span class="chip ${ST_LBL[e.st][1]}">${ST_LBL[e.st][0]}</span></div>`)}
+    </div>
+  </div>`;
+}
+
+// ---------------- 作品页 ----------------
+function seriesPage() {
+  const s = SERIES[0];
+  if (S.tpl) return seriesTemplate();
+  return h`<div class="page">
+    <div class="row" style="margin-bottom:12px"><h2>${s.name}</h2><span class="chip">${s.eps.length} 集</span><span class="chip tpl">有默认设置</span>
+      <span class="sp"></span><button class="btn">重命名</button><button class="btn pri">＋ 加一集</button></div>
+    ${note("作品页：一部作品的东西放一起。默认设置只在这里改（紫色表示“正在改模板”），一集的页面不再有“正在编辑：这一集 / 作品”的切换。")}
+    <div class="tabs">
+      <button class="${S.seriesTab === "eps" ? "on" : ""}" data-stab="eps">各集<small>${s.eps.length}</small></button>
+      <button data-tpl="1">默认设置</button>
+      <button class="${S.seriesTab === "kb" ? "on" : ""}" data-stab="kb">节目说明与术语<small>${s.terms}</small></button>
+    </div>
+    ${S.seriesTab === "eps" ? h`<div class="card"><table class="tb"><thead><tr><th>集</th><th>状态</th><th>和默认设置相比</th><th></th></tr></thead><tbody>
+      ${s.eps.map((e, i) => h`<tr><td><b style="font-weight:500">${e.name}</b></td><td><span class="chip ${ST_LBL[e.st][1]}">${ST_LBL[e.st][0]}</span> <span class="dim">${e.note}</span></td>
+        <td>${i === 2 ? '<span class="chip tpl click" data-diff="1">不同 3 项</span>' : i === 3 ? '<span class="chip tpl click" data-diff="1">不同 1 项</span>' : '<span class="dim">相同</span>'}</td>
+        <td style="text-align:right"><button class="btn sm" data-go="ep:process">打开</button></td></tr>`)}
+      </tbody></table>
+      <div class="hint" style="margin-top:8px">“不同”是这一集和作品默认设置有差异的项；点开逐项决定用哪边的。</div></div>`
+    : kbView(true)}
+  </div>`;
+}
+function seriesTemplate() {
+  return h`<div class="page tplmode">
+    ${S.tplOf === "preset" ? h`<div class="tplbanner"><b>正在改预设「NHK 纪录片 4K」</b><span>新建项目时可以选它；改这里不影响已经建好的项目。</span>
+      <span class="sp"></span><button class="btn sm tplb" data-go="settings">完成</button></div>`
+    : h`<div class="tplbanner"><b>正在改「海辺の暮らし」的默认设置</b><span>新建这部作品的集时复制一份；改这里不影响已有的集，除非你选择同步。</span>
+      <span class="sp"></span><span style="font-size:12px">这次改了 2 项</span><button class="btn sm tplb" data-sync="1">同步给已有的集…</button><button class="btn sm tplb" data-tpl="0">完成</button></div>`}
+    ${note("模板用和一集一样的「处理」「输出」两个页面来改（同一套部件），只是整页变紫、没有运行按钮和日志。不再是同一张表单里切来切去。")}
+    <div class="tabs">
+      <button class="${S.tab === "process" ? "on" : ""}" data-tab="process">处理</button>
+      <button class="${S.tab === "output" ? "on" : ""}" data-tab="output">输出</button>
+    </div>
+    ${S.tab === "output" ? outputView(true) : processView(true)}
+  </div>`;
+}
+
+// ---------------- 一集 ----------------
+function episode() {
+  const stale = ["画面字识别", "合并来源", "整理与翻译", "生成字幕文件"];
+  return h`
+  <div class="ephead">
+    <h2>第3集</h2><span class="chip">日语 → 简体中文</span>
+    <span class="chip tpl click" data-diff="1" title="这一集的模板是作品默认设置；点开看差在哪、逐项恢复">和模板不同 3 项</span>
+    <button class="btn sm ghost" data-savepreset="1" title="把这一集的设置存成一个预设，以后新建项目可以选">存成预设…</button>
+    <span class="chip warn">待审校 0 / 386</span>
+    <span class="sp"></span>
+    <div class="runbar">
+      <span class="pending">已自动保存。下次运行会重做：${stale.join(" → ")}</span>
+      <div style="position:relative">
+        <div class="seg" style="border-color:var(--acc)">
+          <button class="on" style="background:var(--acc);color:#2a0d18;font-weight:600;padding:6px 14px">▶ 运行</button>
+          <button style="background:var(--acc);color:#2a0d18;border-left-color:#2a0d1844" data-runmenu="1">▾</button>
+        </div>
+        ${S.runMenu ? h`<div class="menu">
+          <div class="kv" style="grid-template-columns:70px 1fr"><span class="lbl">运行到</span><select class="inp"><option>生成视频（全部）</option><option>生成字幕文件</option><option>整理与翻译</option><option>合并来源</option></select></div>
+          <hr><div class="dim" style="font-size:12px;margin-bottom:4px">强制重做（平时不用：改了设置会自动重做受影响的步骤）</div>
+          <label><input type="checkbox"> 在左边步骤上勾选要重做的步骤…</label>
+          <label><input type="checkbox"> 重做的步骤不用缓存（重新请求，会再花钱）</label>
+          <label style="color:var(--warn)"><input type="checkbox"> 清掉审校时的手动修改（先备份）</label>
+        </div>` : ""}
+      </div>
+    </div>
+  </div>
+  ${note("运行条在一集的每个标签页都在。设置改了自动保存，旁边直接写出“下次运行会重做哪几步”，不用先保存才能运行。“做到”“重做”“不用缓存”“清掉修改”这些不常用的收进 ▾。")}
+  <div class="epbody">
+    <div class="tabs">
+      <button class="${S.tab === "process" ? "on" : ""}" data-tab="process">处理<small>4 步待运行</small></button>
+      <button class="${S.tab === "review" ? "on" : ""}" data-tab="review">审校<small>386 条</small></button>
+      <button class="${S.tab === "output" ? "on" : ""}" data-tab="output">输出<small>3 个文件</small></button>
+      <button class="${S.tab === "notes" ? "on" : ""}" data-tab="notes">资料<small>术语 98</small></button>
+    </div>
+    ${S.tab === "process" ? processView(false) : S.tab === "output" ? outputView(false) : S.tab === "notes" ? kbView(false) : reviewView()}
+  </div>`;
+}
+
+// ---- 处理 ----
+function processView(tpl) {
+  return h`<div class="md">
+    <div class="steps">
+      ${STEPS.map((x) => x.g ? `<div class="grp">${x.g}${x.sub ? ` <span style="color:var(--tx3);letter-spacing:0">· ${x.sub}</span>` : ""}</div>` : stepRow(x, tpl))}
+      ${tpl ? "" : `<div class="hint" style="padding:8px">● 紫点 = 和模板（作品默认设置）不同</div>`}
+    </div>
+    <div class="detail">${stepDetail(S.step, tpl)}</div>
+  </div>
+  ${note("原来「流程」页 = 步骤图 + 下面一长串配置卡片，两边对不上（看到画面字识别要重做，得往下翻找它的设置）。现在步骤列表就是导航：点一步，右边是这一步的设置 + 状态 + 日志。“探测媒体”“提取音频”这种没有设置的准备步骤不单独列出，出错时才在“语言与作品”上提示。")}`;
+}
+function stepRow(x, tpl) {
+  const [lbl, cls, dot] = STEP_ST[x.st] ?? ["", "", "na"];
+  return h`<div class="step ${S.step === x.id ? "sel" : ""} ${x.on === false ? "offs" : ""}" data-step="${x.id}">
+    <span class="dot ${tpl ? "na" : dot}"></span>
+    <div class="nm"><b>${x.name}${x.badge ? ` <span class="badge ${x.badge[1]}">${x.badge[0]}</span>` : ""}${x.jump ? ' <span class="dim">↗</span>' : ""}</b><small>${x.sum}</small></div>
+    ${x.on !== undefined ? sw(x.on) : tpl ? "" : `<span class="dim" style="font-size:11.5px">${x.t || lbl}</span>`}
+    ${x.mod && !tpl ? '<span class="moddot">●</span>' : ""}
+  </div>`;
+}
+function stepHead(name, st, extra = "", tpl) {
+  const [lbl, cls] = STEP_ST[st] ?? ["", ""];
+  const mod = STEPS.find((x) => x.name === name)?.mod;
+  return h`<div class="dh"><h2>${name}</h2>${!tpl && lbl ? `<span class="chip ${cls}">${lbl}</span>` : ""}${extra}<span class="sp"></span>
+    ${mod && !tpl ? `<button class="btn sm tplb" title="这一步的设置全部恢复成模板里的值（会先列出要变的项）">↺ 这一步恢复成模板</button>` : ""}
+    ${tpl ? "" : `<button class="btn sm" title="下次运行一定重做这一步">↻ 下次重做这一步</button>`}</div>`;
+}
+const runInfo = (lines) => h`<div class="card" style="margin-top:12px"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">上次运行</h3><span class="dim">2026-10-30 21:14 · 3m12s</span><span class="sp"></span><button class="btn sm ghost">全部日志</button></div>
+  <div class="logbox">${lines}</div></div>`;
+
+function stepDetail(id, tpl) {
+  const lbl = (t, mod) => `<span class="lbl ${mod && !tpl ? "mod" : ""}">${t}</span>`;
+  if (id === "basic") return h`${stepHead("语言与作品", "", "", tpl)}<div class="card"><div class="kv">
+      ${lbl("源语言")}<div><select class="inp"><option>日语</option><option>自动判断</option></select></div>
+      ${lbl("翻译成")}<div class="row wrap"><span class="chip acc">1. 简体中文</span><span class="chip">繁体中文</span><span class="chip">English</span><span class="chip">한국어</span></div>
+      ${lbl("所属作品")}<div class="row">${tpl ? '<span class="muted">海辺の暮らし</span>' : '<b style="font-weight:500">海辺の暮らし</b><button class="btn sm">更换…</button><span class="hint">共用术语表、读音词典</span>'}</div>
+      ${lbl("视频")}<div class="muted">D:\\Videos\\海辺の暮らし_第3集.ts · 1920×1080 · 49 分 12 秒 · 有音轨 · 内封字幕 1 条</div>
+    </div></div>
+    ${note("“节目说明”从这里拿走，放到「资料」（它和术语表一样是给大模型的背景资料）。所属作品只在这里改，「资料」页不再有第二个入口。")}`;
+  if (id === "subs") return h`${stepHead("读取字幕", "done", "", tpl)}<div class="card"><div class="kv">
+      ${lbl("用哪条字幕")}<div class="col" style="gap:4px">
+        <label class="row"><input type="radio" name="st" checked> 自动（同名外挂 > 内封）<span class="hint">现在：内封 ARIB 字幕</span></label>
+        <label class="row"><input type="radio" name="st"> 指定文件 <input class="inp" style="width:280px" placeholder="选择 .ass / .srt …"></label></div>
+      ${lbl("说明")}<span class="hint">有字幕时以它为准；语音和画面字用来补漏、对时间。来自电视广播时还能输出“广播字幕原样”（在「输出」里）。</span>
+    </div></div>${tpl ? "" : runInfo("读取内封字幕 #2（arib_caption）\n转换 ARIB → 412 条\n发现振假名小字 37 处，已去掉")}`;
+  if (id === "asr") return h`${stepHead("语音识别", "done", "", tpl)}<div class="card"><div class="kv">
+      ${lbl("识别方式")}<div class="row">${seg(["本机", "云端接口"], "本机")}<span class="hint">本机免费，要显卡才快；云端按时长付费</span></div>
+      ${lbl("模型")}<div><select class="inp"><option>large-v3（最准）</option><option>large-v3-turbo（快 3 倍）</option></select></div>
+      ${lbl("人声分离")}<div class="row">${seg(["自动", "开", "关"], "自动")}<span class="hint">自动 = 没有字幕时才做</span></div>
+    </div>
+    <details class="adv"><summary>高级</summary><div class="kv">
+      ${lbl("人声门槛")}<div class="row"><input type="range" min="0.1" max="0.6" step="0.05" value="0.25"><span class="dim">0.25</span></div>
+    </div></details></div>
+    ${note("原来的“更多 ▸ 一行灰字摘要”改成普通的“高级”折叠，摘要放在左边步骤上（large-v3 · 人声分离自动）。")}
+    ${tpl ? "" : runInfo("分离人声：跳过（有字幕）\n识别 49:12 音频 … 2,184 段\n检测语言：ja（0.99）")}`;
+  if (id === "ocr") return h`${stepHead("画面字识别", "stale", tpl ? "" : '<span class="hint">改了“每秒帧数”，要重新识别</span>', tpl)}<div class="card"><div class="kv">
+      ${lbl("每秒看几帧", true)}<div class="row"><input type="range" min="1" max="10" step="0.5" value="4"><span class="dim">4 帧/秒 · 时间误差 ±0.13 秒</span>${tpl ? "" : '<span class="chip tpl">模板：3</span><button class="btn sm ghost" title="这一项恢复成模板的值">↺</button>'}</div>
+      ${lbl("识别区域")}<div class="col"><div class="region"><div class="r" style="left:0;top:0;right:0;bottom:0"><span>全画面</span></div><div class="r x" style="left:82%;top:0;right:0;height:12%"><span>台标（排除）</span></div></div>
+        <div class="row"><button class="btn sm">＋ 识别区</button><button class="btn sm">＋ 排除区</button><span class="hint">拖动框调整；时间轴拖到有字的地方看效果</span></div></div>
+    </div></div>
+    ${tpl ? "" : note("和模板不一样的项，标签后面有紫点，值旁边写“模板：3”，点 ↺ 只把这一项恢复。整步恢复用右上角“这一步恢复成模板”，整份恢复在页头“和模板不同 N 项”里。三档都是恢复成模板，不是出厂值——出厂值只在样式和预设里出现。")}
+    ${tpl ? "" : runInfo("上次：3 帧/秒 · 扫描 8,856 帧\n画面字 1,027 处 → 台词 211 · 说明 96 · 重复 604 · 丢弃 116")}`;
+  if (id === "ocr_refine") return h`${stepHead("画面字复核", "off", "", tpl)}<div class="card"><div class="row" style="margin-bottom:10px">${sw(false)}<b style="font-weight:500">用视觉大模型逐处确认画面字</b></div>
+    <div class="hint" style="margin-bottom:10px">看每处字的特写重新转写，并判断是后期字幕还是招牌、标签上的字。用「设置 › 用途」里的“画面字复核”接口（现在：bailian · qwen-vl-max）。</div>
+    <div class="kv" style="opacity:.5">
+      ${lbl("特写")}<label class="row"><input type="checkbox" checked disabled> 框出要转写的字</label>
+      ${lbl("每批几处")}<select class="inp" disabled><option>4（默认）</option></select>
+      ${lbl("整帧画面")}<select class="inp" disabled><option>640 宽（省）</option></select>
+    </div></div>
+    ${note("原来在画面字识别下面用“视觉复核：不复核 / 视觉大模型”选择；它其实是单独一步（步骤图上也是），这里也单独列出来，开关在左边。")}`;
+  if (id === "align" || id === "fuse") return h`${stepHead(id === "align" ? "字幕对时" : "合并来源", id === "align" ? "done" : "stale", "", tpl)}
+    <div class="card"><div class="hint">${id === "align" ? "按语音识别的时间校准自带字幕的时间（广播字幕常整体偏移 1~2 秒）。没有可调的设置。" : "把字幕、语音、画面字三路结果按时间合成一份：去重、分出台词和说明、补上字幕漏掉的话。没有可调的设置。"}</div></div>
+    ${tpl ? "" : runInfo(id === "align" ? "整体偏移 +1.32 秒（412 条中 398 条匹配）" : "上次：字幕 412 · 画面字台词 211 · 说明 96 · 语音补漏 23 → 391 条")}
+    ${tpl ? "" : `<div class="card" style="margin-top:12px"><h3>结果</h3><div class="row wrap" style="gap:18px">
+      <div><b style="font-size:20px;color:var(--c-sub)">412</b><div class="dim">字幕</div></div><div><b style="font-size:20px;color:var(--c-ocr)">1027</b><div class="dim">画面字</div></div>
+      <div><b style="font-size:20px;color:var(--c-asr)">2184</b><div class="dim">语音</div></div><div><b style="font-size:20px;color:var(--acc)">386</b><div class="dim">最终字幕</div></div></div></div>`}
+    ${note("原来侧栏的“融合结果”统计放到它所属的步骤里。")}`;
+  if (id === "translate") return h`${stepHead("整理与翻译", "stale", "", tpl)}<div class="card"><div class="kv">
+      ${lbl("方式")}<div class="row">${seg(["调接口", "导出任务文件", "不翻译"], "调接口")}</div>
+      ${lbl("接口")}<div class="row"><select class="inp"><option>跟随设置（deepseek · deepseek-chat）</option><option>bailian · qwen-max</option></select><span class="hint">接口在「设置」里管理</span></div>
+      ${lbl("参考画面", true)}<label class="row"><input type="checkbox" checked> 每条附一张画面截图 <span class="hint">输入用量约多一倍</span>${tpl ? "" : '<span class="chip tpl">模板：不附</span><button class="btn sm ghost">↺</button>'}</label>
+      ${lbl("背景资料")}<div class="col" style="gap:4px"><div class="muted">节目说明：「北海道渔村纪录片，大量老渔民方言采访…」</div>
+        <div class="muted">术语表 98 条（作品 86 · 本集 12） · 读音词典 14 条</div><span class="link" data-tab="notes">在「资料」里编辑 →</span></div>
+    </div></div>
+    ${note("步骤名“融合 + 翻译”和“规则融合”很难分清：现在叫“合并来源”（规则）和“整理与翻译”（大模型）。翻译要用的资料在这里只读列出，编辑在「资料」。")}
+    ${tpl ? "" : runInfo("上次：deepseek-chat · 18 段 · 输入 412k / 输出 96k token\n整理出新术语 12 条")}`;
+  return h`${stepHead(id === "annotate" ? "注音" : id === "render" ? "生成字幕文件" : "生成视频", "stale", "", tpl)}
+    <div class="card"><div class="hint" style="margin-bottom:10px">${id === "annotate" ? "注音是按图层设的：双语 › 原文层（振假名 · 难读）、学日语 › 原文层（振假名 · 全部）。" : id === "render" ? "输出哪些字幕文件、每个文件里有哪些图层、用什么样式。" : "运行完自动封装 MKV（双语、纯译文、广播字幕原样三条字幕轨，默认轨：双语）。"}</div>
+      <button class="btn" data-tab="output">去「输出」设置 →</button></div>
+    ${note("这三步的设置都属于“输出”，统一在「输出」页。这里只显示状态和日志，并给一个跳转。")}
+    ${tpl ? "" : runInfo(id === "render" ? "海辺の暮らし_第3集.zh-Hans.ass\n海辺の暮らし_第3集.zh-Hans.srt\n海辺の暮らし_第3集.ja-broadcast.ass" : id === "video" ? "海辺の暮らし_第3集.sub.mkv（字体子集 3 个，1.8 MB）" : "振假名 1,204 处（读音词典命中 31）")}`;
+}
+
+// ---- 输出 ----
+function outputView(tpl) {
+  const [kind, key] = S.out.split(":");
+  return h`<div class="out">
+    <div class="olist">
+      <div class="grp">字幕文件</div>
+      ${FILES.map((f) => h`<div class="oi ${S.out === "f:" + f.id ? "sel" : ""}" data-out="f:${f.id}">
+        ${sw(f.out, `data-fout="${f.id}"`)}<div class="t">${f.name} <span class="dim">· ${f.fmt}</span><small>${f.layers.map((l) => l.role).join(" + ")}</small></div></div>`)}
+      <div class="oi ${S.out === "f:broadcast" ? "sel" : ""}" data-out="f:broadcast">${sw(true)}<div class="t">广播字幕原样 <span class="dim">· ASS</span><small>日语原文，照搬电视上的样子</small></div></div>
+      <div class="oadd">＋ 新建字幕文件</div>
+      <div class="grp">视频</div>
+      <div class="oi ${S.out === "v:mux" ? "sel" : ""}" data-out="v:mux"><span class="dot ${S.auto === "mux" ? "done" : "off"}"></span><div class="t">封装 MKV<small>${S.auto === "mux" ? "运行完自动 · 3 条字幕轨" : "手动"}</small></div></div>
+      <div class="oi ${S.out === "v:burn" ? "sel" : ""}" data-out="v:burn"><span class="dot ${S.auto === "burn" ? "done" : "off"}"></span><div class="t">压制硬字幕<small>${S.auto === "burn" ? "运行完自动 · 双语" : "手动"}</small></div></div>
+      <div class="grp">样式</div>
+      ${Object.keys(STYLES).filter((k) => usedBy(k).length || k === S.fallback).map(styleItem)}
+      ${Object.keys(STYLES).some((k) => !usedBy(k).length && k !== S.fallback) ? h`
+        <div class="grp" style="padding-top:4px">没在用 <span class="link" style="letter-spacing:0" data-cleanstyles="1">清理</span></div>
+        ${Object.keys(STYLES).filter((k) => !usedBy(k).length && k !== S.fallback).map(styleItem)}` : ""}
+      <div style="position:relative"><div class="oadd" data-newmenu="1">＋ 新样式 ▾</div>
+        ${S.newMenu ? h`<div class="menu" style="left:0;right:auto;width:250px">
+          <div class="oi" data-copystyle="1">复制当前样式${S.out.startsWith("s:") ? `（${STYLES[S.out.slice(2)]?.label ?? ""}）` : ""}</div>
+          <div class="dim" style="font-size:11.5px;padding:6px 8px 2px">从出厂样式添加</div>
+          ${Object.entries(FACTORY).map(([k, f]) => h`<div class="oi ${STYLES[k] ? "na" : ""}" ${STYLES[k] ? "" : `data-addfactory="${k}"`}>${f.label} <span class="dim">· ${k}</span>${STYLES[k] ? '<span class="sp"></span><span class="dim" style="font-size:11px">已有</span>' : ""}</div>`)}
+          <hr><div class="oi">从别的作品 / 预设导入…</div></div>` : ""}</div>
+      <div class="grp">通用</div>
+      <div class="oi ${S.out === "g:clean" ? "sel" : ""}" data-out="g:clean"><div class="t">文字清理<small>去掉 ➡</small></div></div>
+    </div>
+    <div>${kind === "f" ? (key === "broadcast" ? broadcastEd() : fileEd(FILES.find((f) => f.id === key))) : kind === "v" ? videoEd(key) : kind === "s" ? (STYLES[key] ? styleEd(key, usedBy(key), tpl) : "") : cleanEd()}</div>
+  </div>
+  ${note("原来输出的设置分在三处：「图层样式」里的方案（还有“导出时启用”），「流程」底部的“输出视频”表（“输出文件”列其实就是同一个“导出时启用”），以及两页各有一套导出 / 封装 / 压制按钮。现在全部在「输出」：左边是三类东西的清单——字幕文件、视频、样式——每个字幕文件“输出不输出”只有左边这一个开关。")}`;
+}
+function preview(file) {
+  const L = file?.layers ?? [];
+  const hl = (i) => (S.out.startsWith("f:") && S.layer === i ? "hl" : "");
+  const tr = L.findIndex((l) => l.role === "译文"), og = L.findIndex((l) => l.role === "原文");
+  return h`<div class="card"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">预览</h3><span class="dim">第3集 · 12:41</span><span class="sp"></span>
+    <select class="inp" style="min-width:0"><option>跳到：浜で網を…</option><option>人名条：佐藤 漁労長</option></select></div>
+    <div class="screen"><div class="sky"></div>
+      <div class="info">佐藤 漁労長（72）</div>
+      <div class="subs">
+        ${file?.id === "learn" ? `<div class="l2 ${hl(0)}" style="font-size:20px;color:#fff"><ruby>浜<rt>はま</rt></ruby>で<ruby>網<rt>あみ</rt></ruby>を<ruby>揚<rt>あ</rt></ruby>げるんだ</div><div class="${hl(1)}" style="color:#c8e0ff;font-size:12px">hama de ami o ageru nda</div><div class="l1 ${hl(2)}" style="font-size:15px">在海滩上收网</div>` : h`
+        ${tr >= 0 ? `<div class="l1 ${hl(tr)}">在海滩上收网</div>` : ""}
+        ${og >= 0 ? `<div class="l2 ${hl(og)}">浜で網を<ruby>揚<rt>あ</rt></ruby>げるんだ</div>` : ""}`}
+      </div></div>
+    <div class="timebar"><button class="btn sm ghost">▶</button><div class="tl"><i></i></div><span class="dim">12:41 / 49:12</span></div>
+    <div class="row" style="margin-top:10px"><button class="btn pri">导出这个文件</button><span class="hint">预览就是导出的样子（同一套排版）</span></div></div>`;
+}
+function fileEd(f) {
+  const L = f.layers[S.layer] ?? f.layers[0];
+  return h`<div class="oed">
+    <div class="col" style="gap:12px">
+      <div class="card"><div class="row" style="margin-bottom:12px"><h2 style="font-size:16px">${f.name}</h2>${sw(f.out, `data-fout="${f.id}"`)}<span class="dim">${f.out ? "输出" : "不输出"}</span><span class="sp"></span><button class="btn sm">复制</button><button class="btn sm ghost">删除</button></div>
+        <div class="kv">
+          <span class="lbl">格式</span>${seg(["ASS", "SRT"], f.fmt)}
+          <span class="lbl">文件名</span><div class="col" style="gap:3px"><input class="inp" value="${f.fn}"><span class="hint">→ 海辺の暮らし_第3集.${f.id === "learn" ? "learn" : "zh-Hans"}.${f.fmt.toLowerCase()}</span></div>
+        </div></div>
+      <div class="card"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">图层</h3><span class="hint">从上到下 = 画面中从上到下，拖动排序</span></div>
+        <div class="stack">${f.layers.map((l, i) => h`<div class="lay ${i === S.layer ? "sel" : ""}">
+          <div class="lh" data-layer="${i}"><span class="grip">⋮⋮</span><b style="font-weight:500">${l.role}</b><span class="dim">${l.lang}</span>
+            <span class="chip">${STYLES[l.style].label}</span>${l.ann ? `<span class="chip">${l.ann}</span>` : ""}<span class="sp"></span>${seg(l.role === "原文" ? ["开", "自动", "关"] : ["开", "关"], l.show)}</div>
+          ${i === S.layer ? h`<div class="lb"><div class="kv">
+            <span class="lbl">内容</span><div class="row">${seg(["译文", "原文", "整行转写"], l.role)}${l.role === "译文" ? '<select class="inp" style="min-width:110px"><option>简体中文</option></select>' : ""}</div>
+            <span class="lbl">样式</span><div class="row"><select class="inp">${Object.entries(STYLES).map(([k, s]) => `<option ${k === l.style ? "selected" : ""}>${s.label}（${k}）</option>`).join("")}</select><span class="link" data-out="s:${l.style}">编辑这个样式 →</span></div>
+            <span class="lbl">每行字数</span><div class="row"><input type="range" value="0" max="60"><span class="dim">语言默认</span></div>
+            ${l.role === "原文" ? h`<span class="lbl">注音</span><div class="row">${seg(["无", "振假名"], l.ann ? "振假名" : "无")}${l.ann ? seg(["全部", "难读", "专有名词", "首次"], l.ann.includes("难读") ? "难读" : "全部") : ""}</div>
+              <span class="lbl"></span><details><summary class="hint" style="cursor:pointer">注音细节（文字、大小、颜色、SRT 写法、已会的词）</summary><div class="hint" style="padding:6px 0">…</div></details>` : ""}
+            ${l.role === "原文" ? h`<span class="lbl">显示</span><span class="hint">自动 = 画面上已经有原文硬字幕时不重复显示</span>` : ""}
+          </div></div>` : ""}</div>`)}
+        </div>
+        <div class="row" style="margin-top:8px"><button class="btn sm">＋ 图层</button></div></div>
+      <div class="card"><h3>排版</h3><div class="kv">
+        <span class="lbl">最多行数</span>${seg(["1", "2", "3"], "2")}
+        <span class="lbl">避开硬字幕</span><label class="row"><input type="checkbox" checked> 画面下方有字时字幕挪到上面</label>
+        <span class="lbl">同时出现</span><div class="row">${seg(["分开显示", "合成一屏"], "分开显示")}<span class="hint">几条几乎同时开始时</span></div>
+        <span class="lbl">说明文字</span><div class="row wrap">${seg(["贴原文旁", "顶部", "不显示"], "贴原文旁")}${f.fmt === "ASS" ? h`<span class="dim">样式</span><select class="inp" style="min-width:120px">${Object.entries(STYLES).map(([k, s]) => `<option ${k === f.info ? "selected" : ""}>${s.label}</option>`).join("")}</select><span class="link" data-out="s:${f.info}">编辑 →</span>` : ""}</div>
+        <span class="lbl"></span><span class="hint">人名条、地名这些说明类字幕用的样式，原来固定是 info，界面上改不了。</span>
+      </div></div>
+    </div>
+    ${preview(f)}
+  </div>
+  ${note("样式不再在图层下面直接改（原来改了会“影响所有用这个样式的图层”，容易误伤），图层这里只是选用哪个样式；要改样式点“编辑这个样式”，或者在左边的样式清单里改。预览里虚线框标出正在改的图层。")}`;
+}
+function broadcastEd() {
+  return h`<div class="oed"><div class="card"><div class="row" style="margin-bottom:12px"><h2 style="font-size:16px">广播字幕原样</h2>${sw(true)}<span class="dim">输出</span></div>
+    <div class="hint" style="margin-bottom:10px">字幕来自电视广播（ARIB）时才有：日语原文，位置、字号、颜色、半透明底色、振假名照搬电视上的样子，时间按字幕对时的偏移挪过。</div>
+    <div class="kv"><span class="lbl">文件名</span><span class="muted">海辺の暮らし_第3集.ja-broadcast.ass</span>
+      <span class="lbl">字体</span><select class="inp"><option>自动（圆体 > 等宽日文字体）</option><option>BIZ UDGothic</option></select></div></div>
+    ${preview({ layers: [{ role: "原文" }] })}</div>
+    ${note("原来“广播字幕原样”在「流程 › 输出视频」表里当一行、开关又叫“输出文件”，在「图层样式」里却没有。现在和其它字幕文件并列。视频没有广播字幕时这一项变灰并写明原因。")}`;
+}
+function videoEd(k) {
+  const outs = [...FILES.filter((f) => f.out), { id: "broadcast", name: "广播字幕原样", fmt: "ASS" }];
+  const mux = k === "mux";
+  return h`<div class="oed"><div class="col" style="gap:12px"><div class="card">
+    <div class="row" style="margin-bottom:12px"><h2 style="font-size:16px">${mux ? "封装 MKV" : "压制硬字幕"}</h2><span class="sp"></span><button class="btn">现在${mux ? "封装" : "压制"}</button></div>
+    <div class="kv">
+      <span class="lbl">运行完自动</span><div class="row">${sw(S.auto === k, `data-auto="${k}"`)}<span class="hint">${mux ? "字幕轨 + 用到的字体放进 MKV，不重新编码，几秒完成" : "字幕画进画面，任何播放器都能看，要重新编码，比较慢"}</span></div>
+      <span class="lbl">输出到</span><span class="muted">海辺の暮らし_第3集.${mux ? "sub.mkv" : "hardsub.mp4"}</span>
+    </div></div>
+    <div class="card"><h3>${mux ? "放进哪些字幕" : "压哪一个"}</h3>
+      <table class="tb"><thead><tr><th>${mux ? "放进 MKV" : ""}</th><th>字幕文件</th>${mux ? "<th>默认轨</th>" : ""}</tr></thead><tbody>
+      ${outs.map((f, i) => h`<tr><td style="width:70px">${mux ? `<input type="checkbox" checked>` : `<input type="radio" name="burn" ${i === 0 ? "checked" : ""}>`}</td><td>${f.name} <span class="dim">· ${f.fmt}</span></td>${mux ? `<td><input type="radio" name="def" ${i === 0 ? "checked" : ""}></td>` : ""}</tr>`)}
+      </tbody></table>
+      <div class="hint" style="margin-top:6px">只列出要输出的字幕文件；不输出的文件在左边打开开关后才会出现在这里。</div></div>
+    <div class="card"><h3>${mux ? "封装选项" : "编码"}</h3><div class="kv">
+      ${mux ? h`<span class="lbl">字体</span><select class="inp"><option>嵌入字体（只含用到的字）</option><option>嵌入完整字体</option><option>不嵌入</option></select>
+        <span class="lbl">原有字幕轨</span><label class="row"><input type="checkbox" checked> 保留</label>`
+      : h`<span class="lbl">编码</span><select class="inp"><option>自动（和原片同一种编码，先试显卡）</option></select>
+        <span class="lbl">画质</span><div class="row"><input type="range" min="14" max="32" value="20"><span class="dim">20 · 越小越清晰</span></div>
+        <span class="lbl">尺寸</span><select class="inp"><option>原尺寸</option><option>1080p</option><option>720p</option></select>`}
+    </div></div></div>
+    ${preview(FILES[0])}</div>
+    ${note("原来是一个“运行完自动：不输出 / 封装 / 压制”三选一，加一张表的封装列、默认轨列、压制列——两套开关管同一件事，选了“不输出”表还能勾。现在封装、压制各是一项，“运行完自动”是各自的开关（后端现在只支持一种，打开一个会关掉另一个；要都支持只要把 mode 改成列表）。")}`;
+}
+function styleItem(k) {
+  const st = STYLES[k], n = usedBy(k).length;
+  return h`<div class="oi ${S.out === "s:" + k ? "sel" : ""}" data-out="s:${k}">
+    <span class="swatch" style="background:#222;color:${st.color};text-shadow:0 0 2px ${st.outline}">字</span>
+    <div class="t">${st.label}${k === S.fallback ? ' <span class="chip" style="font-size:10.5px;padding:0 5px">兜底</span>' : ""}${st.mod ? ' <span style="color:var(--acc2);font-size:10px">●</span>' : ""}
+      <small>${st.font} ${st.size}${n ? ` · 用在 ${n} 处` : ""}</small></div></div>`;
+}
+function styleEd(k, used, tpl) {
+  const st = STYLES[k], fb = k === S.fallback, fac = FACTORY[st.base];
+  return h`<div class="oed"><div class="col" style="gap:12px"><div class="card">
+    <div class="row" style="margin-bottom:12px"><h2 style="font-size:16px">样式：${st.label}</h2>
+      ${fb ? '<span class="chip">兜底样式</span>' : ""}<span class="sp"></span>
+      <button class="btn sm" data-copystyle="1">复制</button>
+      ${fb ? '<button class="btn sm ghost" disabled title="图层找不到样式时用它。先把别的样式设成兜底，才能删这个">删除</button>'
+        : `<button class="btn sm ghost" data-delstyle="${k}">删除</button>`}</div>
+    <div class="kv">
+      <span class="lbl">名字</span><div class="col" style="gap:3px"><input class="inp" value="${st.label}" style="width:200px">
+        <span class="hint">就是 ASS 里的样式名，可以用中文（不能有逗号）。改名时，用它的图层、说明文字一起改。</span></div>
+      <span class="lbl">来自</span><div class="row wrap">${fac ? `<span class="muted">出厂样式「${fac.label}」${st.base !== k || st.label !== fac.label ? "（复制后改过名）" : ""}</span>` : '<span class="muted">自己新建</span>'}</div>
+      <span class="lbl ${st.mod && !tpl ? "mod" : ""}">字体</span><input class="inp" value="${st.font}">
+      <span class="lbl ${st.mod && !tpl ? "mod" : ""}">字号</span><div class="row"><input type="range" min="14" max="96" value="${st.size}"><span class="dim">${st.size}</span>
+        ${st.mod && !tpl ? '<span class="chip tpl">模板：38</span><button class="btn sm ghost" title="这一项恢复成模板的值">↺</button>' : ""}</div>
+      <span class="lbl">文字 / 描边</span><div class="row"><input type="color" value="${st.color.toLowerCase()}"><input type="color" value="${st.outline.toLowerCase()}"><input type="range" min="0" max="8" step="0.2" value="${st.ow}"><span class="dim">${st.ow}</span>
+        <label class="row dim"><input type="checkbox"> 粗</label><label class="row dim"><input type="checkbox"> 斜</label></div>
+      <span class="lbl">阴影</span><div class="row"><input type="range" min="0" max="6" step="0.5" value="1"><span class="dim">1</span><span class="hint">配置里一直有，原来界面上改不了</span></div>
+      <span class="lbl">底色框</span><div class="row"><label class="row dim"><input type="checkbox"> 文字后面垫半透明底色</label><input type="color" value="#000000"><span class="dim">60%</span><span class="chip warn">要改内核</span></div>
+      <span class="lbl">字间距</span><div class="row"><input type="range" min="-2" max="10" value="0"><span class="dim">0</span><span class="chip warn">要改内核</span></div>
+    </div>
+    <div class="row wrap" style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line2)">
+      <span class="dim">恢复：</span>
+      <button class="btn sm" ${tpl ? "disabled" : ""}>恢复成模板里的样子</button>
+      <button class="btn sm" ${fac ? "" : 'disabled title="自己新建的样式没有出厂值"'}>恢复出厂${fac ? `（${fac.label}）` : ""}</button>
+      ${fb ? "" : '<span class="sp"></span><button class="btn sm ghost" data-setfb="' + k + '">设为兜底样式</button>'}
+    </div></div>
+    <div class="card"><h3>用在 ${used.length} 处 <span class="dim" style="font-weight:400">改这里，这些地方一起变</span></h3>
+      <div class="usedby">${used.length ? used.map((u) => `<div>${u}<span class="sp"></span><span class="link">去看 →</span></div>`).join("") : '<div class="dim">没有地方在用。可以删掉，以后要用再从出厂样式加回来。</div>'}
+      ${fb ? '<div style="color:var(--tx2)">兜底：图层引用的样式不存在时用它</div>' : ""}</div></div></div>
+    ${preview(FILES[0])}</div>
+    ${note("样式有了自己的清单：长什么样、用在哪（图层、说明文字都算）、改名、复制、删除。软件自带一套只读的出厂样式，永远在——这一集的样式改乱了、删掉了，都能“恢复出厂”或“从出厂样式添加”拿回来。“恢复成模板”是回到作品默认设置 / 预设里的样子，两者不一样：模板是你自己调过的，出厂是软件自带的。")}`;
+}
+function cleanEd() {
+  return h`<div class="card" style="max-width:640px"><h2 style="font-size:16px;margin-bottom:12px">文字清理</h2><div class="kv">
+    <span class="lbl">去掉的符号</span><div class="col" style="gap:3px"><input class="inp" value="➡"><span class="hint">原文、译文里出现时去掉，空格分隔。对所有字幕文件生效。</span></div></div></div>
+    ${note("“去掉的符号”对所有方案生效，原来却放在单个方案的表单里，看着像是这个方案自己的。")}`;
+}
+
+// ---- 资料 ----
+function kbView(series) {
+  const terms = [
+    ["揚げる", "あげる", "收网", "方言", "s"], ["漁労長", "ぎょろうちょう", "渔捞长", "其他", "s"], ["佐藤 健一", "さとう けんいち", "佐藤健一", "人名", "s"],
+    ["厚岸", "あっけし", "厚岸", "地名", "s"], ["しばれる", "", "冻得够呛", "方言", "e"], ["浜の母さん", "はまのかあさん", "海边的阿妈们", "团体", "e"],
+  ];
+  const shown = terms.filter((t) => S.termScope === "all" || t[4] === S.termScope);
+  return h`<div class="notes-grid">
+    <div class="col" style="gap:12px">
+      <div class="card"><h3>节目说明 <span class="dim" style="font-weight:400">会告诉大模型</span></h3>
+        <textarea class="inp" rows="4">北海道渔村纪录片，大量老渔民方言采访。</textarea>
+        ${series ? "" : '<div class="row" style="margin-top:6px"><span class="scope s">作品</span><span class="hint">这一集没单独写，用的是作品的说明</span><span class="sp"></span><button class="btn sm">这一集单独写</button></div>'}
+      </div>
+      ${series ? "" : h`<div class="card"><h3>本集概要 <span class="dim" style="font-weight:400">大模型生成，翻译时参考</span></h3>
+        <div class="muted">秋鲑季开始，佐藤漁労長带着年轻渔民第一次出海；浜の母さん们在岸上分拣……</div></div>`}
+    </div>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <div class="seg"><button class="${S.noteTab === "terms" ? "on" : ""}" data-ntab="terms">术语表 98</button><button class="${S.noteTab === "read" ? "on" : ""}" data-ntab="read">读音词典 14</button></div>
+        ${series ? "" : h`<span class="dim">范围</span><div class="seg">
+          <button class="${S.termScope === "all" ? "on" : ""}" data-scope="all">全部</button><button class="${S.termScope === "s" ? "on" : ""}" data-scope="s">作品共享</button><button class="${S.termScope === "e" ? "on" : ""}" data-scope="e">本集新增</button></div>`}
+        <span class="sp"></span><input class="inp" placeholder="搜索…" style="width:140px"><button class="btn sm">＋ 新增</button></div>
+      ${S.noteTab === "terms" ? h`<table class="tb"><thead><tr><th>原文</th><th>读音</th><th>译法</th><th>类型</th><th>范围</th></tr></thead><tbody>
+        ${shown.map((t) => h`<tr><td class="ja">${t[0]}</td><td class="ja dim">${t[1]}</td><td>${t[2]}</td><td><span class="chip">${t[3]}</span></td>
+          <td><span class="scope ${t[4]}">${t[4] === "s" ? "作品" : "本集"}</span></td></tr>`)}</tbody></table>`
+      : h`<table class="tb"><thead><tr><th>写法</th><th>读音</th><th>语言</th><th>范围</th></tr></thead><tbody>
+        <tr><td class="ja">厚岸</td><td class="ja">あっけし</td><td>日语</td><td><span class="scope s">作品</span></td></tr>
+        <tr><td class="ja">日本海</td><td class="ja">にほんかい</td><td>日语</td><td><span class="scope g">全局</span></td></tr>
+        <tr><td>长发</td><td>cháng fà</td><td>中文</td><td><span class="scope g">全局</span></td></tr></tbody></table>
+        <div class="hint" style="margin-top:6px">注音时：读音词典 > 术语表读音 > 分词器。审校时点汉字改读音，也会存到这里。</div>`}
+    </div>
+  </div>
+  ${note(series ? "作品页的这一页就是作品共享的那一份。" : "「术语」改名「资料」：给大模型和注音用的背景资料都在这里——节目说明、本集概要、术语表、读音词典。原来这一页还有“所属作品”（自由输入，和流程页的下拉选择不一样）和第二个节目说明输入框，各自保存，现在都只有一处。每条记录用颜色标出范围：本集 / 作品 / 全局。")}`;
+}
+
+function reviewView() {
+  return h`<div class="card" style="padding:40px;text-align:center"><div style="font-size:15px;margin-bottom:6px">审校页结构不变</div>
+    <div class="hint">播放器 + 时间轴 + 字幕列表 + 详情，这一页已经是对的。只是挪进一集的标签页里，顶上有同一个运行条。</div></div>`;
+}
+
+// ---------------- 任务 / 设置 ----------------
+function queue() {
+  return h`<div class="page"><div class="row" style="margin-bottom:12px"><h2>任务</h2><span class="dim">正在运行和排队的</span><span class="sp"></span><button class="btn">❚❚ 暂停队列</button><button class="btn">清除已完成</button><button class="btn pri">批量加入…</button></div>
+    ${note("「队列」改叫「任务」：不管是在一集里点“运行”，还是批量加入的，都在这里排队、看进度。批量加入用和“新建项目”同一个对话框（选作品 / 语言 / 预设），不再是页面上一块单独的表单。")}
+    <div class="card"><table class="tb"><thead><tr><th>#</th><th>集</th><th>状态</th><th>用时</th><th></th></tr></thead><tbody>
+      <tr><td class="dim">1</td><td><b style="font-weight:500">海辺の暮らし › 第4集</b></td><td><span class="chip acc">运行中 · 语音识别 42%</span></td><td class="dim">2 分 10 秒</td><td style="text-align:right"><button class="btn sm">取消</button> <button class="btn sm" data-go="ep:process">打开</button></td></tr>
+      <tr><td class="dim">2</td><td><b style="font-weight:500">ゆるキャン△ S3 › #02</b></td><td><span class="chip">排队</span></td><td></td><td style="text-align:right"><button class="btn sm ghost">▲</button><button class="btn sm ghost">移除</button></td></tr>
+      <tr><td class="dim">3</td><td><b style="font-weight:500">海辺の暮らし › 第1集</b></td><td><span class="chip ok">完成</span></td><td class="dim">14 分 2 秒</td><td style="text-align:right"><button class="btn sm">打开</button></td></tr>
+    </tbody></table></div></div>`;
+}
+function settings() {
+  return h`<div class="page"><div class="row" style="margin-bottom:12px"><h2>设置</h2><span class="dim">所有项目共用</span></div>
+    ${note("设置页只放“跟这台电脑 / 这个人有关”的：接口、用途分配、预设、本机组件、下载。“用途”补上云端语音识别。全局配置里原来那些识别、输出参数（实时影响所有旧项目）迁移成一个“我的默认”预设，以后只在新建时复制，不再实时生效。")}
+    <div class="grid" style="display:grid;grid-template-columns:1.2fr 1fr;gap:14px;align-items:start">
+      <div class="card"><div class="row" style="margin-bottom:10px"><h3 style="margin:0">接口</h3><span class="sp"></span><button class="btn sm">＋ 添加</button></div>
+        ${[["deepseek", "deepseek-chat", "https://api.deepseek.com/v1"], ["bailian", "qwen-max · 视觉 qwen-vl-max", "https://dashscope.aliyuncs.com/…"], ["openrouter", "—", "https://openrouter.ai/api/v1"]].map(([n, m, u]) => h`
+          <div class="row" style="padding:8px 10px;background:var(--bg2);border-radius:7px;margin-bottom:6px"><b style="font-weight:500;width:90px">${n}</b><span class="muted">${m}</span><span class="dim" style="font-size:11.5px">${u}</span><span class="sp"></span><span class="chip ok">Key 已设置</span><button class="btn sm ghost">编辑</button></div>`)}
+      </div>
+      <div class="card"><h3>用途</h3><div class="kv">
+        <span class="lbl">翻译</span><select class="inp"><option>deepseek</option></select>
+        <span class="lbl">画面字复核</span><select class="inp"><option>bailian（视觉模型）</option></select>
+        <span class="lbl">云端语音识别</span><select class="inp"><option>openrouter</option></select>
+      </div><div class="hint" style="margin-top:8px">一集里可以单独换（在对应步骤里），不换就用这里的。</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="grid" style="display:grid;grid-template-columns:1.2fr 1fr;gap:14px;align-items:start">
+      <div class="card"><div class="row" style="margin-bottom:10px"><h3 style="margin:0">预设</h3><span class="hint">新建项目、新建作品时选；建好后复制一份，之后各自独立</span></div>
+        <div class="dim" style="font-size:11.5px;margin:4px 0">我的</div>
+        ${[["我的默认", "从旧的全局配置迁移过来", true], ["NHK 纪录片 4K", "从「深海の巨大生物」存的", false]].map(([n, d, def]) => h`
+          <div class="row" style="padding:7px 10px;background:var(--bg2);border-radius:7px;margin-bottom:6px"><b style="font-weight:500">${n}</b>${def ? '<span class="chip acc">新项目默认用它</span>' : ""}<span class="dim" style="font-size:11.5px">${d}</span><span class="sp"></span>
+            <button class="btn sm" data-editpreset="1">编辑</button>${def ? "" : '<button class="btn sm ghost">设为默认</button>'}<button class="btn sm ghost">删除</button></div>`)}
+        <div class="dim" style="font-size:11.5px;margin:10px 0 4px">内置（只读，随软件更新）</div>
+        ${["纪录片 / 采访", "动画", "综艺", "讲座 / 播客", "音乐 MV / 学语言"].map((n) => h`
+          <div class="row" style="padding:5px 10px;border-radius:7px"><span class="muted">${n}</span><span class="sp"></span><button class="btn sm ghost">复制成我的</button></div>`)}
+      </div>
+      <div class="card"><h3>出厂样式 <span class="dim" style="font-weight:400">只读</span></h3>
+        <div class="usedby">${Object.entries(FACTORY).map(([k, f]) => `<div><span class="swatch" style="width:18px;height:18px;border-radius:4px;display:grid;place-items:center;font-size:11px;font-weight:700;background:#222;color:${f.color};text-shadow:0 0 2px ${f.outline}">字</span>${f.label}<span class="dim">${f.font} ${f.size}</span></div>`).join("")}</div>
+        <div class="hint" style="margin-top:8px">软件自带，改不了也删不掉。每一集、每个预设的样式都是从这里复制出去的；改乱了可以在样式上点“恢复出厂”，删掉了可以“从出厂样式添加”。</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="card"><h3>本机组件</h3><div class="hint">（不变：显卡加速、模型下载…）</div></div></div>`;
+}
+
+// ---------------- 设计说明 ----------------
+function doc() {
+  return h`<div class="doc">
+  <h1>界面 v2：问题和调整方案</h1>
+  <div class="dim">原型只是界面结构，不涉及内核；点上面紫色工具条切换页面。黄色虚线框写的是每处改了什么、为什么。</div>
+
+  <h2>一、现在的问题</h2>
+  <ol>
+    <li><b>导航把三类东西摆在同一层。</b>应用级（项目、队列、设置）、一集的工作（流程、审校）、一集的配置（图层样式、术语）并排；没打开项目时一半是灰的。</li>
+    <li><b>同一件事分在好几处。</b>
+      <ul>
+        <li>输出：哪些字幕文件要输出——「图层样式」的“导出时启用”和「流程 › 输出视频」表的“输出文件”是<b>同一个开关</b>；导出 / 封装 / 压制按钮两页各一套；“广播字幕原样”只在流程页；“去掉的符号”对所有方案生效，却放在单个方案里。</li>
+        <li>所属作品、节目说明：「流程」和「术语」各一个输入框，保存方式不同（术语页的作品还是自由输入，别处是下拉）。</li>
+        <li>作品默认设置：「流程」「图层样式」各有一个“正在编辑：这一集 / 作品”切换——同一张表单轮流改两份文件；图层页切到作品后还是自动保存，直接写进作品。</li>
+      </ul></li>
+    <li><b>「流程」页什么都有，又是平铺。</b>运行按钮、做到、重做、步骤图、日志、四张配置卡片、作品覆盖按钮、融合统计都在一页，上下滚着找。步骤图和配置是两套东西：看到“画面字识别”要重做，得往下翻找它的设置；“画面字复核”在图上是独立一步，在配置里却是画面字下面的一个选项。</li>
+    <li><b>「图层样式」三层概念挤在一列。</b>方案（就是一个输出文件）→ 图层 → 样式。方案用下拉框选；样式没有自己的地方，只能在某个图层下面改（改了影响所有用它的图层），新建要在浏览器弹窗里输英文名，不能改名、删除，看不到谁在用。</li>
+    <li><b>保存方式不一致。</b>流程、术语、设置要点“保存”，图层样式 0.5 秒自动保存（叫“已应用”）；运行前必须先保存，运行按钮灰着写“先保存配置”。</li>
+    <li><b>用词不统一。</b>方案 / 输出方案 / 输出文件 / 导出时启用；步骤“融合 + 翻译”和“规则融合”；“VLM 复核”和“视觉复核”；“做到”；“已应用 / 待应用”和“已保存 / 未保存”；“运行完自动 不输出 / 封装 / 压制”和表格里的封装列、压制列是两套开关。</li>
+    <li><b>作品不是一等公民。</b>没有地方看“这部作品有几集、默认设置是什么、共享了哪些术语”，作品只在向导、流程、术语、队列的选择框里出现。</li>
+  </ol>
+
+  <h2>二、新的结构</h2>
+  <div class="ia">
+    <div><h4>左栏：只放应用级</h4>库 · 任务 · 设置。不会再有灰按钮。</div>
+    <div><h4>库 → 作品 → 一集</h4>库按作品分组列出各集；作品页有 各集 / 默认设置 / 节目说明与术语；打开一集后用页内标签：处理 · 审校 · 输出 · 资料。顶部面包屑。</div>
+    <div><h4>运行条常驻一集的页头</h4>▶ 运行，旁边写“下次运行会重做：…”。运行到、强制重做、不用缓存、清掉修改收进 ▾。</div>
+    <div><h4>处理 = 步骤列表 + 详情</h4>原来的步骤图竖排成左栏，同时就是设置的导航。点一步，右边是它的设置、状态、上次日志。来源类步骤的开关就在列表上。</div>
+    <div><h4>输出 = 清单 + 编辑 + 预览</h4>左边三组：字幕文件（每个一个“输出”开关，包括广播字幕原样）、视频（封装 MKV、压制硬字幕）、样式（有自己的清单）。右边编辑，最右实时预览。</div>
+    <div><h4>资料</h4>节目说明、本集概要、术语表、读音词典。每条标范围：本集 / 作品 / 全局。</div>
+  </div>
+  <ul>
+    <li><b>作品默认设置只在作品页改</b>（整页变紫）。一集的页头只显示“和作品默认设置不同 N 项”，点开逐项选“用作品的 / 存到作品”；设置项旁边直接标出作品的值。</li>
+    <li><b>所有设置自动保存</b>（Ctrl+Z 撤销），和图层页现在的做法一样；运行条告诉你哪些步骤会因此重做。运行开始时读好配置，运行中改的下次生效（现在就是这样）。</li>
+    <li>设置页的“用途”补上“云端语音识别”，和翻译、画面字复核放在一起。</li>
+  </ul>
+
+  <h2>三、旧位置 → 新位置</h2>
+  <table><thead><tr><th>现在在</th><th>以后在</th></tr></thead><tbody>
+    <tr><td>流程 › 步骤图、运行、做到、重做、日志</td><td>一集页头运行条；处理 › 左栏步骤 + 详情里的“上次运行”</td></tr>
+    <tr><td>流程 › 项目与语言（源语言、翻译成、所属作品）</td><td>处理 › 语言与作品</td></tr>
+    <tr><td>流程 › 项目与语言 › 节目说明；术语 › 作品卡片</td><td>资料 › 节目说明（只此一处）</td></tr>
+    <tr><td>流程 › 大模型</td><td>处理 › 整理与翻译</td></tr>
+    <tr><td>流程 › 识别来源（三列）</td><td>处理 › 读取字幕 / 语音识别 / 画面字识别 / 画面字复核（各一步）</td></tr>
+    <tr><td>流程 › 输出视频（表 + 运行完自动 + 封装 / 压制选项）</td><td>输出 › 视频 › 封装 MKV / 压制硬字幕</td></tr>
+    <tr><td>流程 › 侧栏 融合结果</td><td>处理 › 合并来源 › 结果</td></tr>
+    <tr><td>流程、图层样式 › “正在编辑：这一集 / 作品” + 覆盖按钮</td><td>作品页 › 默认设置；一集页头 “不同 N 项” 对话框</td></tr>
+    <tr><td>图层样式 › 输出方案 + 图层 + 注音</td><td>输出 › 字幕文件 › 某个文件</td></tr>
+    <tr><td>图层样式 › 图层下面的“样式「x」”</td><td>输出 › 样式 › 某个样式</td></tr>
+    <tr><td>图层样式 › 去掉的符号</td><td>输出 › 通用 › 文字清理</td></tr>
+    <tr><td>术语 › 术语表、读音词典、本集概要</td><td>资料</td></tr>
+    <tr><td>项目</td><td>库</td></tr>
+    <tr><td>队列</td><td>任务</td></tr>
+  </tbody></table>
+
+  <h2>四、用词</h2>
+  <table><thead><tr><th>现在</th><th>统一成</th><th>说明</th></tr></thead><tbody>
+    <tr><td>方案、输出方案、profile</td><td>字幕文件</td><td>一个方案就是输出的一个文件；配置文件里的 <code>render.profiles</code> 不用改</td></tr>
+    <tr><td>导出时启用、输出文件（列）</td><td>输出（开关）</td><td>只在一个地方出现</td></tr>
+    <tr><td>流程</td><td>处理</td><td>“流程”听起来像只看不改</td></tr>
+    <tr><td>自带字幕（步骤）</td><td>读取字幕</td><td>步骤名用动作</td></tr>
+    <tr><td>VLM 复核、视觉复核</td><td>画面字复核</td><td>说它复核的是什么，用什么在设置里写</td></tr>
+    <tr><td>规则融合</td><td>合并来源</td><td></td></tr>
+    <tr><td>融合 + 翻译</td><td>整理与翻译</td><td>和上一步分清楚：这一步是大模型</td></tr>
+    <tr><td>输出字幕文件（步骤）</td><td>生成字幕文件</td><td>和“输出”页区分</td></tr>
+    <tr><td>做到</td><td>运行到</td><td></td></tr>
+    <tr><td>重做</td><td>强制重做</td><td>平时不用，改了设置会自动重做</td></tr>
+    <tr><td>已应用 / 待应用、已保存 / 未保存</td><td>已自动保存</td><td>只有一种保存方式</td></tr>
+    <tr><td>术语（页）</td><td>资料</td><td>里面不只有术语</td></tr>
+    <tr><td>所属作品的默认设置</td><td>作品默认设置</td><td></td></tr>
+  </tbody></table>
+
+  <h2>五、默认设置：每一集只有一个模板</h2>
+  <p>现在“默认”有四种来源，规则还不一样：</p>
+  <table><thead><tr><th>来源</th><th>存在哪</th><th>对已有的集</th></tr></thead><tbody>
+    <tr><td>内置默认</td><td>程序里</td><td>一直生效（程序更新改了默认值，旧项目跟着变）</td></tr>
+    <tr><td>全局配置</td><td>全局 config.toml</td><td><b>一直生效</b>：改了会让旧项目下次运行时重做；识别、输出参数在界面上还看不到、改不了</td></tr>
+    <tr><td>内容预设</td><td>写死在 presets.py</td><td>建项目时复制，只复制预设里写了的几项，其余仍走全局 / 内置</td></tr>
+    <tr><td>作品默认设置</td><td>series.toml</td><td>建这一集时整份复制，之后各自独立</td></tr>
+  </tbody></table>
+  <p>所以“恢复默认”说不清恢复成什么，界面也没法告诉你一个值是从哪来的。改成：</p>
+  <ul>
+    <li><b>模板</b> = 这一集建出来时用的那一份：属于作品的是作品默认设置，不属于作品的是建项目时选的预设（project.toml 里已经记着 <code>project.preset</code>）。</li>
+    <li><b>预设和作品默认设置是同一种东西。</b>设置里加「预设」：内置预设只读，可以“复制成我的”；自己的预设能新建、编辑、删除，能指定“新项目默认用它”。任何一集都能“存成预设”。新建作品时选一个预设当它的默认设置。</li>
+    <li><b>全局配置只留和这台电脑有关的</b>（接口、用途、显卡、下载镜像）。现在写在全局配置里的识别、输出参数迁移成一个“我的默认”预设，以后只在新建时复制，不再实时生效。内置默认仍然实时生效（只随程序升级变），更新说明里列出改了哪些默认值。</li>
+    <li><b>恢复默认 = 恢复成模板</b>，三档：单项（值旁边“模板：3”和 ↺）、一步（步骤右上角“这一步恢复成模板”）、整份（页头“和模板不同 N 项”）。都先备份。</li>
+    <li><b>改了模板可以选择同步给已有的集。</b>只同步这次改的项；自己单独改过那一项的集默认不勾。默认还是不同步。</li>
+    <li>每次运行前留一份设置快照，可以“回到上次运行时的设置”（自动保存以后，Ctrl+Z 只管这次打开期间）。</li>
+  </ul>
+
+  <h2>六、样式管理</h2>
+  <p>现在的情况（对着内核查过）：</p>
+  <ul>
+    <li><b>内置的 5 个样式删不掉</b>：读配置时先放进内置的 main、sub、orig_main、info、translit，再按名字把项目写的盖上去（config.py <code>_merge_styles</code>），删了下次又回来。自己新建的删得掉，但界面没有按钮。</li>
+    <li><b>有的样式是暗中在用的</b>：说明文字用每个字幕文件的 <code>info_style</code>（默认 info，界面改不了）；图层引用的样式不存在时退回 main；原文合并字幕用 orig_main。只数图层会算漏。</li>
+    <li>样式名就是引用的钥匙，不能改名；新建要在浏览器弹窗里输英文名。</li>
+    <li>阴影配置里有、界面没有；底色框、字间距配置里也没有。</li>
+  </ul>
+  <p>改成：</p>
+  <ul>
+    <li><b>出厂样式</b>：软件自带一套，只读，改不了删不掉（就是现在代码里的 DEFAULT_STYLES）。每个预设、每一集的样式都是从这里复制出去的一整套，可以随便改、改名、删。每个样式记着它来自哪个出厂样式（新加一个 <code>base</code> 字段）。</li>
+    <li><b>两种恢复</b>：“恢复成模板里的样子”（作品 / 预设里你调过的）和“恢复出厂”（软件自带的）。删掉的出厂样式可以“＋ 新样式 › 从出厂样式添加”拿回来。改乱了不怕。</li>
+    <li><b>用在哪算全</b>：图层 + 说明文字；兜底样式单独标出，不能删，但可以把别的样式设成兜底。没人用的样式排在“没在用”下面，可以一键清理。</li>
+    <li><b>删除有人用的样式</b>：不是按钮变灰，而是让你选一个替代样式，一次把引用换掉再删。</li>
+    <li><b>改名</b>：名字就是 ASS 样式名，可以用中文（不能有逗号；要拿常用播放器验证一下），改名时引用一起改。</li>
+    <li>说明文字的样式在字幕文件的“排版”里可以选；补上阴影；底色框、字间距要改内核。</li>
+  </ul>
+  <p><b>内核要改的</b>：项目里写了样式，就以项目那一整套为准，不再自动补回内置样式；兜底样式可以指定。旧项目打开时把当时合并出来的完整样式写回 project.toml（一次性迁移），和“模板是复制、不实时继承”是同一个方向。</p>
+
+  <h2>七、改的顺序（建议）</h2>
+  <ol>
+    <li><b>输出页</b>：把图层样式页和流程页的输出视频合并，样式有自己的清单（痛点最大，基本只动前端；删除内置样式、兜底样式要一起改内核的样式合并）。</li>
+    <li><b>处理页</b>：步骤列表 + 详情，替换步骤图 + 配置卡片；运行条挪到一集页头；自动保存。</li>
+    <li><b>资料页</b>：节目说明只留一处，术语、读音标范围。</li>
+    <li><b>模板</b>：预设可以自建；全局配置里的处理参数迁移成“我的默认”预设；逐项比较 / 逐项恢复 / 同步给已有的集（内核要加接口，现在的覆盖是整份的）。</li>
+    <li><b>库 + 作品页</b>：按作品分组；作品默认设置挪到作品页。</li>
+  </ol>
+  </div>`;
+}
+
+// ---------------- 对话框 ----------------
+function diffDialog() {
+  const rows = [["画面字识别 › 每秒看几帧", "4", "3"], ["整理与翻译 › 参考画面", "附截图", "不附"], ["输出 › 样式「小字」› 字号", "44", "38"]];
+  return h`<div class="modal" data-close="bg"><div class="card">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0">第3集 和模板不同的 3 项</h3><span class="chip tpl">模板：「海辺の暮らし」的默认设置</span><span class="sp"></span><button class="btn sm ghost" data-close="1">关闭</button></div>
+    <div class="hint" style="margin-bottom:10px">逐项决定用哪边的。被改掉的那份会先备份。所属作品、外挂字幕文件这类只属于这一集的项不列出。不属于作品的项目，模板就是建项目时选的预设，这里一样能用。</div>
+    <table class="tb"><thead><tr><th>设置项</th><th>这一集</th><th>模板</th><th></th></tr></thead><tbody>
+      ${rows.map(([a, b, c]) => h`<tr><td>${a}</td><td><b style="font-weight:500">${b}</b></td><td class="muted">${c}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm">↺ 恢复成模板</button> <button class="btn sm tplb">存到模板</button></td></tr>`)}
+    </tbody></table>
+    <div class="row" style="margin-top:12px"><span class="link">回到上次运行时的设置…</span><span class="sp"></span><button class="btn">全部恢复成模板</button><button class="btn tplb">全部存到模板</button></div>
+    ${note("代替原来的“用作品设置覆盖这一集 / 用这一集的设置覆盖作品”两个整份覆盖按钮：先看清差在哪，再逐项或整份决定。")}
+  </div></div>`;
+}
+
+function syncDialog() {
+  const eps = [["第1集", "还是旧值，可以同步", true], ["第2集", "还是旧值，可以同步", true], ["第3集", "“每秒看几帧”自己改过（4），默认不动", false], ["第4集", "正在运行：跑完后再同步", false]];
+  return h`<div class="modal" data-close="bg"><div class="card">
+    <h3>把模板这次的改动同步给已有的集</h3>
+    <div class="hint" style="margin-bottom:10px">这次改了：画面字识别 › 每秒看几帧 3 → 4；样式「小字」› 字号 38 → 40。只同步这 2 项，别的不动；每集同步前先备份。</div>
+    <table class="tb"><thead><tr><th></th><th>集</th><th>情况</th></tr></thead><tbody>
+      ${eps.map(([n, why, on]) => h`<tr class="${on ? "" : "off"}"><td style="width:30px"><input type="checkbox" ${on ? "checked" : ""}></td><td>${n}</td><td class="muted">${why}</td></tr>`)}
+    </tbody></table>
+    <div class="row" style="margin-top:12px"><span class="sp"></span><button class="btn" data-close="1">不同步</button><button class="btn tplb" data-close="1">同步给 2 集</button></div>
+    ${note("默认还是“复制、各自独立”，但改了模板可以选择推给已有的集：自己单独改过那一项的集默认不勾，免得把手调的值冲掉。")}
+  </div></div>`;
+}
+function savePresetDialog() {
+  return h`<div class="modal" data-close="bg"><div class="card" style="width:560px">
+    <h3>把第3集的设置存成预设</h3>
+    <div class="kv"><span class="lbl">名字</span><input class="inp" value="海辺の暮らし 风格">
+      <span class="lbl">包括</span><div class="col" style="gap:3px"><label class="row"><input type="checkbox" checked> 识别、翻译的设置</label>
+        <label class="row"><input type="checkbox" checked> 字幕文件和样式</label><label class="row"><input type="checkbox"> 语言</label></div></div>
+    <div class="hint" style="margin-top:8px">所属作品、外挂字幕文件、节目说明不会存进去。存好后在「设置 › 预设」里管理，新建项目、新建作品时可以选。</div>
+    <div class="row" style="margin-top:12px"><span class="sp"></span><button class="btn" data-close="1">取消</button><button class="btn pri" data-close="1">存成预设</button></div>
+  </div></div>`;
+}
+function delStyleDialog() {
+  const k = S.delStyle, st = STYLES[k], used = usedBy(k);
+  return h`<div class="modal" data-close="bg"><div class="card" style="width:560px">
+    <h3>删除样式「${st.label}」</h3>
+    ${used.length ? h`<div class="hint" style="margin-bottom:8px">还有 ${used.length} 处在用：</div>
+      <div class="usedby" style="margin-bottom:10px">${used.map((u) => `<div>${u}</div>`).join("")}</div>
+      <div class="kv"><span class="lbl">改用</span><select class="inp" id="repl">${Object.entries(STYLES).filter(([x]) => x !== k).map(([x, s]) => `<option value="${x}">${s.label}</option>`).join("")}</select></div>`
+    : '<div class="hint">没有地方在用，可以直接删。</div>'}
+    <div class="hint" style="margin-top:8px">${FACTORY[st.base] ? `删了以后要用，可以“＋ 新样式 › 从出厂样式添加”把「${FACTORY[st.base].label}」加回来（是出厂的样子，不是现在改过的样子）。` : "这是自己新建的样式，删了就没有了（撤销可以找回）。"}</div>
+    <div class="row" style="margin-top:12px"><span class="sp"></span><button class="btn" data-close="1">取消</button><button class="btn pri" data-delconfirm="1">${used.length ? "替换并删除" : "删除"}</button></div>
+    ${note("有地方在用时不是让删除按钮变灰，而是让你选一个替代样式，一次把引用都换掉再删。")}
+  </div></div>`;
+}
+
+// ---------------- 渲染和事件 ----------------
+function render() {
+  const m = document.getElementById("main");
+  m.innerHTML = S.view === "doc" ? doc() : S.view === "library" ? library() : S.view === "series" ? seriesPage()
+    : S.view === "queue" ? queue() : S.view === "settings" ? settings() : episode();
+  document.getElementById("modal").innerHTML = S.diff ? diffDialog() : S.sync ? syncDialog() : S.savePreset ? savePresetDialog() : S.delStyle ? delStyleDialog() : "";
+  renderNav();
+}
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-go],[data-tab],[data-step],[data-out],[data-layer],[data-fout],[data-auto],[data-runmenu],[data-diff],[data-close],[data-stab],[data-tpl],[data-scope],[data-ntab],[data-newmenu],[data-addfactory],[data-copystyle],[data-delstyle],[data-delconfirm],[data-setfb],[data-cleanstyles],[data-sync],[data-savepreset],[data-editpreset]");
+  if (!t) { if ((S.runMenu || S.newMenu) && !e.target.closest(".menu")) { S.runMenu = false; S.newMenu = false; render(); } return; }
+  const d = t.dataset;
+  if (d.close === "bg" && e.target !== t) return;  // 点在对话框里面：不关、不重画
+  if (!d.newmenu) S.newMenu = false;
+  if (d.delconfirm) {
+    const k = S.delStyle, r = document.getElementById("repl")?.value;
+    if (r) FILES.forEach((f) => { f.layers.forEach((l) => { if (l.style === k) l.style = r; }); if (f.info === k) f.info = r; });
+    delete STYLES[k];
+    S.out = "s:" + (r || S.fallback);
+    S.delStyle = null;
+  }
+  if (d.close && (d.close !== "bg" || e.target === t)) { S.diff = false; S.sync = false; S.savePreset = false; S.delStyle = null; }
+  if (d.newmenu) S.newMenu = !S.newMenu;
+  if (d.addfactory) { STYLES[d.addfactory] = { ...FACTORY[d.addfactory], base: d.addfactory }; S.out = "s:" + d.addfactory; }
+  if (d.copystyle) {
+    const src = S.out.startsWith("s:") ? S.out.slice(2) : S.fallback;
+    let n = 2; while (STYLES[src + "_" + n]) n++;
+    STYLES[src + "_" + n] = { ...STYLES[src], label: STYLES[src].label + " 副本", mod: "" };
+    S.out = "s:" + src + "_" + n;
+  }
+  if (d.delstyle) S.delStyle = d.delstyle;
+  if (d.setfb) S.fallback = d.setfb;
+  if (d.cleanstyles) Object.keys(STYLES).forEach((k) => { if (!usedBy(k).length && k !== S.fallback) delete STYLES[k]; });
+  if (d.sync) S.sync = true;
+  if (d.savepreset) S.savePreset = true;
+  if (d.go) {
+    const [v, tab] = d.go.split(":");
+    S.view = v; S.tpl = false; S.diff = false;
+    if (tab) S.tab = tab;
+    document.getElementById("main").scrollTop = 0;
+  }
+  if (d.tab) { S.tab = d.tab; document.getElementById("main").scrollTop = 0; }
+  if (d.step) { const st = STEPS.find((x) => x.id === d.step); if (st?.jump && !e.target.closest(".sw")) { S.step = d.step; } else S.step = d.step; }
+  if (d.fout) { e.stopPropagation(); const f = FILES.find((x) => x.id === d.fout); f.out = !f.out; }
+  else if (d.out) { S.out = d.out; S.layer = d.out === "f:learn" ? 0 : d.out.startsWith("f:") ? Math.min(S.layer, (FILES.find((f) => "f:" + f.id === d.out)?.layers.length ?? 1) - 1) : S.layer; }
+  if (d.layer) S.layer = Number(d.layer);
+  if (d.auto) S.auto = S.auto === d.auto ? "" : d.auto;
+  if (d.runmenu) S.runMenu = !S.runMenu;
+  if (d.diff) S.diff = true;
+  if (d.stab) S.seriesTab = d.stab;
+  if (d.tpl) { S.tpl = d.tpl === "1"; S.tplOf = "series"; S.view = "series"; S.tab = "process"; }
+  if (d.editpreset) { S.tpl = true; S.tplOf = "preset"; S.view = "series"; S.tab = "process"; }
+  if (d.scope) S.termScope = d.scope;
+  if (d.ntab) S.noteTab = d.ntab;
+  render();
+});
+document.getElementById("shownotes").addEventListener("change", (e) => document.body.classList.toggle("notes", e.target.checked));
+S.view = "doc";
+render();
+</script>
+</body>
+</html>
