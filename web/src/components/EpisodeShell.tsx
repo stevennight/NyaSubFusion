@@ -1,7 +1,9 @@
 // 打开的一集：页头（名字、语言、状态）+ 四个标签：处理 · 审校 · 输出 · 资料。
+import { useMemo } from "react";
+import { DocProvider, type ConfigDoc } from "../doc";
 import { EditorPage } from "../pages/Editor";
 import { GlossaryPage } from "../pages/Glossary";
-import { LayersPage } from "../pages/Layers";
+import { OutputPage } from "../pages/Output";
 import { PipelinePage } from "../pages/Pipeline";
 import { useStore } from "../store";
 import { langName } from "../util";
@@ -12,6 +14,11 @@ export type EpTab = "process" | "review" | "output" | "notes";
 export function EpisodeShell({ tab, setTab }: { tab: EpTab; setTab: (t: EpTab) => void }) {
   const s = useStore();
   const d = s.data;
+  // 这一集的设置：处理页、输出页编辑的就是这一份
+  const doc = useMemo<ConfigDoc | null>(() => (s.config ? {
+    kind: "episode", title: s.summary?.name ?? "", raw: s.config.project, effective: s.config.effective,
+    factory: s.config.factory?.styles ?? {}, save: (raw) => s.setConfig(raw), onError: s.setError,
+  } : null), [s.config, s.summary?.name, s.setConfig, s.setError]);
   const todo = d?.cues.filter((c) => c.review === "todo").length ?? 0;
   const stale = s.summary?.plan.filter((p) => !["done", "off", "empty"].includes(p.status)).length ?? 0;
   const files = ((s.config?.effective?.render?.profiles ?? []) as { enabled?: boolean }[]).filter((p) => p.enabled !== false).length;
@@ -38,12 +45,14 @@ export function EpisodeShell({ tab, setTab }: { tab: EpTab; setTab: (t: EpTab) =
         ))}
       </div>
       <div className={`epbody${tab === "review" ? " fill" : ""}`}>
-        <PageGuard key={tab} onBack={() => setTab("process")}>
-          {tab === "process" && <PipelinePage onReview={() => setTab("review")} />}
-          {tab === "review" && <EditorPage />}
-          {tab === "output" && <LayersPage />}
-          {tab === "notes" && <GlossaryPage />}
-        </PageGuard>
+        <DocProvider doc={doc}>
+          <PageGuard key={tab} onBack={() => setTab("process")}>
+            {tab === "process" && <PipelinePage onReview={() => setTab("review")} />}
+            {tab === "review" && <EditorPage />}
+            {tab === "output" && <OutputPage />}
+            {tab === "notes" && <GlossaryPage />}
+          </PageGuard>
+        </DocProvider>
       </div>
     </div>
   );

@@ -454,7 +454,17 @@ def create_app(token: str | None = None) -> FastAPI:
         name = cfg.project.series
         series = ({"name": name, "raw": config_mod.read_series(name),
                    "effective": config_mod.series_effective(name).model_dump(mode="json")} if name else None)
-        return {"project": raw, "effective": cfg.model_dump(mode="json"), "files": files, "series": series}
+        return {"project": raw, "effective": cfg.model_dump(mode="json"), "files": files, "series": series,
+                "factory": {"styles": {k: v.model_dump() for k, v in config_mod.DEFAULT_STYLES.items()}}}
+
+    def _owned(raw):
+        """存之前写上整套样式和格式版本（没写样式时用现在合并出来的那套）。"""
+        raw = _clean(raw or {})
+        try:
+            eff = config_mod.load(None, None, raw, upgrade=False)[0]
+        except Exception as e:
+            raise HTTPException(400, f"配置不合法：{e}")
+        return config_mod.with_own_styles(raw, eff)
 
     def _checked(raw, path):
         """先写到临时文件里校验（全局 + 这一份合起来要合法），再写成 path。"""
@@ -481,13 +491,13 @@ def create_app(token: str | None = None) -> FastAPI:
         _, proj = project_paths(pid)
         out = []
         if "project" in body:
-            out.append((proj / "project.toml", _checked(body["project"] or {}, proj / "project.toml")))
+            out.append((proj / "project.toml", _checked(_owned(body["project"]), proj / "project.toml")))
         if "series" in body:
             name = _series_name(proj, body.get("project"))
             if not name:
                 raise HTTPException(400, "这一集没有所属作品，不能保存作品设置")
             sf = config_mod.series_file(name)
-            out.append((sf, _checked(body["series"] or {}, sf)))
+            out.append((sf, _checked(_owned(body["series"]), sf)))
         for path, text in out:  # 两份都校验过了再写
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
@@ -634,7 +644,7 @@ def create_app(token: str | None = None) -> FastAPI:
         if not prof or not run.src:
             return {"profile": None, "items": []}
         items = layout.build(cues, prof, run.cfg, run.src, tokens)
-        px, py, used, placed = ass.place(items, prof, run.cfg.render.styles, aspect, boxes)
+        px, py, used, placed = ass.place(items, prof, run.cfg.render.styles, aspect, boxes, fallback=run.cfg.render.fallback_style)
         out = []
         for p in placed:
             it = p["item"]

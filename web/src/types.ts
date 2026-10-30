@@ -74,6 +74,9 @@ export interface ProjectData {
 
 export interface Style {
   font: string; size: number; color: string; outline_color: string; outline: number; shadow: number; bold: boolean; italic: boolean;
+  spacing?: number;                                       // 字间距（1080p 像素）
+  box?: boolean; box_color?: string; box_opacity?: number; // 底色框：outline 是框的留边
+  base?: string;                                          // 从哪个出厂样式来的
   em_scale?: number;  // 预览用：ASS 字号是字体整体高度，浏览器字号是 em，乘上它两边才一样大
 }
 
@@ -154,6 +157,7 @@ export interface MediaInfo {
 /** 项目的配置：这一集的、这一集合并后实际用的、所属作品的默认设置（两份各自独立；没有所属作品时 series 为 null） */
 export interface ConfigState {
   project: Cfg; effective: Cfg; files?: string[];
+  factory?: { styles: Record<string, Style> };   // 出厂样式（只读）
   series?: { name: string; raw: Cfg; effective: Cfg } | null;
 }
 

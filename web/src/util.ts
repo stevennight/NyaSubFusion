@@ -46,8 +46,17 @@ export function styleCss(st: Style, k: number): CSSProperties {
       shadows.push(`${(Math.cos(a) * w).toFixed(2)}px ${(Math.sin(a) * w).toFixed(2)}px 0 ${st.outline_color}`);
     }
   }
+  if (st.box) {  // 底色框：没有描边，outline 是框的留边
+    const a = Math.round(Math.max(0, Math.min(1, st.box_opacity ?? 0.6)) * 255).toString(16).padStart(2, "0");
+    return {
+      fontFamily: `"${st.font}", "Microsoft YaHei", "Yu Gothic", sans-serif`, fontSize: st.size * k * (st.em_scale ?? 1), color: st.color,
+      fontWeight: st.bold ? 700 : 400, fontStyle: st.italic ? "italic" : "normal", letterSpacing: (st.spacing ?? 0) * k,
+      background: `${st.box_color ?? "#000000"}${a}`, padding: `0 ${w}px`, boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone",
+    };
+  }
   if (st.shadow > 0) shadows.push(`${st.shadow * k}px ${st.shadow * k}px ${st.shadow * k * 1.5}px #000a`);
   return {
+    letterSpacing: (st.spacing ?? 0) * k,
     fontFamily: `"${st.font}", "Microsoft YaHei", "Yu Gothic", sans-serif`,
     fontSize: st.size * k * (st.em_scale ?? 1),
     color: st.color,

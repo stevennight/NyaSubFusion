@@ -475,7 +475,7 @@ class Run:
             from ..render import ass
 
             path = f"{p.out_base}.{self.src}-merged.ass"
-            ass.write_merged(path, fused["cues"], cfg.render.styles, aspect, boxes)
+            ass.write_merged(path, fused["cues"], cfg.render.styles, aspect, boxes, fallback=cfg.render.fallback_style)
             self._remember_outputs([os.path.basename(path)])
             log(f"已输出原文合并字幕：{os.path.basename(path)}")
         if self._stop("fuse"):
@@ -1190,7 +1190,7 @@ class Run:
             items = layout.build(cues, prof, self.cfg, self.src, tokens)
             path = self.proj.video.with_name(name)
             if prof.format == "ass":
-                ass.write(str(path), items, prof, self.cfg.render.styles, aspect, boxes)
+                ass.write(str(path), items, prof, self.cfg.render.styles, aspect, boxes, fallback=self.cfg.render.fallback_style)
             else:
                 srt.write(str(path), items)
             log(f"已输出「{prof.name}」：{name}")
@@ -1318,8 +1318,7 @@ class Run:
 
         prof = next((p for p in self.cfg.render.profiles if p.name == track["profile"]), None)
         ly = next((l for l in (prof.layers if prof else []) if l.show != "off"), None)
-        styles = self.cfg.render.styles
-        style = styles.get(ly.style if ly else "main") or next(iter(styles.values()))
+        style = self.cfg.render.style(ly.style if ly else self.cfg.render.fallback_style)
         aspect = ((self.results.get("probe") or {}).get("video") or {}).get("aspect") or 16 / 9
         return ass.from_srt(track["path"], self.proj.media("burn_srt.ass"), style, aspect)
 

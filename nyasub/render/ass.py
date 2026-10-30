@@ -30,9 +30,12 @@ def color(hex_rgb, alpha=0):
 
 
 def style_line(name, st, align=2, margin_v=46):
-    return (f"Style: {name},{st.font},{st.size:g},{color(st.color)},&H000000FF,{color(st.outline_color)},&H80000000,"
-            f"{-1 if st.bold else 0},{-1 if st.italic else 0},0,0,100,100,0,0,1,{st.outline:g},{st.shadow:g},"
-            f"{align},40,40,{margin_v},1")
+    # 底色框：BorderStyle 3，框的颜色用 OutlineColour，Outline 是框的留边（这时没有描边）
+    box = getattr(st, "box", False)
+    edge = color(st.box_color, round((1 - max(0.0, min(1.0, st.box_opacity))) * 255)) if box else color(st.outline_color)
+    return (f"Style: {name},{st.font},{st.size:g},{color(st.color)},&H000000FF,{edge},&H80000000,"
+            f"{-1 if st.bold else 0},{-1 if st.italic else 0},0,0,100,100,{getattr(st, 'spacing', 0):g},0,"
+            f"{3 if box else 1},{st.outline:g},{st.shadow:g},{align},40,40,{margin_v},1")
 
 
 def header(play_x, play_y, styles: dict, info_styles=()):
@@ -159,7 +162,7 @@ def slide_x(item, boxes, base, w, height, px, py):
     return None
 
 
-def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
+def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fallback="main"):
     """算出每条字幕在 1080p 画布上的位置（导出 ASS 和界面预览共用）。
 
     返回 (px, py, 用到的样式, 位置列表)：
@@ -173,7 +176,7 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     for it in items:
         for ly, _, _ in it["layers"]:
             name = profile.info_style if it["kind"] == "info" else ly.style
-            used[name] = styles.get(name) or styles["main"]
+            used[name] = styles.get(name) or styles.get(fallback) or next(iter(styles.values()))
 
     boxes = []
     if profile.avoid_hardsub:
@@ -222,9 +225,9 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
     return px, py, used, placed
 
 
-def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46):
+def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fallback="main"):
     """items 来自 layout.build。hardsub_boxes：[{start, end, rect, vertical}]，原画面硬字幕的位置。"""
-    px, py, used, placed = place(items, profile, styles, aspect, hardsub_boxes, margin_v)
+    px, py, used, placed = place(items, profile, styles, aspect, hardsub_boxes, margin_v, fallback)
     out = [header(px, py, used, info_styles={profile.info_style})]
     for p in placed:
         it = p["item"]
@@ -318,11 +321,11 @@ def _inline_color(hex_rgb):
 MERGED_COLORS = {"subs": "#FFFFFF", "telop": "#C8F0FF", "info": "#FFE680", "asr": "#B4B4B4"}
 
 
-def write_merged(path, cues, styles: dict, aspect, hardsub_boxes):
+def write_merged(path, cues, styles: dict, aspect, hardsub_boxes, fallback="main"):
     """原文合并字幕（不经过大模型）：白=字幕，浅蓝=画面台词，黄=画面说明，灰斜体=只有语音。"""
     py = 1080
     px = int(round(py * aspect))
-    base = styles.get("orig_main") or styles["main"]
+    base = styles.get("orig_main") or styles.get(fallback) or next(iter(styles.values()))
     used = {}
     for kind, col in MERGED_COLORS.items():
         used[kind] = base.model_copy(update={"color": col, "italic": kind == "asr",

@@ -1,5 +1,9 @@
 """分层配置：内置默认 < 用户全局 < 项目 < --config < 命令行参数。
 
+样式（render.styles）：version >= 2 的配置里写的是一整套样式，后面的层整套替换前面的，不再按名字补回内置样式
+（所以能删）；每个样式缺的字段按它来自的出厂样式（base，或同名的出厂样式）补齐。旧的项目 / 作品配置
+（没写 version）第一次读的时候升级：把当时合并出来的整套样式写进去（先备份）。
+
 作品（series）的设置不参与合并：它只是新建这部作品的一集时复制过去的默认值，之后两份各自独立
 （可以用作品设置覆盖一集，或者用一集的设置覆盖作品，见文件末尾）。
 
@@ -25,7 +29,7 @@ class ProjectCfg(_M):
     targets: list[str] = ["zh-Hans"]         # 目标语言，可多个；第一个用于融合+翻译，其余在其基础上翻译
     series: str = ""                         # 所属作品：共享节目说明、术语表
     context: str = ""                        # 节目说明，会告诉大模型
-    preset: str = ""                         # 新建项目时选的内容预设（只做记录）
+    preset: str = ""                         # 新建项目时选的内容预设（不属于作品时，它就是这一集的模板）
 
 
 class SubsCfg(_M):
@@ -127,6 +131,11 @@ class StyleCfg(_M):
     shadow: float = 1
     bold: bool = False
     italic: bool = False
+    spacing: float = 0                       # 字间距（1080p 画布上的像素）
+    box: bool = False                        # 文字后面垫底色框（ASS 的 BorderStyle 3）；这时 outline 是框的留边，没有描边
+    box_color: str = "#000000"
+    box_opacity: float = 0.6                 # 底色框不透明度：1 = 不透明
+    base: str = ""                           # 从哪个出厂样式来的（恢复出厂用）；空 = 同名的出厂样式
 
 
 class AnnotateCfg(_M):
@@ -204,18 +213,36 @@ class VideoOutCfg(_M):
     burn: str = ""                           # 压制哪个字幕：空 = 第一个启用的 ASS 方案；方案名（ASS / SRT 都行）；"broadcast" = 广播字幕原样
 
 
+def factory_style(name: str, base: str = "") -> StyleCfg | None:
+    """出厂样式：先看 base，再看同名的。"""
+    return DEFAULT_STYLES.get(base) or DEFAULT_STYLES.get(name)
+
+
+def fill_style(name: str, st: dict) -> dict:
+    """一个样式缺的字段按它的出厂样式补齐（不是出厂来的就用默认值）。"""
+    st = st.model_dump() if isinstance(st, StyleCfg) else dict(st or {})
+    fac = factory_style(name, st.get("base", ""))
+    return {**(fac.model_dump() if fac else {}), **st}
+
+
 class RenderCfg(_M):
     styles: dict[str, StyleCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_STYLES))
+    fallback_style: str = "main"             # 兜底样式：图层 / 说明文字用的样式不存在时用它
 
     @field_validator("styles", mode="before")
     @classmethod
-    def _merge_styles(cls, v):
-        """用户写的样式按名字合并到内置样式上：只写 size 也只改字号，其他内置样式保留。"""
-        out = {k: s.model_dump() for k, s in DEFAULT_STYLES.items()}
-        for name, st in (v or {}).items():
-            st = st.model_dump() if isinstance(st, StyleCfg) else dict(st)
-            out[name] = {**out.get(name, {}), **st}
-        return out
+    def _fill_styles(cls, v):
+        """写了的每个样式补齐字段；一个都没写时用整套出厂样式。（按层合并时补回内置样式的事在 load 里做）"""
+        if not v:
+            return {k: s.model_dump() for k, s in DEFAULT_STYLES.items()}
+        for name in v:
+            if "," in name or not name.strip():
+                raise ValueError(f"样式名「{name}」不能是空的，也不能有逗号（ASS 用逗号分隔）")
+        return {name: fill_style(name, st) for name, st in v.items()}
+
+    def style(self, name: str) -> StyleCfg:
+        """按名字取样式；没有就用兜底样式，兜底也没有就用第一个。"""
+        return self.styles.get(name) or self.styles.get(self.fallback_style) or next(iter(self.styles.values()))
 
     profiles: list[ProfileCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_PROFILES))
     video: VideoOutCfg = VideoOutCfg()
@@ -228,7 +255,11 @@ class RenderCfg(_M):
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包
 
 
+VERSION = 2   # 配置格式：2 = 样式是整套的（见文件开头）
+
+
 class Config(_M):
+    version: int = 1
     project: ProjectCfg = ProjectCfg()
     subs: SubsCfg = SubsCfg()
     asr: AsrCfg = AsrCfg()
@@ -302,8 +333,27 @@ def series_dir(name: str) -> Path:
     return env.home() / "series" / name
 
 
-def load(config_path=None, project_file=None, overrides: dict | None = None) -> tuple[Config, list[str]]:
-    """按层合并配置，返回 (配置, 实际用到的文件列表)。"""
+def owns_styles(d: dict) -> bool:
+    """这一层写的是一整套样式（新格式）。"""
+    return (d.get("version") or 1) >= 2 and isinstance((d.get("render") or {}).get("styles"), dict)
+
+
+def merge_layers(layer_dicts: list[dict]) -> dict:
+    """按层深度合并。整套样式的层把前面的样式整套换掉；没有哪一层是整套样式时，按名字合并到出厂样式上（旧行为）。"""
+    merged: dict = {}
+    if not any(owns_styles(d) for d in layer_dicts):
+        merged = {"render": {"styles": {k: s.model_dump() for k, s in DEFAULT_STYLES.items()}}}
+    for d in layer_dicts:
+        if owns_styles(d):
+            merged.setdefault("render", {})["styles"] = {}
+        deep_merge(merged, d)
+    return merged
+
+
+def load(config_path=None, project_file=None, overrides: dict | None = None, upgrade=True) -> tuple[Config, list[str]]:
+    """按层合并配置，返回 (配置, 实际用到的文件列表)。旧格式的项目配置先升级。"""
+    if project_file and upgrade:
+        upgrade_file(project_file, lambda: load(None, project_file, upgrade=False)[0])
     layers: list[tuple[str, dict]] = []
     user = env.home() / "config.toml"
     if user.is_file():
@@ -316,10 +366,43 @@ def load(config_path=None, project_file=None, overrides: dict | None = None) -> 
     if overrides:
         tail.append(("命令行", overrides))
 
-    merged: dict = {}
-    for _, d in layers + tail:
-        deep_merge(merged, d)
+    merged = merge_layers([d for _, d in layers + tail])
     return Config.model_validate(merged), [name for name, _ in layers + tail]
+
+
+def with_own_styles(raw: dict, cfg: "Config") -> dict:
+    """配置里写上整套样式（用 cfg 合并出来的样式）和格式版本。"""
+    raw = copy.deepcopy(raw or {})
+    if not owns_styles(raw):
+        styles = {}
+        for name, st in cfg.render.styles.items():
+            d = st.model_dump()
+            if not d.get("base") and name in DEFAULT_STYLES:
+                d.pop("base", None)
+            styles[name] = d
+        raw.setdefault("render", {})["styles"] = styles
+    raw["version"] = max(VERSION, raw.get("version") or 1)
+    return raw
+
+
+def upgrade_file(path, effective) -> bool:
+    """旧格式（version < 2）的项目 / 作品配置升级成新格式：写上当时合并出来的整套样式。原文件先备份到 backup/。"""
+    import time
+
+    import tomli_w
+
+    path = Path(path)
+    if not path.is_file():
+        return False
+    raw = read_toml(path)
+    if (raw.get("version") or 1) >= VERSION:
+        return False
+    new = with_own_styles(raw, effective())
+    bak = path.parent / "backup" / f"{path.stem}-{time.strftime('%Y%m%d-%H%M%S')}-v1{path.suffix}"
+    bak.parent.mkdir(parents=True, exist_ok=True)
+    bak.write_bytes(path.read_bytes())
+    path.write_text(tomli_w.dumps(new), encoding="utf-8")
+    return True
 
 
 # ---------------- 作品（series）的默认设置 ----------------
@@ -338,12 +421,17 @@ def has_series_settings(name: str) -> bool:
 
 def read_series(name: str) -> dict:
     f = series_file(name)
-    return read_toml(f) if name and f.is_file() else {}
+    if not (name and f.is_file()):
+        return {}
+    upgrade_file(f, lambda: load(str(f))[0])
+    return read_toml(f)
 
 
 def series_effective(name: str) -> "Config":
     """作品的默认设置合并后是什么样（内置默认 < 用户全局 < 作品设置）。"""
     f = series_file(name)
+    if name and f.is_file():
+        upgrade_file(f, lambda: load(str(f))[0])
     return load(str(f) if f.is_file() else None)[0]
 
 

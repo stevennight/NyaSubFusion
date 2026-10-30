@@ -25,11 +25,8 @@ const EDGES: [string, string, string?][] = [["probe", "audio"], ["probe", "subs"
   ["ocr", "ocr_refine"], ["ocr_refine", "fuse"], ["align", "fuse"], ["fuse", "translate"], ["translate", "annotate"], ["annotate", "render"]];
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "将重做", missing: "未运行", running: "运行中", failed: "失败", waiting: "等待外部翻译", cancelled: "已取消", off: "未启用", empty: "没有内容" };
 const SEP_LBL: Record<string, string> = { auto: "自动", on: "开", off: "关" };
-const FONTS_LBL: Record<string, string> = { subset: "嵌入字体（只含用到的字）", full: "嵌入完整字体", none: "不嵌入字体" };
 const MORE_KEY = "nyasub.cfgMore";
 const MORE_KEYS = ["llm", "asr", "ocr", "video"];  // 有“更多”的几块
-const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编码，先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
-  ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 
 export function PipelinePage({ onReview }: { onReview: () => void }) {
   const s = useStore();
@@ -408,7 +405,7 @@ export function PipelinePage({ onReview }: { onReview: () => void }) {
             </div>
           </div>
           <div className="gap" />
-          <VideoCard val={val} set={set} dirty={dirty} open={!!more.video} onToggle={toggleMore("video")} mark={inProject} />
+          <div className="card dim">字幕文件、样式、封装 MKV、压制硬字幕都在「输出」里设置。</div>
         </div>
 
         <aside className="pl-side">
@@ -506,122 +503,6 @@ function StageLogDialog({ stage, status, seconds, note, onClose, onStage }: {
           : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
       </div>
     </div>, document.body);
-}
-
-function VideoCard({ val, set, dirty, open, onToggle, mark }: {
-  val: (p: string) => unknown; set: (p: string, v: unknown) => void; dirty: boolean; open: boolean; onToggle: () => void; mark: (p: string) => boolean;
-}) {
-  const s = useStore();
-  const mode = String(val("render.video.mode") ?? "off");
-  type Prof = { name: string; format?: string; enabled?: boolean };
-  // 项目自己的配置里方案只写了改过的字段（没写 format 就是 ASS、没写 enabled 就是启用）：读的时候补上默认值，存回去时保持原样
-  const raw = (val("render.profiles") as Prof[]) ?? [];
-  const profiles = raw.map((p) => ({ ...p, format: p.format ?? "ass", enabled: p.enabled ?? true }));
-  const bc = s.summary?.broadcast;   // 字幕来自广播：能输出“广播字幕原样”
-  // 读过字幕了（“读取字幕”这一步做过）才知道是不是电视广播字幕
-  const subsRead = !!s.summary?.plan.some((x) => x.stage === "subs" && ["done", "cached", "empty", "off", "stale"].includes(x.status));
-  // 表里的每一行：输出的字幕（方案 + 广播字幕原样）
-  const rows = [
-    ...profiles.map((pr, i) => ({ id: pr.name, label: pr.name, fmt: pr.format.toUpperCase(), out: pr.enabled, ok: true,
-                                  setOut: (v: boolean) => set("render.profiles", raw.map((x, j) => (j === i ? { ...x, enabled: v } : x))) })),
-    { id: "broadcast", label: "广播字幕原样", fmt: "ASS", out: !!bc && !!val("render.broadcast"), ok: !!bc,
-      setOut: (v: boolean) => set("render.broadcast", v) },
-  ];
-  const outIds = rows.filter((r) => r.out).map((r) => r.id);
-  // 封装哪些：没单独选过 = 所有输出的字幕（广播字幕原样看 render.video.broadcast）
-  const muxList = (val("render.video.profiles") as string[]) ?? [];
-  const muxed = (muxList.length ? muxList : outIds.filter((id) => id !== "broadcast" || !!val("render.video.broadcast")))
-    .filter((id) => outIds.includes(id));
-  const setMux = (id: string, on: boolean) => {
-    const base = muxList.length ? muxList : muxed;
-    set("render.video.profiles", on ? [...base.filter((x) => x !== id), id] : base.filter((x) => x !== id));
-  };
-  // 默认轨：指定的那条，不在封装里就是封装的第一条（按表里的顺序）
-  const muxRows = rows.filter((r) => muxed.includes(r.id));
-  const defId = muxRows.some((r) => r.id === val("render.video.default")) ? String(val("render.video.default")) : muxRows[0]?.id;
-  // 压制哪条：指定的那条，没指定 = 第一个输出的 ASS 方案
-  const burnSet = String(val("render.video.burn") ?? "");
-  const burnId = outIds.includes(burnSet) ? burnSet : rows.find((r) => r.out && r.id !== "broadcast" && r.fmt === "ASS")?.id;
-  const ready = !!s.data?.cues.length && !s.running && !dirty;
-  // 只显示封装 / 压制自己的进度（语音识别等步骤的进度在上面的步骤图里）
-  const p = s.progress && ["mux", "burn"].includes(s.progress.stage) ? s.progress : null;
-  const videos = s.summary?.videos ?? {};
-  return (
-    <div className="card">
-      <div className="row" style={{ marginBottom: 8 }}>
-        <h3 style={{ margin: 0 }}>输出视频</h3>
-        <Tip text="封装：字幕轨 + 用到的字体放进 MKV，不重新编码，几秒完成。压制：字幕画进画面，任何播放器都能看，要重新编码，比较慢。" />
-      </div>
-      <div className="kv">
-        <span className="lbl">运行完自动</span>
-        <div className="seg">{[["off", "不输出"], ["mux", "封装 MKV"], ["burn", "压制硬字幕"]].map(([v, l]) =>
-          <button key={v} className={mode === v ? "on" : ""} onClick={() => set("render.video.mode", v)}>{l}</button>)}</div>
-      </div>
-      <table className="outtab">
-        <thead><tr><th>字幕</th><th>输出文件</th><th>封装进 MKV</th><th>默认轨</th><th>压制</th></tr></thead>
-        <tbody>
-          {rows.map((r) => {
-            const off = !r.out;
-            return (
-              <tr key={r.id} className={r.ok ? (off ? "off" : "") : "na"}>
-                <td>{r.label} <span className="dim">· {r.fmt}</span>
-                  {r.id === "broadcast" && <Tip text={r.ok ? `日语原文，位置、颜色、背景、振假名和电视上一样${bc?.file ? `（${bc.file}）` : "（视频名.ja-broadcast.ass，输出字幕时生成）"}`
-                    : subsRead ? "这个视频的字幕不是电视广播字幕（ARIB），没有原样可以照搬" : "还没运行过：读了字幕才知道是不是电视广播字幕"} />}
-                  {!r.ok && <div className="dim" style={{ fontSize: 11 }}>{subsRead ? "这个视频没有电视广播字幕" : "运行过后才知道有没有电视广播字幕"}</div>}</td>
-                <td><input type="checkbox" disabled={!r.ok} checked={r.out} onChange={(e) => r.setOut(e.target.checked)} /></td>
-                <td><input type="checkbox" disabled={off} checked={muxed.includes(r.id)} onChange={(e) => setMux(r.id, e.target.checked)} /></td>
-                <td><input type="radio" name="vdefault" disabled={off || !muxed.includes(r.id)} checked={defId === r.id}
-                           onChange={() => set("render.video.default", r.id)} /></td>
-                <td><input type="radio" name="vburn" disabled={off} checked={burnId === r.id} onChange={() => set("render.video.burn", r.id)} /></td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {!rows.some((r) => r.ok && !r.out) ? null : <div className="dim" style={{ fontSize: 12 }}>没勾“输出文件”的不会写出字幕文件，也不能封装、压制。</div>}
-      <More open={open} onToggle={onToggle} mark={mark} items={[
-        [FONTS_LBL[String(val("render.video.fonts"))] ?? String(val("render.video.fonts")), "render.video.fonts"],
-        [val("render.video.keep_subs") ? "保留原有字幕轨" : "不留原有字幕轨", "render.video.keep_subs"],
-        [`压制：${(ENCODERS.find(([v]) => v === val("render.video.encoder"))?.[1] ?? String(val("render.video.encoder"))).replace(/（.*）/, "")}`, "render.video.encoder"],
-        [`画质 ${String(val("render.video.quality"))}`, "render.video.quality"],
-        [Number(val("render.video.height")) ? `${Number(val("render.video.height"))}p` : "原尺寸", "render.video.height"],
-      ]}>
-      <div className="grid2" style={{ alignItems: "start" }}>
-        <div className="kv">
-          <span className="lbl">封装</span>
-          <div className="row wrap">
-            <select className="inp" style={{ width: "auto" }} value={String(val("render.video.fonts"))} onChange={(e) => set("render.video.fonts", e.target.value)}>
-              {Object.entries(FONTS_LBL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-            <label className="row dim"><input type="checkbox" checked={!!val("render.video.keep_subs")} onChange={(e) => set("render.video.keep_subs", e.target.checked)} />保留原有字幕轨</label>
-          </div>
-        </div>
-        <div className="kv">
-          <span className="lbl">压制编码</span>
-          <select className="inp" value={String(val("render.video.encoder"))} onChange={(e) => set("render.video.encoder", e.target.value)}>
-            {ENCODERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-          <span className="lbl">画质</span>
-          <div className="row"><input type="range" min={14} max={32} step={1} value={Number(val("render.video.quality"))} onChange={(e) => set("render.video.quality", Number(e.target.value))} />
-            <span className="dim">{String(val("render.video.quality"))}</span>
-            <Tip text="越小越清晰，常用 18~23。码率最多和原片一样（按缩小的比例折算），压出来不会比原片大很多。" /></div>
-          <span className="lbl">尺寸</span>
-          <select className="inp" style={{ width: "auto" }} value={String(val("render.video.height"))} onChange={(e) => set("render.video.height", Number(e.target.value))}>
-            {[[0, "原尺寸"], [2160, "2160p"], [1080, "1080p"], [720, "720p"], [480, "480p"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-        </div>
-      </div>
-      </More>
-      <div className="row wrap" style={{ marginTop: 10 }}>
-        <button className="btn" disabled={!ready} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("mux")}>现在封装 MKV</button>
-        <button className="btn" disabled={!ready || !s.summary?.meta?.video} title={dirty ? "先保存配置" : ""} onClick={() => s.exportVideo("burn")}>现在压制硬字幕</button>
-        {p && s.running && (<>
-          <div className="pbar" style={{ flex: 1, minWidth: 160 }}><div style={{ width: `${pct(p)}%` }} /></div>
-          <span className="dim">{STAGE_LBL[p.stage] ?? p.stage} {pct(p)}%</span>
-          <button className="btn sm" onClick={s.cancel}>取消</button>
-        </>)}
-        {s.running && !p && <span className="dim">正在处理字幕，完成后才能输出视频</span>}
-        {!s.running && (videos.mux || videos.burn) && <span className="dim">已输出：{[videos.mux, videos.burn].filter(Boolean).join("、")}</span>}
-      </div>
-    </div>
-  );
 }
 
 /** 鼠标移上去才显示的说明 */
