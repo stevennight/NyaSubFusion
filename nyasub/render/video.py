@@ -203,7 +203,7 @@ def _part(out):
 
 
 def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=0.0, cancel=None):
-    """封装 MKV。tracks：[{"path", "lang", "title"}]，第一条设为默认。"""
+    """封装 MKV。tracks：[{"path", "lang", "title", "default"?}]，标了 default 的那条设为默认（都没标就是第一条）。"""
     src = streams(video)
     part = _part(out)
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
@@ -236,10 +236,11 @@ def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=
             cmd += [f"-c:s:{k}", c]
     for k in range(len(kept)):
         cmd += [f"-disposition:s:{k}", "0"]
+    first = next((i for i, t in enumerate(tracks) if t.get("default")), 0)
     for i, t in enumerate(tracks):
         k = len(kept) + i
         cmd += [f"-metadata:s:s:{k}", f"language={lang3(t.get('lang'))}", f"-metadata:s:s:{k}", f"title={t.get('title', '')}",
-                f"-disposition:s:{k}", "default" if i == 0 else "0"]
+                f"-disposition:s:{k}", "default" if i == first else "0"]
     for j, f in enumerate(font_files):
         mime = "application/vnd.ms-opentype" if str(f).lower().endswith(".otf") else "application/x-truetype-font"
         cmd += ["-attach", str(f), f"-metadata:s:t:{n_att + j}", f"mimetype={mime}",

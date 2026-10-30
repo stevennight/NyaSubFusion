@@ -104,9 +104,23 @@ def test_mux_adds_broadcast_track(with_broadcast, api_config):
     assert subs[-1]["tags"]["title"].endswith("（广播字幕原样）") and subs[-1]["tags"]["language"] == "jpn"
     assert subs[0]["disposition"]["default"] == 1 and subs[-1]["disposition"]["default"] == 0
     assert "sample.ja-broadcast.ass" in r.written_names()
-    # 关掉就不放
+    # 没单独选过时关掉就不放；单独选了封装哪些，就按选的放（"broadcast" 也是一项）
     r = _run(with_broadcast, api_config, broadcast=False)
     assert all(t["profile"] != "broadcast" for t in r._video_tracks("mux"))
+    first = next(p.name for p in r.cfg.render.profiles if p.enabled)
+    r = _run(with_broadcast, api_config, broadcast=False, profiles=[first, "broadcast"])
+    assert [t["profile"] for t in r._video_tracks("mux")] == [first, "broadcast"]
+
+
+def test_mux_default_track(with_broadcast, api_config):
+    """默认字幕轨可以指定（广播字幕原样也行）；指定的不在封装的字幕里就是第一条。"""
+    r = _run(with_broadcast, api_config, default="broadcast")
+    r.export_video("mux")
+    subs = [s for s in streams(with_broadcast.with_name("sample" + video.MUX_SUFFIX)) if s["codec_type"] == "subtitle"]
+    assert [s["disposition"]["default"] for s in subs] == [0] * (len(subs) - 1) + [1]
+    assert subs[-1]["tags"]["title"].endswith("（广播字幕原样）")
+    tracks = _run(with_broadcast, api_config, default="nope")._video_tracks("mux")
+    assert [bool(t.get("default")) for t in tracks] == [True] + [False] * (len(tracks) - 1)
 
 
 def test_burn_picks_subtitle(with_broadcast, api_config):

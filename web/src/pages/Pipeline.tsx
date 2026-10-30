@@ -440,11 +440,31 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
 }) {
   const s = useStore();
   const mode = String(val("render.video.mode") ?? "off");
-  const profiles = ((deepGet(s.config?.effective, "render.profiles") as { name: string; format: string; enabled: boolean }[]) ?? []);
-  const picked = (val("render.video.profiles") as string[]) ?? [];
+  type Prof = { name: string; format: string; enabled: boolean };
+  const profiles = ((val("render.profiles") ?? deepGet(s.config?.effective, "render.profiles")) as Prof[]) ?? [];
   const bc = s.summary?.broadcast;   // 字幕来自广播：能输出“广播字幕原样”
-  const burnSub = String(val("render.video.burn") ?? "");
-  const toggle = (n: string) => set("render.video.profiles", picked.includes(n) ? picked.filter((x) => x !== n) : [...picked, n]);
+  // 表里的每一行：输出的字幕（方案 + 广播字幕原样）
+  const rows = [
+    ...profiles.map((pr, i) => ({ id: pr.name, label: pr.name, fmt: pr.format.toUpperCase(), out: pr.enabled, ok: true,
+                                  setOut: (v: boolean) => set("render.profiles", profiles.map((x, j) => (j === i ? { ...x, enabled: v } : x))) })),
+    { id: "broadcast", label: "广播字幕原样", fmt: "ASS", out: !!bc && !!val("render.broadcast"), ok: !!bc,
+      setOut: (v: boolean) => set("render.broadcast", v) },
+  ];
+  const outIds = rows.filter((r) => r.out).map((r) => r.id);
+  // 封装哪些：没单独选过 = 所有输出的字幕（广播字幕原样看 render.video.broadcast）
+  const muxList = (val("render.video.profiles") as string[]) ?? [];
+  const muxed = (muxList.length ? muxList : outIds.filter((id) => id !== "broadcast" || !!val("render.video.broadcast")))
+    .filter((id) => outIds.includes(id));
+  const setMux = (id: string, on: boolean) => {
+    const base = muxList.length ? muxList : muxed;
+    set("render.video.profiles", on ? [...base.filter((x) => x !== id), id] : base.filter((x) => x !== id));
+  };
+  // 默认轨：指定的那条，不在封装里就是封装的第一条（按表里的顺序）
+  const muxRows = rows.filter((r) => muxed.includes(r.id));
+  const defId = muxRows.some((r) => r.id === val("render.video.default")) ? String(val("render.video.default")) : muxRows[0]?.id;
+  // 压制哪条：指定的那条，没指定 = 第一个输出的 ASS 方案
+  const burnSet = String(val("render.video.burn") ?? "");
+  const burnId = outIds.includes(burnSet) ? burnSet : rows.find((r) => r.out && r.id !== "broadcast" && r.fmt === "ASS")?.id;
   const ready = !!s.data?.cues.length && !s.running && !dirty;
   // 只显示封装 / 压制自己的进度（语音识别等步骤的进度在上面的步骤图里）
   const p = s.progress && ["mux", "burn"].includes(s.progress.stage) ? s.progress : null;
@@ -459,30 +479,29 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
         <span className="lbl">运行完自动</span>
         <div className="seg">{[["off", "不输出"], ["mux", "封装 MKV"], ["burn", "压制硬字幕"]].map(([v, l]) =>
           <button key={v} className={mode === v ? "on" : ""} onClick={() => set("render.video.mode", v)}>{l}</button>)}</div>
-        <span className="lbl">用哪些方案</span>
-        <div className="row wrap">
-          <span className={`chip ${picked.length ? "" : "acc"}`} style={{ cursor: "pointer" }} onClick={() => set("render.video.profiles", [])}>全部启用的</span>
-          {profiles.map((pr) => <span key={pr.name} className={`chip ${picked.includes(pr.name) ? "acc" : ""}`} style={{ cursor: "pointer" }}
-                                      onClick={() => toggle(pr.name)}>{pr.name} · {pr.format.toUpperCase()}</span>)}
-          {bc && <span className={`chip ${val("render.video.broadcast") && val("render.broadcast") ? "acc" : ""}`} style={{ cursor: "pointer" }}
-                       title="封装时另外放进一条原文字幕：广播字幕本来的位置、颜色、背景、振假名"
-                       onClick={() => set("render.video.broadcast", !val("render.video.broadcast"))}>广播字幕原样 · ASS</span>}
-        </div>
-        <span className="lbl">压制用</span>
-        <div className="row wrap">
-          <select className="inp" style={{ width: "auto" }} value={burnSub} onChange={(e) => set("render.video.burn", e.target.value)}>
-            <option value="">第一个 ASS 方案</option>
-            {profiles.map((pr) => <option key={pr.name} value={pr.name}>{pr.name} · {pr.format.toUpperCase()}</option>)}
-            {(bc || burnSub === "broadcast") && <option value="broadcast">广播字幕原样（原文）</option>}
-          </select>
-          <Tip text="硬字幕只能压一条。SRT 没有样式，压制时用这个方案第一个图层的字体、字号；广播字幕原样是原文，位置、颜色、背景和电视上一样。" />
-        </div>
-        {bc && <>
-          <span className="lbl">广播字幕</span>
-          <label className="row dim"><input type="checkbox" checked={!!val("render.broadcast")} onChange={(e) => set("render.broadcast", e.target.checked)} />
-            输出广播字幕原样{bc.file ? `（${bc.file}）` : "（视频名.ja-broadcast.ass，输出字幕时生成）"}</label>
-        </>}
       </div>
+      <table className="outtab">
+        <thead><tr><th>字幕</th><th>输出文件</th><th>封装进 MKV</th><th>默认轨</th><th>压制</th></tr></thead>
+        <tbody>
+          {rows.map((r) => {
+            const off = !r.out;
+            return (
+              <tr key={r.id} className={r.ok ? (off ? "off" : "") : "na"}>
+                <td>{r.label} <span className="dim">· {r.fmt}</span>
+                  {r.id === "broadcast" && <Tip text={r.ok ? `日语原文，位置、颜色、背景、振假名和电视上一样${bc?.file ? `（${bc.file}）` : "（视频名.ja-broadcast.ass，输出字幕时生成）"}`
+                    : "这个视频的字幕不是电视广播字幕（ARIB），没有原样可以照搬"} />}
+                  {!r.ok && <div className="dim" style={{ fontSize: 11 }}>这个视频没有电视广播字幕</div>}</td>
+                <td><input type="checkbox" disabled={!r.ok} checked={r.out} onChange={(e) => r.setOut(e.target.checked)} /></td>
+                <td><input type="checkbox" disabled={off} checked={muxed.includes(r.id)} onChange={(e) => setMux(r.id, e.target.checked)} /></td>
+                <td><input type="radio" name="vdefault" disabled={off || !muxed.includes(r.id)} checked={defId === r.id}
+                           onChange={() => set("render.video.default", r.id)} /></td>
+                <td><input type="radio" name="vburn" disabled={off} checked={burnId === r.id} onChange={() => set("render.video.burn", r.id)} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {!rows.some((r) => r.ok && !r.out) ? null : <div className="dim" style={{ fontSize: 12 }}>没勾“输出文件”的不会写出字幕文件，也不能封装、压制。</div>}
       <More open={open} onToggle={onToggle} mark={mark} items={[
         [FONTS_LBL[String(val("render.video.fonts"))] ?? String(val("render.video.fonts")), "render.video.fonts"],
         [val("render.video.keep_subs") ? "保留原有字幕轨" : "不留原有字幕轨", "render.video.keep_subs"],

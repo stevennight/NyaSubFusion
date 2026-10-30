@@ -378,3 +378,11 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .node .redo-tog.on { background: var(--acc); border-color: var(--acc); color: #1b1b22 }
 .node.redo-sel { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc) inset }
 .node.redo-sel small { color: var(--acc) }
+
+/* 输出视频：每份字幕一行，输出文件 / 封装 / 默认轨 / 压制 */
+.outtab { width: 100%; border-collapse: collapse; margin: 10px 0 4px; font-size: 13px }
+.outtab th { font-weight: 400; color: var(--tx3); font-size: 12px; text-align: center; padding: 4px 6px; border-bottom: 1px solid var(--line2) }
+.outtab th:first-child, .outtab td:first-child { text-align: left }
+.outtab td { text-align: center; padding: 6px; border-bottom: 1px solid var(--line) }
+.outtab tr.off td:first-child { color: var(--tx3) }
+.outtab tr.na td { color: var(--tx3) }

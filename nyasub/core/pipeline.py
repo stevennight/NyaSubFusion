@@ -142,11 +142,12 @@ class Run:
                 d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
             return d or None
-        if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容
+        if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容（默认轨不是第一条时也记上）
             return {"video": file_stamp(self.proj.video), "tracks": [
                 {"lang": t["lang"], "title": t["title"],
-                 "sub": digest(t["path"].read_text(encoding="utf-8-sig")) if t["path"].exists() else None}
-                for t in self._video_tracks(name, self._video_profiles)]}
+                 "sub": digest(t["path"].read_text(encoding="utf-8-sig")) if t["path"].exists() else None,
+                 **({"default": True} if t.get("default") and i else {})}
+                for i, t in enumerate(self._video_tracks(name, self._video_profiles))]}
         if name == "ocr_refine":
             # 附整帧画面默认开着：开着时记进指纹（加这个之前复核过的会按新做法重新复核一次）
             return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None,
@@ -1300,8 +1301,11 @@ class Run:
             else:
                 picked = [(p, n) for p, n in picked if p.format == "ass"][:1]
         tracks = [self._track(p, n) for p, n in picked]
-        if mode == "mux" and vc.broadcast and (bc := self._broadcast_track()):
+        if mode == "mux" and ("broadcast" in want if want else vc.broadcast) and (bc := self._broadcast_track()):
             tracks.append(bc)
+        if mode == "mux" and tracks:  # 默认字幕轨：指定的那条（不在封装的字幕里就是第一条）
+            k = next((i for i, t in enumerate(tracks) if t["profile"] == vc.default), 0)
+            tracks[k]["default"] = True
         dup = [sum(x["title"] == t["title"] for x in tracks) > 1 for t in tracks]
         for t, d in zip(tracks, dup):  # 名字重复时（比如同一种语言的 ASS 和 SRT）加上方案名
             if d:
@@ -1359,7 +1363,8 @@ class Run:
                 raise Cancelled()
             mb = out.stat().st_size / 1e6
             log(f"已输出视频：{out.name}（{mb:.0f} MB，用时 {time.time() - t0:.0f}s）")
-            return {"file": out.name, "tracks": [{k: t[k] for k in ("lang", "title", "profile")} for t in tracks],
+            return {"file": out.name, "tracks": [{k: t[k] for k in ("lang", "title", "profile") if k in t}
+                                                 | ({"default": True} if t.get("default") else {}) for t in tracks],
                     "fonts": [f.name for f in files], "encoder": enc}
         return self.stage(mode, do, force=not out.exists())
 
