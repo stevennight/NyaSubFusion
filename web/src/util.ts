@@ -23,8 +23,8 @@ export const FLAG_LBL: Record<string, string> = {
 };
 export const SRC_LBL: Record<string, string> = { c: "字幕", o: "画面字", a: "语音" };
 export const STAGE_LBL: Record<string, string> = {
-  probe: "探测媒体", audio: "提取音频", subs: "自带字幕", asr: "语音识别", ocr: "画面字识别", ocr_refine: "VLM 复核",
-  align: "字幕对时", fuse: "规则融合", translate: "融合 + 翻译", annotate: "注音", render: "输出字幕文件",
+  probe: "探测媒体", audio: "提取音频", subs: "读取字幕", asr: "语音识别", ocr: "画面字识别", ocr_refine: "画面字复核",
+  align: "字幕对时", fuse: "合并来源", translate: "整理与翻译", annotate: "注音", render: "生成字幕文件",
   mux: "封装 MKV", burn: "压制硬字幕",
 };
 

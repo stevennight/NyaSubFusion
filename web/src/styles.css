@@ -387,3 +387,22 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .outtab td { text-align: center; padding: 6px; border-bottom: 1px solid var(--line) }
 .outtab tr.off td:first-child { color: var(--tx3) }
 .outtab tr.na td { color: var(--tx3) }
+
+/* ---------- v2 外壳：库 / 任务 / 设置 + 一集的标签页 ---------- */
+.nav .sp { flex: 1 }
+.crumb { display: flex; align-items: center; gap: 6px; margin-left: 16px; color: var(--tx3); min-width: 0 }
+.crumb a { color: var(--tx2); cursor: pointer } .crumb a:hover { color: var(--tx) }
+.crumb strong { color: var(--tx); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px }
+.crumb .back { font-size: 12.5px }
+.main.ep-main { display: flex; flex-direction: column; overflow: hidden }
+.ep { flex: 1; min-height: 0; display: flex; flex-direction: column }
+.ephead { display: flex; align-items: center; gap: 10px; padding: 12px 16px 0; flex-wrap: wrap }
+.ephead h2 { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 520px }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line) }
+.tabs button { border: 0; background: none; padding: 9px 16px; color: var(--tx2); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px }
+.tabs button:hover { color: var(--tx) }
+.tabs button.on { color: var(--tx); border-bottom-color: var(--acc); font-weight: 600 }
+.tabs button small { color: var(--tx3); margin-left: 5px; font-weight: 400; font-size: 11.5px }
+.eptabs { padding: 0 12px; margin-top: 8px }
+.epbody { flex: 1; min-height: 0; overflow: auto; position: relative }
+.epbody.fill { overflow: hidden }
