@@ -107,6 +107,11 @@ format = "srt"
 info_mode = "top"
 layers = [{ role = "translation", style = "main" }]
 
+# 字幕来自广播（ARIB）时，另外输出一份原样的原文 ASS（<名>.ja-broadcast.ass）：位置、字号、颜色、背景、振假名照搬
+# [render]
+# broadcast = true
+# broadcast_font = ""         # 空 = 自动（圆体优先，其次等宽的日文字体，如 BIZ UDGothic）
+
 # ---------------- 输出视频 ----------------
 [render.video]
 mode = "off"                  # 运行完自动：off 不输出 / mux 封装 MKV（<名>.sub.mkv）/ burn 压制硬字幕（<名>.hardsub.mp4）
@@ -116,6 +121,8 @@ fonts = "subset"              # 封装时嵌入字体：subset 只含用到的�
 encoder = "auto"              # 压制：auto（先试 NVIDIA 显卡）/ h264_nvenc / libx264 / hevc_nvenc / libx265
 quality = 20                  # 压制画质（CRF / CQ）：越小越清晰，常用 18~23
 height = 0                    # 压制时缩放到这个高度；0 = 原尺寸
+broadcast = true              # 封装时也放进“广播字幕原样”（字幕来自广播时才有）
+burn = ""                     # 压制哪个字幕：空 = 第一个启用的 ASS 方案；方案名（ASS / SRT 都行）；"broadcast" = 广播字幕原样
 
 # ---------------- 注音与转写 ----------------
 # annotate 写在图层上，能用哪种由这一层的语言决定：日语 furigana；中文 pinyin / zhuyin。

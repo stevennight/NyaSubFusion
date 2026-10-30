@@ -442,6 +442,8 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
   const mode = String(val("render.video.mode") ?? "off");
   const profiles = ((deepGet(s.config?.effective, "render.profiles") as { name: string; format: string; enabled: boolean }[]) ?? []);
   const picked = (val("render.video.profiles") as string[]) ?? [];
+  const bc = s.summary?.broadcast;   // 字幕来自广播：能输出“广播字幕原样”
+  const burnSub = String(val("render.video.burn") ?? "");
   const toggle = (n: string) => set("render.video.profiles", picked.includes(n) ? picked.filter((x) => x !== n) : [...picked, n]);
   const ready = !!s.data?.cues.length && !s.running && !dirty;
   // 只显示封装 / 压制自己的进度（语音识别等步骤的进度在上面的步骤图里）
@@ -462,7 +464,24 @@ function VideoCard({ val, set, dirty, open, onToggle, mark }: {
           <span className={`chip ${picked.length ? "" : "acc"}`} style={{ cursor: "pointer" }} onClick={() => set("render.video.profiles", [])}>全部启用的</span>
           {profiles.map((pr) => <span key={pr.name} className={`chip ${picked.includes(pr.name) ? "acc" : ""}`} style={{ cursor: "pointer" }}
                                       onClick={() => toggle(pr.name)}>{pr.name} · {pr.format.toUpperCase()}</span>)}
+          {bc && <span className={`chip ${val("render.video.broadcast") && val("render.broadcast") ? "acc" : ""}`} style={{ cursor: "pointer" }}
+                       title="封装时另外放进一条原文字幕：广播字幕本来的位置、颜色、背景、振假名"
+                       onClick={() => set("render.video.broadcast", !val("render.video.broadcast"))}>广播字幕原样 · ASS</span>}
         </div>
+        <span className="lbl">压制用</span>
+        <div className="row wrap">
+          <select className="inp" style={{ width: "auto" }} value={burnSub} onChange={(e) => set("render.video.burn", e.target.value)}>
+            <option value="">第一个 ASS 方案</option>
+            {profiles.map((pr) => <option key={pr.name} value={pr.name}>{pr.name} · {pr.format.toUpperCase()}</option>)}
+            {(bc || burnSub === "broadcast") && <option value="broadcast">广播字幕原样（原文）</option>}
+          </select>
+          <Tip text="硬字幕只能压一条。SRT 没有样式，压制时用这个方案第一个图层的字体、字号；广播字幕原样是原文，位置、颜色、背景和电视上一样。" />
+        </div>
+        {bc && <>
+          <span className="lbl">广播字幕</span>
+          <label className="row dim"><input type="checkbox" checked={!!val("render.broadcast")} onChange={(e) => set("render.broadcast", e.target.checked)} />
+            输出广播字幕原样{bc.file ? `（${bc.file}）` : "（视频名.ja-broadcast.ass，输出字幕时生成）"}</label>
+        </>}
       </div>
       <More open={open} onToggle={onToggle} mark={mark} items={[
         [FONTS_LBL[String(val("render.video.fonts"))] ?? String(val("render.video.fonts")), "render.video.fonts"],

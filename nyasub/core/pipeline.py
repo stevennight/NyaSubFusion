@@ -1195,8 +1195,64 @@ class Run:
             log(f"已输出「{prof.name}」：{name}")
             written.append(name)
             self.written.append((prof, name))
+        bc = self._write_broadcast()
+        if bc:
+            written.append(bc)
         self._remember_outputs(written)
         return written
+
+    # ---------- 广播字幕原样 ----------
+    def broadcast_name(self):
+        from ..render.broadcast import SUFFIX
+
+        return f"{self.proj.stem}.{self.src or 'ja'}{SUFFIX}"
+
+    def _broadcast_source(self):
+        """字幕是从哪种广播字幕读的（和 _load_subs 挑的一样）：("ttml", 数据文件) / ("arib", 字幕轨) / None（外挂字幕等）。"""
+        from ..sources import media
+
+        c = self.cfg.subs
+        info = self.results.get("probe") or {}
+        if not c.enabled or (self.opts.subs_path or "").lower() == "none" or (self._subs_file() and c.track is None):
+            return None
+        tracks = [s for s in info.get("subtitles", []) if s["codec"] in media.TEXT_SUB_CODECS]
+        if c.track is not None:
+            tracks = [s for s in info.get("subtitles", []) if s["sub_index"] == c.track]
+        if tracks:
+            want = self.cfg.project.source
+            tracks.sort(key=lambda s: (s["codec"] != "arib_caption",
+                                       want != "auto" and lang.canonical(s["lang"]) != lang.canonical(want)))
+            return ("arib", tracks[0]) if tracks[0]["codec"] == "arib_caption" else None
+        bins = sorted(self.proj.root.glob("media/arib_ttml_*.bin"))
+        return ("ttml", bins[0]) if bins and c.track is None else None
+
+    def _write_broadcast(self):
+        """字幕来自广播时，另外输出一份原样的原文 ASS（render/broadcast.py）。返回文件名，没有返回 None。"""
+        from ..render import broadcast
+        from ..sources import media
+
+        if not self.cfg.render.broadcast:
+            return None
+        src = self._broadcast_source()
+        if not src:
+            return None
+        name = self.broadcast_name()
+        out = self.proj.video.with_name(name)
+        offset = float((self.results.get("align") or {}).get("offset") or 0.0)
+        font = broadcast.pick_font(self.cfg.render.broadcast_font)
+        try:
+            if src[0] == "ttml":
+                n = broadcast.ttml_to_ass(str(src[1]), str(out), offset, font)
+            else:
+                styled = self.proj.media(f"embedded_sub_{src[1]['sub_index']}_styled.{_slug(font)}.ass")
+                if not styled.exists():
+                    media.extract_arib_styled(str(self.proj.video), src[1], str(styled), font)
+                n = broadcast.shift_ass(str(styled), str(out), offset)
+        except Exception as e:  # 不影响别的输出
+            log(f"广播字幕原样没有输出：{e}")
+            return None
+        log(f"已输出广播字幕原样：{name}（{n} 条，字体 {font}" + (f"，时间挪了 {offset:+.1f} 秒" if offset else "") + "）")
+        return name
 
     # ---------- 输出视频 ----------
     def video_names(self):
@@ -1216,19 +1272,52 @@ class Run:
         return {"path": self.proj.video.with_name(name), "lang": codes[0] if codes else self.src,
                 "title": " / ".join(lang.get(c).name for c in codes) or prof.name, "profile": prof.name}
 
+    def _broadcast_track(self):
+        path = self.proj.video.with_name(self.broadcast_name())
+        if not (self.cfg.render.broadcast and path.exists() and self._broadcast_source()):
+            return None
+        return {"path": path, "lang": self.src, "title": f"{lang.get(self.src).name}（广播字幕原样）", "profile": "broadcast"}
+
     def _video_tracks(self, mode, profiles=None):
-        """要封装 / 压制的字幕：这次输出的（没输出过就按配置推算文件名）里，按指定方案挑。"""
-        want = profiles or self.cfg.render.video.profiles
+        """要封装 / 压制的字幕：这次输出的（没输出过就按配置推算文件名）里，按指定方案挑。
+        封装：选中的方案 + 广播字幕原样（有、而且开着的话）。
+        压制：只压一条——指定了方案（界面上某个方案的按钮、或者 render.video.burn）就压那个，ASS / SRT 都行，
+        "broadcast" 是广播字幕原样；没指定就压第一个 ASS 方案。"""
+        vc = self.cfg.render.video
+        if mode == "burn" and not profiles and vc.burn:
+            profiles = [vc.burn]
+        if mode == "burn" and profiles and profiles[0] == "broadcast":
+            bc = self._broadcast_track()
+            if not bc:
+                raise RuntimeError("没有广播字幕原样（字幕不是来自广播，或者输出方案里关掉了）")
+            return [bc]
+        want = profiles or vc.profiles
         written = self.written or [(p, self._profile_names(p)) for p in self.cfg.render.profiles if p.enabled]
         picked = [(p, n) for p, n in written if not want or p.name in want]
         if mode == "burn":
-            picked = [(p, n) for p, n in picked if p.format == "ass"][:1]
+            if profiles:  # 指定的方案按指定的顺序
+                picked = sorted(picked, key=lambda x: profiles.index(x[0].name))[:1]
+            else:
+                picked = [(p, n) for p, n in picked if p.format == "ass"][:1]
         tracks = [self._track(p, n) for p, n in picked]
+        if mode == "mux" and vc.broadcast and (bc := self._broadcast_track()):
+            tracks.append(bc)
         dup = [sum(x["title"] == t["title"] for x in tracks) > 1 for t in tracks]
         for t, d in zip(tracks, dup):  # 名字重复时（比如同一种语言的 ASS 和 SRT）加上方案名
             if d:
                 t["title"] += f"（{t['profile']}）"
         return tracks
+
+    def _srt_for_burn(self, track):
+        """压制 SRT 方案：用这个方案第一个显示的图层的样式，转成 ASS 再压（SRT 本身没有字体、字号）。"""
+        from ..render import ass
+
+        prof = next((p for p in self.cfg.render.profiles if p.name == track["profile"]), None)
+        ly = next((l for l in (prof.layers if prof else []) if l.show != "off"), None)
+        styles = self.cfg.render.styles
+        style = styles.get(ly.style if ly else "main") or next(iter(styles.values()))
+        aspect = ((self.results.get("probe") or {}).get("video") or {}).get("aspect") or 16 / 9
+        return ass.from_srt(track["path"], self.proj.media("burn_srt.ass"), style, aspect)
 
     def _video(self, mode, profiles=None):
         from ..render import video
@@ -1246,6 +1335,8 @@ class Run:
             from ..sources.media import _need
 
             _need("ffmpeg")
+            if mode == "burn" and str(tracks[0]["path"]).lower().endswith(".srt"):
+                tracks[0] = dict(tracks[0], path=self._srt_for_burn(tracks[0]))
             ass_files = [t["path"] for t in tracks if str(t["path"]).endswith(".ass")]
             fmode = "subset" if mode == "burn" else vc.fonts
             files, notes = video.collect_fonts(ass_files, self.proj.media(f"{mode}_fonts"), fmode)
@@ -1271,6 +1362,10 @@ class Run:
             return {"file": out.name, "tracks": [{k: t[k] for k in ("lang", "title", "profile")} for t in tracks],
                     "fonts": [f.name for f in files], "encoder": enc}
         return self.stage(mode, do, force=not out.exists())
+
+
+def _slug(text):
+    return re.sub(r"[^\w\-]+", "_", text or "").strip("_") or "x"
 
 
 def apply_edits(cues, edits: dict, src_lang=None):

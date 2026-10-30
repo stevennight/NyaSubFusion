@@ -342,3 +342,20 @@ def write_merged(path, cues, styles: dict, aspect, hardsub_boxes):
 def _save(path, lines):
     with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def from_srt(srt_path, out, style, aspect=16 / 9):
+    """SRT 压制成硬字幕用：套上一个样式（字体、字号、描边）转成 ASS，字幕放在底部正中，和播放器里显示 SRT 差不多。"""
+    import pysubs2
+
+    subs = pysubs2.load(str(srt_path), encoding="utf-8-sig")
+    py = 1080
+    px = round(py * aspect)
+    out_lines = [header(px, py, {"Default": style})]
+    for ev in subs.events:
+        if ev.is_comment or not ev.plaintext.strip():
+            continue
+        out_lines.append(f"Dialogue: 0,{ts(ev.start / 1000)},{ts(ev.end / 1000)},Default,,0,0,0,,{esc(ev.plaintext)}")
+    with open(out, "w", encoding="utf-8-sig", newline="\n") as f:
+        f.write("\n".join(out_lines) + "\n")
+    return out

@@ -1,4 +1,5 @@
 import re
+import threading
 from functools import lru_cache
 
 from . import ruby
@@ -18,16 +19,55 @@ _POS = {"接続助詞": "conj_particle", "助詞": "particle", "助動詞": "aux
         "名詞": "noun", "代名詞": "noun", "接尾辞": "suffix", "接頭辞": "prefix", "補助記号": "punct", "記号": "punct",
         "感動詞": "interj", "連体詞": "adnominal", "接続詞": "conj", "空白": "space"}
 
-_tokenizer = None
+_dictionary = None
+_dict_lock = threading.Lock()
+_local = threading.local()
 
 
 def _tok():
-    global _tokenizer
-    if _tokenizer is None:
-        from sudachipy import Dictionary
+    """sudachi 的分词器：词典大家共用（加载一次），分词器每个线程一个——同一个分词器不能两个线程同时用
+    （界面同时发来几个请求时会报 “Tokenizer is already in use”）。"""
+    global _dictionary
+    tok = getattr(_local, "tok", None)
+    if tok is None:
+        with _dict_lock:
+            if _dictionary is None:
+                from sudachipy import Dictionary
 
-        _tokenizer = Dictionary(dict="core").tokenizer()
-    return _tokenizer
+                _dictionary = Dictionary(dict="core")
+        tok = _local.tok = _dictionary.tokenizer()
+    return tok
+
+
+@lru_cache(maxsize=1024)
+def _furigana_hint(line, i, j, reading):
+    """画面上的振假名：line[i:j] 这几个汉字读 reading。找分词里包含它们的那个词（汉字前后只能是送假名），
+    分词给的读音和“送假名 + 振假名”对得上就不用管；对不上（藁苞 わらづと）返回整个词的读音。"""
+    reading = ruby.to_hira(reading)
+    if not reading or not 0 <= i < j <= len(line):
+        return None
+    try:
+        from sudachipy import SplitMode
+
+        toks = _tok().tokenize(line, SplitMode.C)
+    except ImportError:
+        return None
+    for m in toks:
+        s, e = m.begin(), m.end()
+        if not (s <= i and j <= e):
+            continue
+        surface = m.surface()
+        head, tail = line[s:i], line[j:e]
+        if not all(ruby.is_kana(c) for c in head + tail):  # 词里还有别的汉字：读音分不开，不管
+            return None
+        tail_h = ruby.to_hira(tail)
+        # 识别出的注音有时把送假名也带上了（瞬 + き 读成「まばたき」）
+        want = ruby.to_hira(head) + (reading if tail_h and reading.endswith(tail_h) else reading + tail_h)
+        got = ruby.to_hira(m.reading_form())
+        if got == want:
+            return None
+        return {"src": surface, "reading": want}
+    return None
 
 
 @lru_cache(maxsize=4096)
@@ -128,33 +168,9 @@ class Japanese(LanguagePack):
         return 0 < len(t) <= 12 and all(ruby.is_kana(c) for c in t)
 
     def furigana_hint(self, line, i, j, reading):
-        """画面上的振假名：line[i:j] 这几个汉字读 reading。找分词里包含它们的那个词（汉字前后只能是送假名），
-        分词给的读音和“送假名 + 振假名”对得上就不用管；对不上（藁苞 わらづと）返回整个词的读音。"""
-        reading = ruby.to_hira(reading)
-        if not reading or not 0 <= i < j <= len(line):
-            return None
-        try:
-            from sudachipy import SplitMode
+        hint = _furigana_hint(line, i, j, reading)
+        return dict(hint) if hint else None
 
-            toks = _tok().tokenize(line, SplitMode.C)
-        except ImportError:
-            return None
-        for m in toks:
-            s, e = m.begin(), m.end()
-            if not (s <= i and j <= e):
-                continue
-            surface = m.surface()
-            head, tail = line[s:i], line[j:e]
-            if not all(ruby.is_kana(c) for c in head + tail):  # 词里还有别的汉字：读音分不开，不管
-                return None
-            tail_h = ruby.to_hira(tail)
-            # 识别出的注音有时把送假名也带上了（瞬 + き 读成「まばたき」）
-            want = ruby.to_hira(head) + (reading if tail_h and reading.endswith(tail_h) else reading + tail_h)
-            got = ruby.to_hira(m.reading_form())
-            if got == want:
-                return None
-            return {"src": surface, "reading": want}
-        return None
 
     def ruby_visible(self, word, cfg, first):
         """cfg 是 AnnotateCfg；first 表示这个词是不是第一次出现。"""

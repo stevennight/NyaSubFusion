@@ -222,6 +222,9 @@ def create_app(token: str | None = None) -> FastAPI:
             "meta": meta, "src": run.src, "plan": (plan := run.plan()), "render": run.render_status(plan), "job": hub.status(pid),
             "config_files": run.config_files, "outputs": run.output_names(),
             "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
+            # 字幕来自广播：能输出“广播字幕原样”（source：ttml / arib；file：已经输出了的文件名）
+            "broadcast": ({"source": bs[0], "file": run.broadcast_name() if Path(p["video"]).with_name(run.broadcast_name()).exists() else None}
+                          if run.src and (bs := run._broadcast_source()) else None),
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
                                                 or media.hls_state(proj.media(media.HLS_DIR))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),

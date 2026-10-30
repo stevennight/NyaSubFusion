@@ -88,6 +88,16 @@ def extract_sub_stream(path, sub, out_path):
     subprocess.run(cmd, check=True)
 
 
+def extract_arib_styled(path, sub, out_path, font=""):
+    """ARIB 字幕（arib_caption）按原样转成 ASS：位置、颜色、背景、振假名都保留（libaribcaption）。"""
+    _need("ffmpeg")
+    cmd = ["ffmpeg", "-y", "-v", "error", "-fix_sub_duration", "-c:s", "libaribcaption", "-sub_type", "ass"]
+    if font:
+        cmd += ["-font", font]
+    cmd += ["-i", path, "-map", f"0:s:{sub['sub_index']}", "-c:s", "ass", out_path]
+    subprocess.run(cmd, check=True)
+
+
 def dump_data_stream(path, index, out_path, probe_bytes=0):
     """原样导出数据流内容。probe_bytes>0 时只读开头一小段（用来判断是不是字幕）。"""
     _need("ffmpeg")

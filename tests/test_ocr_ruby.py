@@ -67,3 +67,15 @@ def test_reading_hint_only_when_dictionary_disagrees():
     assert JA.furigana_hint("積丹の海", 0, 2, "せきたん") == {"src": "積丹", "reading": "せきたん"}
     assert JA.furigana_hint("瞬きひとつ", 0, 1, "まばたき") is None
     assert JA.furigana_hint("瞬きひとつ", 0, 1, "まばた") is None
+
+
+def test_tokenizer_safe_across_threads():
+    """界面同时发来几个请求（每个都会读结果、整理振假名）：分词器不能被两个线程同时用，每个线程有自己的。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nyasub.lang import ja
+
+    lines = [f"積丹の海{i}で瞬きひとつ" for i in range(200)]
+    with ThreadPoolExecutor(8) as pool:
+        got = list(pool.map(lambda t: [m.surface() for m in ja._tok().tokenize(t)], lines))
+    assert all(g[0] == "積丹" for g in got)

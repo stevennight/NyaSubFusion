@@ -79,7 +79,7 @@ def is_own_output(path, legacy_srt=True):
     """是不是本工具自己写出的字幕（不能当成“自带字幕”再读进来，否则译文会被当成原文）。
     ASS 看文件头的标记；SRT 没地方写标记：旧项目（还没有输出记录）里，旁边有同名的、我们写的 ASS 就算。"""
     low = path.lower()
-    if "-merged." in low:
+    if "-merged." in low or "-broadcast." in low:
         return True
     if low.endswith((".ass", ".ssa")):
         return _own_ass(path)

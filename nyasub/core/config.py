@@ -195,6 +195,8 @@ class VideoOutCfg(_M):
     encoder: Literal["auto", "h264_nvenc", "libx264", "hevc_nvenc", "libx265"] = "auto"  # auto：先试显卡，再用 CPU
     quality: int = Field(20, ge=0, le=51)    # 压制画质（CRF / CQ）：越小越清晰、文件越大，常用 18~23
     height: int = 0                          # 压制时缩放到这个高度；0 = 原尺寸
+    broadcast: bool = True                   # 封装时也放进“广播字幕原样”（字幕来自广播时才有，见 render.broadcast）
+    burn: str = ""                           # 压制哪个字幕：空 = 第一个启用的 ASS 方案；方案名（ASS / SRT 都行）；"broadcast" = 广播字幕原样
 
 
 class RenderCfg(_M):
@@ -213,6 +215,9 @@ class RenderCfg(_M):
     profiles: list[ProfileCfg] = Field(default_factory=lambda: copy.deepcopy(DEFAULT_PROFILES))
     video: VideoOutCfg = VideoOutCfg()
     merged_debug: bool = True                # 另外输出按来源上色的原文合并字幕，方便检查
+    # 字幕来自广播（ARIB）时，另外输出一份原样的原文 ASS：位置、字号、颜色、背景、振假名照搬（视频名.ja-broadcast.ass）
+    broadcast: bool = True
+    broadcast_font: str = ""                 # 广播字幕原样用的字体；空 = 自动（圆体优先，其次等宽的日文字体）
     # 输出前从原文、译文里去掉的符号。默认去掉日文字幕行尾的“➡”（表示这句话接到下一条字幕）
     strip_marks: list[str] = Field(default_factory=lambda: ["➡"])
     lang_options: dict[str, dict] = Field(default_factory=dict)  # 按语言的排版选项，见各语言包

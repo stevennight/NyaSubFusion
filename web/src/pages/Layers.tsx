@@ -243,7 +243,7 @@ export function LayersPage() {
             try { const r = await api.export(s.pid, [prof.name]); s.toast(`已导出：${r.files.join("、")}`); } catch (e) { s.setError((e as Error).message); }
           }}>导出这个方案</button>
           <button className="btn" disabled={s.running || !s.data?.cues.length} onClick={() => s.exportVideo("mux", [prof.name])}>封装进 MKV</button>
-          <button className="btn" disabled={s.running || !s.data?.cues.length || prof.format !== "ass"} title={prof.format !== "ass" ? "压制需要 ASS 方案" : ""}
+          <button className="btn" disabled={s.running || !s.data?.cues.length} title={prof.format !== "ass" ? "SRT 没有样式：用这个方案第一个图层的字体、字号压制" : ""}
                   onClick={() => s.exportVideo("burn", [prof.name])}>压制硬字幕</button>
           <span className="dim" style={{ fontSize: 12 }}>预览和导出的 ASS 用同一套排版位置；带注音的 ASS 播放端需要有同一字体。</span>
         </div>
