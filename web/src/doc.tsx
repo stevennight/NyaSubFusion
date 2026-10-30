@@ -24,13 +24,37 @@ export function useDoc(): ConfigDoc | null {
 
 export type SaveState = "saved" | "pending" | "saving";
 
+// 还没存完的草稿：运行条据此等一等（不然会按改之前的设置运行）
+const unsaved = new Set<symbol>();
+const listeners = new Set<() => void>();
+function markUnsaved(id: symbol, on: boolean) {
+  if (on === unsaved.has(id)) return;
+  if (on) unsaved.add(id); else unsaved.delete(id);
+  listeners.forEach((f) => f());
+}
+export function useUnsaved(): boolean {
+  const [n, setN] = useState(unsaved.size);
+  useEffect(() => { const f = () => setN(unsaved.size); listeners.add(f); return () => { listeners.delete(f); }; }, []);
+  return n > 0;
+}
+
 /** 一块设置的草稿：改了 delay 毫秒后自动存进这一份设置（write 把草稿写回原始配置）。草稿只在第一次拿到设置时读一次。 */
 export function useDraft<T>(doc: ConfigDoc | null, load: (doc: ConfigDoc) => T, write: (raw: Cfg, v: T) => Cfg, delay = 500) {
   const [v, setV] = useState<T | null>(() => (doc ? load(doc) : null));
   const [state, setState] = useState<SaveState>("saved");
   const dirty = useRef(false);
+  const id = useRef(Symbol("draft"));
+  useEffect(() => { markUnsaved(id.current, state !== "saved"); }, [state]);
   const docRef = useRef(doc);
   docRef.current = doc;
+  const vRef = useRef(v);
+  vRef.current = v;
+  // 离开页面时还没到保存的时间：马上存，不丢改动
+  useEffect(() => () => {
+    markUnsaved(id.current, false);
+    const d = docRef.current;
+    if (dirty.current && d && vRef.current !== null) d.save(write(d.raw, vRef.current)).catch((e) => d.onError((e as Error).message));
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (v === null && doc) setV(load(doc)); }, [doc]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!dirty.current || v === null) return;

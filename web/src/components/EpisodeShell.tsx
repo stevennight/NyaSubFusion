@@ -4,10 +4,11 @@ import { DocProvider, type ConfigDoc } from "../doc";
 import { EditorPage } from "../pages/Editor";
 import { GlossaryPage } from "../pages/Glossary";
 import { OutputPage } from "../pages/Output";
-import { PipelinePage } from "../pages/Pipeline";
+import { ProcessPage } from "../pages/Process";
 import { useStore } from "../store";
 import { langName } from "../util";
 import { PageGuard } from "./PageGuard";
+import { RunBar } from "./RunBar";
 
 export type EpTab = "process" | "review" | "output" | "notes";
 
@@ -36,8 +37,7 @@ export function EpisodeShell({ tab, setTab }: { tab: EpTab; setTab: (t: EpTab) =
         {d && <span className="chip">{langName(d.src, s.langs)} → {d.targets.map((t) => langName(t, s.langs)).join("、")}</span>}
         {d && d.cues.length > 0 && <span className={`chip ${todo ? "warn" : "ok"}`}>{todo ? `待审校 ${todo} / ${d.cues.length}` : "审校完成"}</span>}
         <span className="sp" />
-        {s.summary && (s.running ? <span className="chip acc">● 运行中</span>
-          : <span className={`chip ${stale ? "warn" : "ok"}`}>{stale ? `${stale} 步待运行` : "全部完成"}</span>)}
+        <RunBar />
       </div>
       <div className="tabs eptabs">
         {TABS.map(([t, label, sub]) => (
@@ -47,7 +47,7 @@ export function EpisodeShell({ tab, setTab }: { tab: EpTab; setTab: (t: EpTab) =
       <div className={`epbody${tab === "review" ? " fill" : ""}`}>
         <DocProvider doc={doc}>
           <PageGuard key={tab} onBack={() => setTab("process")}>
-            {tab === "process" && <PipelinePage onReview={() => setTab("review")} />}
+            {tab === "process" && <ProcessPage onTab={setTab} />}
             {tab === "review" && <EditorPage />}
             {tab === "output" && <OutputPage />}
             {tab === "notes" && <GlossaryPage />}

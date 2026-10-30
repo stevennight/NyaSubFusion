@@ -30,7 +30,17 @@ interface Store {
   toast: (msg: string, action?: ToastAction) => void;   // action：提示里带一个按钮（比如撤销后的“重做”）
   toastMsg: string | null;
   toastAction: ToastAction | null;
+  runOpts: RunOpts;             // 下次运行的选项（运行条和处理页的“下次重做这一步”共用）
+  setRunOpts: (f: (o: RunOpts) => RunOpts) => void;
 }
+
+export interface RunOpts {
+  until: string;          // 运行到哪一步
+  redo: string[];         // 一定要重做的步骤（"all" = 全部）
+  noCache: boolean;       // 重做的步骤不用缓存（大模型、云端语音识别重新请求）
+  clearEdits: boolean;    // 清掉审校时的手动修改
+}
+export const RUN_DEFAULT: RunOpts = { until: "render", redo: [], noCache: false, clearEdits: false };
 
 export interface ToastAction { label: string; run: () => void }
 
@@ -53,6 +63,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [toastMsg, setToast] = useState<string | null>(null);
   const [toastAction, setToastAction] = useState<ToastAction | null>(null);
+  const [runOpts, setRunOptsRaw] = useState<RunOpts>(RUN_DEFAULT);
+  const setRunOpts = useCallback((f: (o: RunOpts) => RunOpts) => setRunOptsRaw(f), []);
   const toastTimer = useRef(0);
 
   const toast = useCallback((msg: string, action?: ToastAction) => {
@@ -91,6 +103,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setStageProg({});
     setLive({});
     setLiveSec({});
+    setRunOptsRaw(RUN_DEFAULT);
   }, []);
 
   useEffect(() => { api.langs().then(setLangs).catch(() => {}); }, []);
@@ -199,8 +212,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
-    open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, toast, toastMsg, toastAction]);
+    open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, saveConfig, overwriteSeries, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
