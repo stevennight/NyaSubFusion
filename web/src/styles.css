@@ -88,6 +88,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .subs .ly ruby { ruby-position: over }
 .subs .ly rt { line-height: 1; padding-bottom: .06em }
 .subs .near { position: absolute; white-space: pre; line-height: 1.25 }
+/* 输出页：框出正在改的图层 / 样式 */
+.subs .ly.hl, .subs .near.hl { outline: 2px dashed var(--acc); outline-offset: 2px; border-radius: 2px }
 .subs .bx { position: absolute; border: 1.5px dashed #5fd39a; border-radius: 2px }
 .subs .bx.drop { border-color: #ff6b6b }
 .subs .bx i { position: absolute; left: -1px; top: -16px; font: 600 10px/15px var(--ui); font-style: normal; background: #5fd39a; color: #06200f; padding: 0 4px; border-radius: 2px; white-space: nowrap }
@@ -378,9 +380,16 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .lay.sel { border-color: var(--acc2) }
 .lay .lh { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer }
 .lay .lh b { font-weight: 500 }
-.lay .ord { display: flex; flex-direction: column }
-.lay .ord button, .lay .del { border: 0; background: none; color: var(--tx3); padding: 0 4px; line-height: 12px; font-size: 11px }
-.lay .del { font-size: 16px } .lay .ord button:hover { color: var(--tx) } .lay .del:hover { color: var(--bad) }
+.lay .grip { cursor: grab; color: var(--tx3); font-size: 14px; padding: 0 2px; user-select: none; touch-action: none; border-radius: 3px }
+.lay .grip:hover, .lay .grip:focus-visible { color: var(--tx); background: var(--panel2); outline: none }
+.stack.dragging, .stack.dragging * { cursor: grabbing !important; user-select: none }
+.lay.moving { opacity: .45 }
+.lay { position: relative }
+.lay.drop-before::before, .stack.drop-end::after { content: ""; display: block; height: 2px; background: var(--acc); border-radius: 1px }
+.lay.drop-before::before { position: absolute; left: 0; right: 0; top: -5px }
+.stack.drop-end::after { margin-top: -3px }
+.lay .del { border: 0; background: none; color: var(--tx3); padding: 0 4px; line-height: 12px; font-size: 16px }
+.lay .del:hover { color: var(--bad) }
 .lay .lb { border-top: 1px solid var(--line); padding: 10px 12px }
 .usedby { display: flex; flex-direction: column; gap: 4px }
 .usedby > div { display: flex; gap: 8px; align-items: center; padding: 4px 8px; background: var(--bg2); border-radius: 6px }
@@ -446,10 +455,10 @@ table.tb { width: 100%; border-collapse: collapse }
 .series-card .sh:hover { background: #2d2d3a }
 .series-card .sh.plain { cursor: default } .series-card .sh.plain:hover { background: var(--panel2) }
 .series-card .sh b { font-size: 14.5px }
-.ep { display: grid; grid-template-columns: 22px minmax(0, 1.6fr) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid #2a2a35; cursor: pointer }
-.ep:hover { background: #24242f }
-.ep.gone { opacity: .55; cursor: default }
-.ep.add { display: block; color: var(--tx3); font-size: 12.5px } .ep.add:hover { color: var(--acc) }
-.ep .epname { min-width: 0 } .ep .epname b { font-weight: 500 }
-.ep .epname small { display: block; color: var(--tx3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.eprow { display: grid; grid-template-columns: 22px minmax(0, 1.6fr) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid #2a2a35; cursor: pointer }
+.eprow:hover { background: #24242f }
+.eprow.gone { opacity: .55; cursor: default }
+.eprow.add { display: block; color: var(--tx3); font-size: 12.5px } .eprow.add:hover { color: var(--acc) }
+.eprow .epname { min-width: 0 } .eprow .epname b { font-weight: 500 }
+.eprow .epname small { display: block; color: var(--tx3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .chip.mini { margin-left: 6px }

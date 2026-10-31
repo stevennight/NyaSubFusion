@@ -1,33 +1,77 @@
-// 新建项目向导：第一次打开一个视频（还没有 project.toml）时显示。
+// 新建项目向导：第一次打开一个视频（还没有 project.toml）时显示。「任务」里批量加入用同一套选项（useSetup）。
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
-import type { ProjectSummary, SeriesInfo } from "../types";
+import type { PresetInfo, ProjectSummary, SeriesInfo } from "../types";
 import { SeriesPicker } from "./SeriesPicker";
+
+export interface SetupOpts { preset: string; source: string; targets: string[]; series: string; context: string }
+
+/** 新建一集要选的：作品、节目说明、语言、预设。series：从作品页“加一集”进来时已经选好。
+ *  返回两块界面：left（作品、节目说明、语言）、right（预设），和选好的值。 */
+export function useSetup(series = "", batch = false) {
+  const s = useStore();
+  const [presets, setPresets] = useState<PresetInfo[]>([]);
+  const [picked, setPicked] = useState<SeriesInfo | null>(null);   // 选了已有的作品
+  const [o, setO] = useState<SetupOpts>({ preset: "documentary", source: "auto", targets: ["zh-Hans"], series, context: "" });
+  const set = (p: Partial<SetupOpts>) => setO((cur) => ({ ...cur, ...p }));
+  useEffect(() => { api.presets().then((l) => { setPresets(l); const d = l.find((x) => x.default); if (d) set({ preset: d.id }); }); }, []);
+  const follow = !!picked?.settings;   // 作品有默认设置：复制一份给这一集，不用选语言和预设
+  const toggle = (code: string) => set({ targets: o.targets.includes(code) ? o.targets.filter((t) => t !== code) : [...o.targets, code] });
+  const each = batch ? "每一集" : "这一集";
+
+  const left = (<>
+    <h3>作品</h3>
+    <SeriesPicker value={o.series} onChange={(v) => set({ series: v })} onPicked={setPicked} />
+    {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：{each}会复制一份作品的设置（语言、识别、输出都用它）。之后{each}和作品各自独立，在{each}的「处理」「输出」里改不影响作品。节目说明不填就用作品的。</div>}
+    <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
+              value={o.context} onChange={(e) => set({ context: e.target.value })} />
+    {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
+      <div className="kv">
+        <span className="lbl">源语言</span>
+        <select className="inp" value={o.source} onChange={(e) => set({ source: e.target.value })}>
+          <option value="auto">自动判断（按语音 / 字幕）</option>
+          {s.langs.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
+        </select>
+        <span className="lbl">翻译成</span>
+        <div className="row wrap">{s.langs.map((l) => (
+          <span key={l.code} className={`chip ${o.targets.includes(l.code) ? "acc" : ""}`} style={{ cursor: "pointer" }} onClick={() => toggle(l.code)}>{l.name}</span>))}</div>
+      </div></>}
+  </>);
+
+  const right = (
+    <div style={follow ? { opacity: 0.4, pointerEvents: "none" } : undefined}>
+      <h3>内容预设{follow ? <span className="dim" style={{ fontWeight: 400, fontSize: 12 }}>（用作品的默认设置，不用选）</span> : null}</h3>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {presets.map((x) => (
+          <div key={x.id} onClick={() => set({ preset: x.id })} style={{ cursor: "pointer", border: `1px solid ${o.preset === x.id ? "var(--acc)" : "var(--line2)"}`,
+            background: o.preset === x.id ? "#ff7aa812" : "var(--bg2)", borderRadius: 8, padding: 10 }}>
+            <b>{x.name}</b>{!x.builtin && <span className="chip" style={{ marginLeft: 6 }}>我的</span>}{x.default && <span className="chip mini">新项目默认</span>}
+            <div className="dim" style={{ fontSize: 12 }}>{x.desc}</div>
+          </div>
+        ))}
+      </div>
+      <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>选的预设就是{each}的模板：设置写在项目的 project.toml 里，之后可以在「处理」「输出」里随时改，也能随时恢复成模板的值。</div>
+    </div>
+  );
+  const ok = follow || o.targets.length > 0;
+  return { opts: { ...o, series: o.series.trim() }, left, right, ok };
+}
 
 export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summary: ProjectSummary; onDone: () => void; onCancel: () => void; series?: string }) {
   const s = useStore();
-  const [presets, setPresets] = useState<{ id: string; name: string; desc: string }[]>([]);
-  const [picked, setPicked] = useState<SeriesInfo | null>(null);   // 选了已有的作品
-  const [preset, setPreset] = useState("documentary");
-  const [source, setSource] = useState("auto");
-  const [targets, setTargets] = useState<string[]>(["zh-Hans"]);
-  const [seriesName, setSeriesName] = useState(series);   // 从作品页“加一集”进来时已经选好
-  const [context, setContext] = useState("");
+  const st = useSetup(series);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api.presets().then((l) => { setPresets(l); const d = l.find((x) => x.default); if (d) setPreset(d.id); }); }, []);
-  const follow = !!picked?.settings;   // 作品有默认设置：复制一份给这一集，不用选语言和预设
 
   const p = summary.probe ?? {};
   const textSubs = (p.subtitles ?? []).filter((t) => !["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"].includes(t.codec));
   const create = async () => {
     setBusy(true);
     try {
-      await api.setup(summary.id, { preset, source, targets, series: seriesName.trim(), context });
+      await api.setup(summary.id, st.opts);
       onDone();
     } catch (e) { s.setError((e as Error).message); } finally { setBusy(false); }
   };
-  const toggle = (code: string) => setTargets(targets.includes(code) ? targets.filter((t) => t !== code) : [...targets, code]);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000a", display: "grid", placeItems: "center", zIndex: 60 }}>
@@ -40,7 +84,7 @@ export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summar
           <div>
             <h3>检测到的来源</h3>
             {p.error ? <div className="chip bad">{p.error}</div> : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
                 <div className="row"><span className="badge b-c">字幕</span>
                   {p.external_subs ? `同名外挂字幕：${p.external_subs.split(/[\\/]/).pop()}`
                     : textSubs.length ? `内封字幕 ${textSubs.length} 条：${textSubs.map((t) => `${t.codec}${t.lang ? " " + t.lang : ""}`).join("、")}`
@@ -49,41 +93,13 @@ export function SetupWizard({ summary, onDone, onCancel, series = "" }: { summar
                 <div className="row"><span className="badge b-o">画面字</span>{p.video ? `${p.video.width}×${p.video.height} ${p.video.codec ?? ""}` : <span className="dim">纯音频，不识别画面字</span>}</div>
               </div>
             )}
-            <h3 style={{ marginTop: 14 }}>作品</h3>
-            <SeriesPicker value={seriesName} onChange={setSeriesName} onPicked={setPicked} />
-            {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：这一集会复制一份作品的设置（语言、识别、输出都用它）。之后这一集和作品各自独立，在这一集的「处理」「输出」里改不影响作品。节目说明不填就用作品的。</div>}
-            <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
-                      value={context} onChange={(e) => setContext(e.target.value)} />
-            {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
-            <div className="kv">
-              <span className="lbl">源语言</span>
-              <select className="inp" value={source} onChange={(e) => setSource(e.target.value)}>
-                <option value="auto">自动判断（按语音 / 字幕）</option>
-                {s.langs.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
-              </select>
-              <span className="lbl">翻译成</span>
-              <div className="row wrap">{s.langs.map((l) => (
-                <label key={l.code} className={`chip ${targets.includes(l.code) ? "acc" : ""}`} style={{ cursor: "pointer" }}>
-                  <input type="checkbox" checked={targets.includes(l.code)} onChange={() => toggle(l.code)} style={{ display: "none" }} />{l.name}
-                </label>))}</div>
-            </div></>}
+            {st.left}
           </div>
-          <div style={follow ? { opacity: 0.4, pointerEvents: "none" } : undefined}>
-            <h3>内容预设{follow ? <span className="dim" style={{ fontWeight: 400, fontSize: 12 }}>（用作品的默认设置，不用选）</span> : null}</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {presets.map((x) => (
-                <div key={x.id} onClick={() => setPreset(x.id)} style={{ cursor: "pointer", border: `1px solid ${preset === x.id ? "var(--acc)" : "var(--line2)"}`,
-                  background: preset === x.id ? "#ff7aa812" : "var(--bg2)", borderRadius: 8, padding: 10 }}>
-                  <b>{x.name}</b>{"builtin" in x && !x.builtin && <span className="chip" style={{ marginLeft: 6 }}>我的</span>}<div className="dim" style={{ fontSize: 12 }}>{x.desc}</div>
-                </div>
-              ))}
-            </div>
-            <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>选的预设就是这一集的模板：设置写在项目的 project.toml 里，之后可以在「处理」「输出」里随时改，也能随时恢复成模板的值。</div>
-          </div>
+          {st.right}
         </div>
         <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
           <button className="btn ghost" onClick={onCancel}>取消</button>
-          <button className="btn pri" disabled={busy || targets.length === 0} onClick={create}>{busy ? "创建中…" : "创建项目"}</button>
+          <button className="btn pri" disabled={busy || !st.ok} onClick={create}>{busy ? "创建中…" : "创建项目"}</button>
         </div>
       </div>
     </div>

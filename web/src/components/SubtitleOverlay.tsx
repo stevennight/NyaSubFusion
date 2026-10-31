@@ -2,7 +2,7 @@
 // 传了 onMove 时（审校页），每条字幕都能在画面上直接拖：松手时把字幕块底边中点的位置（相对画面 0~1）交给 onMove 保存。
 // 拖的时候靠近画面正中、四边的安全边会吸附（按住 Alt 不吸）；点一下选中后可以用方向键微调。
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
-import type { Candidate, Preview, PreviewItem } from "../types";
+import type { Candidate, Preview, PreviewHl, PreviewItem } from "../types";
 import { styleCss } from "../util";
 
 export function useSize<T extends HTMLElement>() {
@@ -25,9 +25,10 @@ type Guides = { x: number[]; y: number[] };  // 吸附到的参考线（相对�
 /** 拖动 / 微调要用的：保存、选中、画参考线。没传 onMove（只看不改的地方）就没有。 */
 interface Ctl { k: number; onMove: OnMoveSub; picked: string | null; pick: (cue: string | null) => void; setGuides: (g: Guides | null) => void }
 
-export function SubtitleOverlay({ preview, time, width, height, boxes, onMove, onPick }: {
+export function SubtitleOverlay({ preview, time, width, height, boxes, onMove, onPick, hl }: {
   preview: Preview | null; time: number; width: number; height: number; boxes?: Candidate[]; onMove?: OnMoveSub;
   onPick?: (cueId: string) => void;  // 在画面上点选了一条字幕（审校页跟着选中这一条）
+  hl?: PreviewHl;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [guides, setGuides] = useState<Guides | null>(null);
@@ -60,8 +61,8 @@ export function SubtitleOverlay({ preview, time, width, height, boxes, onMove, o
         );
       })}
       {items.map((it, i) => (it.kind === "info"
-        ? <Info key={`${it.cue ?? i}-${it.start}`} it={it} preview={preview} k={k} ctl={ctl} />
-        : <Main key={`${it.cue ?? i}-${it.start}`} it={it} preview={preview} k={k} ctl={ctl} />))}
+        ? <Info key={`${it.cue ?? i}-${it.start}`} it={it} preview={preview} k={k} ctl={ctl} hl={!!hl?.style && it.style === hl.style} />
+        : <Main key={`${it.cue ?? i}-${it.start}`} it={it} preview={preview} k={k} ctl={ctl} hl={hl} />))}
       {guides?.x.map((x) => <div key={`x${x}`} className="guide v" style={{ left: x }} />)}
       {guides?.y.map((y) => <div key={`y${y}`} className="guide h" style={{ top: y }} />)}
     </div>
@@ -196,7 +197,7 @@ function useDrag(it: PreviewItem, ctl?: Ctl) {
 
 const shift = (off: [number, number] | null) => (off ? ` translate(${off[0]}px, ${off[1]}px)` : "");
 
-function Main({ it, preview, k, ctl }: { it: PreviewItem; preview: Preview; k: number; ctl?: Ctl }) {
+function Main({ it, preview, k, ctl, hl }: { it: PreviewItem; preview: Preview; k: number; ctl?: Ctl; hl?: PreviewHl }) {
   const { off, props } = useDrag(it, ctl);
   // 手动放过位置：底边中点在 (x, y)；否则居中，离底边 margin_v
   const at: CSSProperties = it.x != null && it.y != null
@@ -209,7 +210,8 @@ function Main({ it, preview, k, ctl }: { it: PreviewItem; preview: Preview; k: n
         const css = styleCss(st, k);
         const rt: CSSProperties = { fontSize: `${r.rsize / st.size}em`, ...(r.rcolor ? { color: r.rcolor } : {}) };
         return (
-          <div key={i} className={`ly ${it.type === "song" ? "song" : ""}`} style={{ ...css, height: r.height * k }}>
+          <div key={i} className={`ly ${it.type === "song" ? "song" : ""}${(hl?.layer != null && r.layer === hl.layer) || (hl?.style && r.style === hl.style) ? " hl" : ""}`}
+               style={{ ...css, height: r.height * k }}>
             {r.chunks.map(([t, ruby], j) => (ruby ? <ruby key={j}>{t}<rt style={rt}>{ruby}</rt></ruby> : <span key={j}>{t}</span>))}
           </div>
         );
@@ -218,14 +220,14 @@ function Main({ it, preview, k, ctl }: { it: PreviewItem; preview: Preview; k: n
   );
 }
 
-function Info({ it, preview, k, ctl }: { it: PreviewItem; preview: Preview; k: number; ctl?: Ctl }) {
+function Info({ it, preview, k, ctl, hl }: { it: PreviewItem; preview: Preview; k: number; ctl?: Ctl; hl?: boolean }) {
   const { off, props } = useDrag(it, ctl);
   const st = preview.styles[it.style!] ?? Object.values(preview.styles)[0];
   const css: CSSProperties = { ...styleCss(st, k) };
   if (it.top) {
     return (
       <div {...props} className={`blk ${props.className ?? ""}`} style={{ top: "4%", ...(off ? { transform: shift(off).trim() } : {}) }}>
-        <div className="ly" style={css}>{it.lines!.join("\n")}</div>
+        <div className={`ly${hl ? " hl" : ""}`} style={css}>{it.lines!.join("\n")}</div>
       </div>
     );
   }
@@ -233,7 +235,7 @@ function Info({ it, preview, k, ctl }: { it: PreviewItem; preview: Preview; k: n
   const tx = an % 3 === 1 ? "0" : an % 3 === 2 ? "-50%" : "-100%";
   const ty = an <= 3 ? "-100%" : an <= 6 ? "-50%" : "0";
   return (
-    <div {...props} className={`near ${props.className ?? ""}`}
+    <div {...props} className={`near ${props.className ?? ""}${hl ? " hl" : ""}`}
          style={{ ...css, left: it.x! * k, top: it.y! * k, transform: `translate(${tx}, ${ty})${shift(off)}`, textAlign: an % 3 === 0 ? "right" : an % 3 === 2 ? "center" : "left" }}>
       {it.lines!.join("\n")}
     </div>

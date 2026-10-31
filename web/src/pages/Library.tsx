@@ -87,7 +87,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
               <span className="sp" /><span className="dim">进入作品 ›</span>
             </div>
             {eps.map((p) => <EpRow key={p.id} p={p} current={s.pid === p.id} onOpen={() => ov.open(p.video)} onChanged={load} />)}
-            <div className="ep add" onClick={() => ov.pick(name)}>＋ 给这部作品加一集{info?.settings ? "（复制作品的默认设置）" : ""}</div>
+            <div className="eprow add" onClick={() => ov.pick(name)}>＋ 给这部作品加一集{info?.settings ? "（复制作品的默认设置）" : ""}</div>
           </div>
         );
       })}
@@ -95,7 +95,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
         <div className="series-card">
           <div className="sh plain"><b>未归入作品</b><span className="chip">{loose.length} 个</span><span className="sp" /><span className="dim">每个项目独立设置、独立术语表</span></div>
           {loose.map((p) => <EpRow key={p.id} p={p} current={s.pid === p.id} onOpen={() => ov.open(p.video)} onChanged={load} />)}
-          {loose.length === 0 && <div className="ep dim">还没有项目。打开一个视频就会出现在这里。</div>}
+          {loose.length === 0 && <div className="eprow dim">还没有项目。打开一个视频就会出现在这里。</div>}
         </div>
       )}
       {ov.ui}
@@ -112,7 +112,7 @@ function EpRow({ p, current, onOpen, onChanged }: { p: ProjectEntry; current: bo
     : p.reached ? [`做到：${STAGE_LBL[p.reached] ?? p.reached}`, "", "stale"] : ["未运行", "", "na"];
   const mins = p.duration ? `${Math.floor(p.duration / 60)} 分 ${String(Math.round(p.duration % 60)).padStart(2, "0")} 秒` : "";
   return (
-    <div className={`ep${p.exists ? "" : " gone"}`} onClick={p.exists ? onOpen : undefined} title={p.video}>
+    <div className={`eprow${p.exists ? "" : " gone"}`} onClick={p.exists ? onOpen : undefined} title={p.video}>
       <span className={`dot ${dot}`} />
       <div className="epname"><b>{p.name}</b>{current && <span className="chip acc mini">当前</span>}{!p.exists && <span className="chip bad mini">文件不存在</span>}
         <small>📁 {p.folder}{mins ? ` · ${mins}` : ""} · 打开于 {new Date(p.opened * 1000).toLocaleDateString()}</small></div>

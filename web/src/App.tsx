@@ -6,6 +6,7 @@ import { LibraryPage } from "./pages/Library";
 import { QueuePage } from "./pages/Queue";
 import { SeriesPage, type SeriesTab } from "./pages/Series";
 import { SettingsPage } from "./pages/Settings";
+import { useUndoKeys } from "./doc";
 import { useStore } from "./store";
 
 // 左栏只放应用级的：库 · 任务 · 设置。打开一集以后，这一集的工作在页内标签里切换（处理 · 审校 · 输出 · 资料）。
@@ -30,6 +31,7 @@ function initial(): [View, EpTab] {
 
 export default function App() {
   const s = useStore();
+  useUndoKeys(s.toast);
   const [view, setView] = useState<View>(() => initial()[0]);
   const [tab, setTab] = useState<EpTab>(() => initial()[1]);
   useEffect(() => { localStorage.setItem("nyasub.view", view); }, [view]);
@@ -45,6 +47,7 @@ export default function App() {
   const [seriesTab, setSeriesTab] = useState<SeriesTab>("eps");
   useEffect(() => { localStorage.setItem("nyasub.series", seriesName); }, [seriesName]);
   useEffect(() => { if (view === "series" && !seriesName) setView("library"); }, [view, seriesName]);
+  const [queueAdd, setQueueAdd] = useState(false);   // 从库里点“批量加入…”：进「任务」直接打开加入对话框
   const openSeries = (name: string, t: SeriesTab = "eps") => { setSeriesName(name); setSeriesTab(t); setView("series"); };
 
   const series = s.config?.effective?.project?.series as string | undefined;
@@ -89,13 +92,13 @@ export default function App() {
         {s.error && <div className="errbar">⚠ {s.error}<span className="sp" /><button className="btn sm ghost" onClick={() => s.setError(null)}>关闭</button></div>}
         <PageGuard key={view === "ep" ? `ep:${s.pid ?? ""}` : view === "tpl" ? `tpl:${tpl?.target.kind}:${tpl?.target.id}` : view === "series" ? `series:${seriesName}` : view}
                    onBack={() => setView("library")}>
-          {view === "library" && <LibraryPage onOpened={() => openEp("process")} onSeries={(n) => openSeries(n)} onQueue={() => setView("queue")} />}
+          {view === "library" && <LibraryPage onOpened={() => openEp("process")} onSeries={(n) => openSeries(n)} onQueue={() => { setQueueAdd(true); setView("queue"); }} />}
           {view === "series" && seriesName && <SeriesPage name={seriesName} tab={seriesTab} setTab={setSeriesTab} onOpened={() => openEp("process")}
                                                            onRenamed={(to) => setSeriesName(to)} />}
           {view === "ep" && s.pid && <EpisodeShell tab={tab} setTab={setTab} onSeries={(name) => openSeries(name, "settings")} />}
           {view === "settings" && <SettingsPage onEditPreset={(id) => openTpl({ kind: "preset", id })} />}
           {view === "tpl" && tpl && <TemplateEditor target={tpl.target} onDone={() => setView(tpl.back)} />}
-          {view === "queue" && <QueuePage onOpenProject={() => openEp("process")} />}
+          {view === "queue" && <QueuePage onOpenProject={() => openEp("process")} addOpen={queueAdd} onAddClosed={() => setQueueAdd(false)} />}
         </PageGuard>
       </main>
       {s.toastMsg && (

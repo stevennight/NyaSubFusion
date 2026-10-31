@@ -80,13 +80,15 @@ export interface Style {
   em_scale?: number;  // 预览用：ASS 字号是字体整体高度，浏览器字号是 em，乘上它两边才一样大
 }
 
-export interface PreviewRow { style: string; role: string; chunks: [string, string | null][]; rsize: number; rcolor: string; height: number }
+export interface PreviewRow { style: string; role: string; layer?: number; chunks: [string, string | null][]; rsize: number; rcolor: string; height: number }
 export interface PreviewItem {
   kind: "main" | "info"; start: number; end: number; sources: string[];
   margin_v?: number; rows?: PreviewRow[]; type?: string;
   style?: string; lines?: string[]; top?: boolean; an?: number; x?: number | null; y?: number | null;
   cue?: string; moved?: boolean;   // 属于哪条字幕；是不是手动拖过位置
 }
+/** 预览里要框出来的：某个图层，或者用某个样式的所有行（含说明文字） */
+export interface PreviewHl { layer?: number; style?: string }
 export interface Preview { profile: string | null; profiles: string[]; px: number; py: number; styles: Record<string, Style>; items: PreviewItem[] }
 
 export interface LangInfo { code: string; name: string; annotations: string[]; translit: string | null; line_chars: number; word_based: boolean }
@@ -139,7 +141,7 @@ export interface Settings {
   translate: { name: string; base_url: string; model: string };
 }
 
-export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
+export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; context?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
 export interface QueueItem {
   id: string; pid: string; video: string; name: string; options: QueueOptions;
   status: "pending" | "running" | "done" | "failed" | "waiting" | "cancelled";

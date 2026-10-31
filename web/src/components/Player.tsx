@@ -3,7 +3,7 @@ import type Hls from "hls.js";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api, TOKEN } from "../api";
 import { useStore } from "../store";
-import type { Candidate, MediaInfo, Preview } from "../types";
+import type { Candidate, MediaInfo, Preview, PreviewHl } from "../types";
 import { fmt, pct } from "../util";
 import { SubtitleOverlay, useSize, type OnMoveSub } from "./SubtitleOverlay";
 
@@ -16,7 +16,8 @@ export const Player = forwardRef<PlayerHandle, {
   onPlaying?: (playing: boolean) => void;   // 开始 / 暂停播放时通知（外面自己画的播放按钮用）
   onMoveSub?: OnMoveSub;                    // 传了就能在画面上拖字幕改位置（审校页）
   onPickSub?: (cueId: string) => void;      // 在画面上点选了一条字幕
-}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false, rate = 1, onPlaying, onMoveSub, onPickSub }, ref) {
+  hl?: PreviewHl;                           // 框出某个图层 / 某个样式（输出页：正在改的那一项）
+}>(function Player({ preview, boxes, showSubs = true, onTime, style, controls = false, rate = 1, onPlaying, onMoveSub, onPickSub, hl }, ref) {
   const s = useStore();
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
@@ -129,7 +130,7 @@ export const Player = forwardRef<PlayerHandle, {
         )}
         {failed && <div className="wait"><div>无法播放这个视频
           {src?.error && <div className="dim" style={{ fontSize: 11.5, marginTop: 6, maxWidth: 480, wordBreak: "break-all" }}>{src.error}</div>}</div></div>}
-        {showSubs && <SubtitleOverlay preview={preview} time={time} width={size.w} height={size.h} boxes={boxes} onMove={onMoveSub} onPick={onPickSub} />}
+        {showSubs && <SubtitleOverlay preview={preview} time={time} width={size.w} height={size.h} boxes={boxes} onMove={onMoveSub} onPick={onPickSub} hl={hl} />}
       </div>
       {controls && (
         <div className="pctl" style={{ width: "100%" }}>

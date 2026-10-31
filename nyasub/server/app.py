@@ -951,6 +951,7 @@ def create_app(token: str | None = None) -> FastAPI:
         items = layout.build(cues, prof, run.cfg, run.src, tokens)
         px, py, used, placed = ass.place(items, prof, run.cfg.render.styles, aspect, boxes, fallback=run.cfg.render.fallback_style)
         out = []
+        lidx = {id(ly): i for i, ly in enumerate(prof.layers)}   # 每行属于第几个图层（界面上框出正在改的图层）
         for p in placed:
             it = p["item"]
             base = {"kind": p["kind"], "start": it["start"], "end": it["end"], "sources": it.get("sources", []),
@@ -960,7 +961,7 @@ def create_app(token: str | None = None) -> FastAPI:
                             top=bool(p.get("top")), an=p.get("an"), x=p.get("x"), y=p.get("y"))
             else:
                 base.update(margin_v=p["margin_v"], type=it.get("type"), x=p.get("x"), y=p.get("y"), rows=[
-                    {"style": r["ly"].style, "role": r["ly"].role, "chunks": [[t, rt] for t, rt, _, _ in r["chunks"]],
+                    {"style": r["ly"].style, "role": r["ly"].role, "layer": lidx.get(id(r["ly"]), -1), "chunks": [[t, rt] for t, rt, _, _ in r["chunks"]],
                      "rsize": r["rsize"], "rcolor": r["ly"].annotate.color, "height": r["height"]} for r in p["rows"]])
             out.append(base)
         return {"profile": prof.name, "profiles": [x.name for x in profs], "px": px, "py": py,

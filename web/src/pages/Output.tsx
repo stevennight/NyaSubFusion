@@ -6,7 +6,7 @@ import { Player, type PlayerHandle } from "../components/Player";
 import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc } from "../doc";
 import { usePreview } from "../hooks";
 import { useStore } from "../store";
-import type { Annotate, Cfg, LangInfo, Layer, Profile, Style } from "../types";
+import type { Annotate, Cfg, LangInfo, Layer, PreviewHl, Profile, Style } from "../types";
 import { fmt, langName, pct, setIn, STAGE_LBL } from "../util";
 
 type Video = {
@@ -51,6 +51,7 @@ export function OutputPage() {
   const doc = useDoc();
   const { v: r, update, state } = useDraft(doc, load, write);
   const [sel, setSel] = useState("f:0");
+  const [li, setLi] = useState(0);   // 字幕文件里展开的图层（预览里框出来）
   if (!doc || !r) return <div className="empty">加载中…</div>;
   const [kind, key] = [sel.slice(0, 1), sel.slice(2)];
   const episode = doc.kind === "episode";
@@ -70,14 +71,16 @@ export function OutputPage() {
         <OutList {...ctx} sel={sel} bc={bc ?? null} subsRead={subsRead} state={state} />
         <div className="oed">
           <div className="col">
-            {kind === "f" && prof && <FileEditor {...ctx} i={fileIdx} />}
+            {kind === "f" && prof && <FileEditor {...ctx} i={fileIdx} li={li} setLi={setLi} />}
             {kind === "f" && key === "broadcast" && <BroadcastEditor {...ctx} bc={bc ?? null} subsRead={subsRead} />}
             {kind === "v" && <VideoEditor {...ctx} mode={key as "mux" | "burn"} bc={bc ?? null} />}
             {kind === "s" && r.styles[key] && <StyleEditor {...ctx} name={key} />}
             {kind === "g" && <CleanEditor {...ctx} />}
             {((kind === "s" && !r.styles[key]) || (kind === "f" && key !== "broadcast" && !prof)) && <div className="card dim">在左边选一项</div>}
           </div>
-          {episode ? <OutPreview profile={previewName} exportable={kind === "f" ? prof?.name : undefined} />
+          {episode ? <OutPreview profile={previewName} exportable={kind === "f" ? prof?.name : undefined}
+                                 hl={kind === "f" && prof?.layers[li] ? { layer: li } : kind === "s" ? { style: key } : undefined}
+                                 hlLabel={kind === "f" && prof?.layers[li] ? `${ROLE_LBL[prof.layers[li].role]}层` : kind === "s" ? `样式「${key}」` : ""} />
             : <div className="card dim" style={{ fontSize: 12.5 }}>预览要用一集的画面和字幕，打开一集时在「输出」里看。</div>}
         </div>
       </div>
@@ -99,6 +102,7 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
   bc: { file: string | null } | null; subsRead: boolean; state: "saved" | "pending" | "saving";
 }) {
   const [menu, setMenu] = useState(false);
+  const [importing, setImporting] = useState(false);
   const names = Object.keys(r.styles);
   const inUse = names.filter((n) => usedBy(r, n).length || n === r.fallback_style);
   const unused = names.filter((n) => !inUse.includes(n));
@@ -149,6 +153,7 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
         {menu && (
           <div className="menu" style={{ left: 0, right: "auto", width: 250 }} onMouseLeave={() => setMenu(false)}>
             {r.styles[curStyle] && <div className="oi" onClick={() => addStyle(freeName(curStyle), { ...r.styles[curStyle] })}>复制「{curStyle}」</div>}
+            <div className="oi" onClick={() => { setMenu(false); setImporting(true); }}>从别的作品 / 预设 / 集导入…</div>
             <div className="dim" style={{ fontSize: 11.5, padding: "6px 8px 2px" }}>从出厂样式添加</div>
             {Object.entries(doc.factory).map(([k, f]) => (
               <div key={k} className={`oi${r.styles[k] ? " na" : ""}`} onClick={() => addStyle(r.styles[k] ? freeName(k) : k, { ...f, base: k })}>
@@ -158,6 +163,12 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
           </div>
         )}
       </div>
+
+      {importing && <ImportStyles r={r} doc={doc} onClose={() => setImporting(false)} onImport={(add, first) => {
+        update((x) => ({ ...x, styles: { ...x.styles, ...add } }));
+        setImporting(false);
+        if (first) setSel(`s:${first}`);
+      }} />}
 
       <div className="grp">通用</div>
       <div className={`oi${sel === "g:clean" ? " sel" : ""}`} onClick={() => setSel("g:clean")}>
@@ -178,11 +189,87 @@ function StyleItem({ r, name, sel, setSel, doc }: { r: R; name: string; sel: str
   );
 }
 
+/** 从别处导入样式：作品默认设置、预设、库里的其他集。同名的可以覆盖或者加成副本。 */
+type Src = { id: string; label: string; group: string; load: () => Promise<Record<string, Style>> };
+function ImportStyles({ r, doc, onClose, onImport }: { r: R; doc: ConfigDoc; onClose: () => void; onImport: (add: Record<string, Style>, first?: string) => void }) {
+  const s = useStore();
+  const [srcs, setSrcs] = useState<Src[]>([]);
+  const [src, setSrc] = useState("");
+  const [styles, setStyles] = useState<Record<string, Style> | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [same, setSame] = useState<"copy" | "replace">("copy");
+  const stylesOf = (c: Cfg | undefined) => (c?.render?.styles ?? {}) as Record<string, Style>;
+  useEffect(() => {
+    Promise.all([api.series(), api.presets(), api.projects()]).then(([sr, pr, pj]) => setSrcs([
+      ...sr.filter((x) => x.settings && !(doc.kind === "series" && x.name === doc.title))
+        .map((x) => ({ id: `s:${x.name}`, label: x.name, group: "作品默认设置", load: () => api.seriesDoc(x.name).then((d) => stylesOf(d.effective)) })),
+      ...pr.filter((x) => !(doc.kind === "preset" && x.name === doc.title))
+        .map((x) => ({ id: `p:${x.id}`, label: `${x.name}${x.builtin ? "" : "（我的）"}`, group: "预设", load: () => api.preset(x.id).then((d) => stylesOf(d.effective)) })),
+      ...pj.filter((x) => x.exists && x.configured !== false && !(doc.kind === "episode" && x.id === s.pid))
+        .map((x) => ({ id: `e:${x.id}`, label: `${x.series ? `${x.series} › ` : ""}${x.name}`, group: "库里的集", load: () => api.config(x.id).then((c) => stylesOf(c.effective)) })),
+    ])).catch((e) => s.setError(e.message));
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const x = srcs.find((y) => y.id === src);
+    setStyles(null); setPicked([]);
+    if (x) x.load().then(setStyles).catch((e) => s.setError(e.message));
+  }, [src]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const groups = [...new Set(srcs.map((x) => x.group))];
+  const nameFor = (n: string, taken: Set<string>) => {
+    if (!taken.has(n) || same === "replace") return n;
+    let k = 2; while (taken.has(`${n}${k}`)) k++;
+    return `${n}${k}`;
+  };
+  const go = () => {
+    if (!styles) return;
+    const taken = new Set(Object.keys(r.styles));
+    const add: Record<string, Style> = {};
+    let first: string | undefined;
+    for (const n of picked) { const to = nameFor(n, taken); taken.add(to); add[to] = { ...styles[n], base: styles[n].base || (to !== n && doc.factory[n] ? n : undefined) }; first ??= to; }
+    onImport(add, first);
+  };
+  const clash = picked.filter((n) => r.styles[n]).length;
+  return <Modal onClose={onClose} width={620}>
+    <h3>导入样式</h3>
+    <div className="kv" style={{ marginBottom: 10 }}>
+      <span className="lbl">从</span>
+      <select className="inp" value={src} onChange={(e) => setSrc(e.target.value)}>
+        <option value="">选一个…</option>
+        {groups.map((g) => <optgroup key={g} label={g}>{srcs.filter((x) => x.group === g).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}</optgroup>)}
+      </select>
+    </div>
+    {src && !styles && <div className="dim">加载中…</div>}
+    {styles && (<>
+      <div className="row" style={{ marginBottom: 6 }}><span className="dim">勾选要导入的样式</span><span className="sp" />
+        <span className="link" onClick={() => setPicked(picked.length === Object.keys(styles).length ? [] : Object.keys(styles))}>{picked.length === Object.keys(styles).length ? "全不选" : "全选"}</span></div>
+      <div className="usedby" style={{ maxHeight: 300, overflow: "auto" }}>
+        {Object.entries(styles).map(([n, st]) => (
+          <label key={n} className="row" style={{ cursor: "pointer" }}>
+            <input type="checkbox" checked={picked.includes(n)} onChange={(e) => setPicked(e.target.checked ? [...picked, n] : picked.filter((x) => x !== n))} />
+            <Swatch st={st} /><b style={{ fontWeight: 500 }}>{n}</b><span className="dim">{st.font} {st.size}</span>
+            {r.styles[n] && <span className="chip mini warn">这里已有同名</span>}
+          </label>
+        ))}
+        {!Object.keys(styles).length && <div className="dim">那里没有样式。</div>}
+      </div>
+      {clash > 0 && <div className="kv" style={{ marginTop: 10 }}><span className="lbl">同名的</span>
+        <div className="seg"><button className={same === "copy" ? "on" : ""} onClick={() => setSame("copy")}>加成副本（改个名）</button>
+          <button className={same === "replace" ? "on" : ""} onClick={() => setSame("replace")}>覆盖这里的</button></div></div>}
+      <div className="hint" style={{ marginTop: 8 }}>导入的是那边现在的样子，之后两边各自独立。{same === "replace" && clash ? "覆盖后用这些样式的图层会马上变成导入的样子。" : ""}</div>
+    </>)}
+    <div className="row" style={{ marginTop: 12, justifyContent: "flex-end" }}>
+      <button className="btn" onClick={onClose}>取消</button>
+      <button className="btn pri" disabled={!picked.length} onClick={go}>导入 {picked.length || ""} 个</button>
+    </div>
+  </Modal>;
+}
+
 // ---------------- 字幕文件 ----------------
-function FileEditor({ r, update, setSel, doc, i }: { r: R; update: Upd; setSel: (s: string) => void; doc: ConfigDoc; i: number }) {
+function FileEditor({ r, update, setSel, doc, i, li, setLi }: {
+  r: R; update: Upd; setSel: (s: string) => void; doc: ConfigDoc; i: number; li: number; setLi: (k: number) => void;
+}) {
   const s = useStore();
   const p = r.profiles[i];
-  const [li, setLi] = useState(0);
   const [name, setName] = useState(p.name);
   useEffect(() => { setName(p.name); setLi(0); }, [i]);  // eslint-disable-line react-hooks/exhaustive-deps
   const src = s.data?.src ?? String(doc.effective.project?.source ?? "auto");
@@ -203,14 +290,37 @@ function FileEditor({ r, update, setSel, doc, i }: { r: R; update: Upd; setSel: 
   const stem = (s.summary?.name ?? "视频名").replace(/\.[^.]+$/, "");
   const trLang = p.layers.find((l) => l.role === "translation")?.lang || targets[0] || "";
   const fname = p.filename.replace("{stem}", stem).replace("{tr}", trLang).replace("{src}", src).replace("{ext}", p.format).replace("{name}", p.name);
-  const move = (k: number, dir: number) => {
-    const j = k + dir;
-    if (j < 0 || j >= p.layers.length) return;
+  const moveTo = (k: number, to: number) => {
+    if (to < 0 || to >= p.layers.length || to === k) return;
     const ls = [...p.layers];
-    [ls[k], ls[j]] = [ls[j], ls[k]];
+    const [m] = ls.splice(k, 1);
+    ls.splice(to, 0, m);
     updLayers(ls);
-    setLi(j);
+    setLi(to);
   };
+  // 拖动图层排序（用指针事件：桌面版接管了文件拖放，HTML5 拖放在 Windows 上收不到）
+  const rows = useRef<(HTMLDivElement | null)[]>([]);
+  const [drag, setDrag] = useState<{ k: number; to: number } | null>(null);
+  const startDrag = (k: number, e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    let to = k;
+    setDrag({ k, to });
+    const move = (ev: PointerEvent) => {
+      const i = rows.current.slice(0, p.layers.length).findIndex((el) => { const rc = el?.getBoundingClientRect(); return rc && ev.clientY < rc.top + rc.height / 2; });
+      to = i < 0 ? p.layers.length : i;   // 插到第 to 个前面
+      setDrag({ k, to });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDrag(null);
+      moveTo(k, to > k ? to - 1 : to);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const dropLine = (k: number) => !!drag && drag.to === k && drag.to !== drag.k && drag.to !== drag.k + 1;
   const styleNames = Object.keys(r.styles);
   return (<>
     <div className="card">
@@ -243,11 +353,12 @@ function FileEditor({ r, update, setSel, doc, i }: { r: R; update: Upd; setSel: 
 
     <div className="card">
       <div className="row" style={{ marginBottom: 8 }}><h3 style={{ margin: 0 }}>图层</h3><span className="hint">从上到下 = 画面中从上到下</span></div>
-      <div className="stack">
+      <div className={`stack${drag ? " dragging" : ""}${dropLine(p.layers.length) ? " drop-end" : ""}`}>
         {p.layers.map((l, k) => (
-          <div key={k} className={`lay${k === li ? " sel" : ""}`}>
+          <div key={k} ref={(el) => { rows.current[k] = el; }} className={`lay${k === li ? " sel" : ""}${drag?.k === k ? " moving" : ""}${dropLine(k) ? " drop-before" : ""}`}>
             <div className="lh" onClick={() => setLi(k)}>
-              <span className="ord"><button title="上移" onClick={(e) => { e.stopPropagation(); move(k, -1); }}>▲</button><button title="下移" onClick={(e) => { e.stopPropagation(); move(k, 1); }}>▼</button></span>
+              <span className="grip" tabIndex={0} title="拖动调整上下顺序（也可以选中后按 ↑ ↓）" onPointerDown={(e) => startDrag(k, e)} onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); moveTo(k, k + (e.key === "ArrowUp" ? -1 : 1)); } }}>⠿</span>
               <b>{ROLE_LBL[l.role]}</b><span className="dim">{langName(layerLang(l) ?? "", s.langs)}</span>
               <span className={`chip${r.styles[l.style] ? "" : " warn"}`} title={r.styles[l.style] ? "" : `没有这个样式，会用兜底样式「${r.fallback_style}」`}>{l.style}</span>
               {l.annotate.kind !== "none" && <span className="chip">{ANN_LBL[l.annotate.kind]}</span>}
@@ -609,7 +720,7 @@ function CleanEditor({ r, update }: { r: R; update: Upd }) {
 }
 
 // ---------------- 预览 ----------------
-function OutPreview({ profile, exportable }: { profile?: string; exportable?: string }) {
+function OutPreview({ profile, exportable, hl, hlLabel }: { profile?: string; exportable?: string; hl?: PreviewHl; hlLabel: string }) {
   const s = useStore();
   const d = s.data;
   const preview = usePreview(profile);
@@ -630,8 +741,9 @@ function OutPreview({ profile, exportable }: { profile?: string; exportable?: st
     : pick(d.subs.length ? d.subs : d.ocr).map((c) => ({ t: c.start + 0.3, label: c.text.slice(0, 8) }));
   return (
     <div className="card outprev">
-      <div className="row" style={{ marginBottom: 8 }}><h3 style={{ margin: 0 }}>预览</h3><span className="dim">{profile ?? ""}</span></div>
-      <Player ref={player} preview={preview} onTime={onTime} controls />
+      <div className="row" style={{ marginBottom: 8 }}><h3 style={{ margin: 0 }}>预览</h3><span className="dim">{profile ?? ""}</span><span className="sp" />
+        {hlLabel && <span className="hint" title="画面上虚线框出来的是正在改的这一项；这一刻没有它的字幕时看不到框，可以点下面的时间跳过去">虚线框：{hlLabel}</span>}</div>
+      <Player ref={player} preview={preview} onTime={onTime} controls hl={hl} />
       {samples.length > 0 && (
         <div className="row wrap" style={{ marginTop: 8 }}>
           <span className="dim">跳到：</span>
