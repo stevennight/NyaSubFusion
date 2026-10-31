@@ -101,7 +101,22 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
   r: R; update: Upd; setSel: (s: string) => void; doc: ConfigDoc; sel: string;
   bc: { file: string | null } | null; subsRead: boolean; state: "saved" | "pending" | "saving";
 }) {
-  const [menu, setMenu] = useState(false);
+  // “＋ 新样式”菜单：浮在页面上（列表本身会滚动，放在里面会被裁掉、得往下滚才看得到），下面放不下就往上开
+  const [menu, setMenuAt] = useState<React.CSSProperties | null>(null);
+  const setMenu = (on: boolean, el?: HTMLElement) => {
+    if (!on || !el) return setMenuAt(null);
+    const rc = el.getBoundingClientRect();
+    const below = window.innerHeight - rc.bottom - 12, above = rc.top - 12;
+    setMenuAt({ position: "fixed", left: rc.left, right: "auto", width: 250, overflow: "auto",
+      ...(below >= 360 || below >= above ? { top: rc.bottom + 4, bottom: "auto", maxHeight: below } : { top: "auto", bottom: window.innerHeight - rc.top + 4, maxHeight: above }) });
+  };
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => { if (!(e.target instanceof Element && e.target.closest(".menu"))) setMenuAt(null); };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => { window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
+  }, [menu]);
   const [importing, setImporting] = useState(false);
   const names = Object.keys(r.styles);
   const inUse = names.filter((n) => usedBy(r, n).length || n === r.fallback_style);
@@ -148,10 +163,10 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
                 onClick={() => update((x) => ({ ...x, styles: Object.fromEntries(Object.entries(x.styles).filter(([k]) => !unused.includes(k))) }))}>清理</span></div>
         {unused.map((n) => <StyleItem key={n} r={r} name={n} sel={sel} setSel={setSel} doc={doc} />)}
       </>)}
-      <div style={{ position: "relative" }}>
-        <div className="oadd" onClick={() => setMenu(!menu)}>＋ 新样式 ▾</div>
+      <div>
+        <div className="oadd" onClick={(e) => setMenu(!menu, e.currentTarget)}>＋ 新样式 ▾</div>
         {menu && (
-          <div className="menu" style={{ left: 0, right: "auto", width: 250 }} onMouseLeave={() => setMenu(false)}>
+          <div className="menu" style={menu} onMouseLeave={() => setMenu(false)}>
             {r.styles[curStyle] && <div className="oi" onClick={() => addStyle(freeName(curStyle), { ...r.styles[curStyle] })}>复制「{curStyle}」</div>}
             <div className="oi" onClick={() => { setMenu(false); setImporting(true); }}>从别的作品 / 预设 / 集导入…</div>
             <div className="dim" style={{ fontSize: 11.5, padding: "6px 8px 2px" }}>从出厂样式添加</div>
