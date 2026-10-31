@@ -40,7 +40,7 @@ export function RunBar() {
       {s.running && <button className="btn" onClick={s.cancel}>■ 停止</button>}
       <div className="runbtn">
         <button className="btn pri" disabled={s.running || unsaved} onClick={start}>{s.running ? "运行中…" : "▶ 运行"}</button>
-        <button className="btn pri more" disabled={s.running} title="运行到哪一步、强制重做…" onClick={() => setMenu(!menu)}>▾</button>
+        <button className="btn pri runmore" disabled={s.running} title="运行到哪一步、强制重做…" onClick={() => setMenu(!menu)}>▾</button>
       </div>
       {menu && (
         <div className="menu runmenu">

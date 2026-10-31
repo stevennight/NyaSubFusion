@@ -223,8 +223,6 @@ table.tb { width: 100%; border-collapse: collapse }
 .src-region { margin-top: 10px }
 .tip { color: var(--tx3); cursor: help; font-size: 12px; font-weight: 400; margin-left: 2px; flex: none }
 .tip:hover { color: var(--tx) }
-/* 来源的“更多”：收起时一行显示当前的值 */
-.more { margin-top: 8px; border-top: 1px dashed var(--line2); padding-top: 6px }
 
 .src-region .rgn-thumb { width: min(100%, 380px) }
 @media (max-width: 1300px) {
@@ -420,7 +418,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .runbar .pending .acc { color: var(--acc) }
 .runbtn { display: inline-flex }
 .runbtn .btn:first-child { border-radius: 6px 0 0 6px }
-.runbtn .more { border-radius: 0 6px 6px 0; border-left: 1px solid #2a0d1844; padding: 6px 8px }
+.runbtn .runmore { border-radius: 0 6px 6px 0; border-left: 1px solid #2a0d1844; padding: 6px 8px }
 .runmenu { width: 340px; top: calc(100% + 6px) }
 .runmenu label { padding: 2px 0 }
 .redo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; margin: 4px 0 }
