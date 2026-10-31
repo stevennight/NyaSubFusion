@@ -1208,12 +1208,15 @@ class Run:
 
         return f"{self.proj.stem}.{self.src or 'ja'}{SUFFIX}"
 
-    def _broadcast_source(self):
-        """字幕是从哪种广播字幕读的（和 _load_subs 挑的一样）：("ttml", 数据文件) / ("arib", 字幕轨) / None（外挂字幕等）。"""
+    def _broadcast_source(self, info=None, guess=False):
+        """字幕是从哪种广播字幕读的（和 _load_subs 挑的一样）：("ttml", 数据文件) / ("arib", 字幕轨) / None（外挂字幕等）。
+
+        guess：还没读字幕时也预先判断（界面用）。4K 广播字幕要先看过数据流（peek_ttml）：看过而且是的话返回 ("ttml", None)，
+        还没看过返回 ("peek", None)。"""
         from ..sources import media
 
         c = self.cfg.subs
-        info = self.results.get("probe") or {}
+        info = info or self.results.get("probe") or {}
         if not c.enabled or (self.opts.subs_path or "").lower() == "none" or (self._subs_file() and c.track is None):
             return None
         tracks = [s for s in info.get("subtitles", []) if s["codec"] in media.TEXT_SUB_CODECS]
@@ -1225,7 +1228,36 @@ class Run:
                                        want != "auto" and lang.canonical(s["lang"]) != lang.canonical(want)))
             return ("arib", tracks[0]) if tracks[0]["codec"] == "arib_caption" else None
         bins = sorted(self.proj.root.glob("media/arib_ttml_*.bin"))
-        return ("ttml", bins[0]) if bins and c.track is None else None
+        if bins and c.track is None:
+            return ("ttml", bins[0])
+        if guess and c.track is None and info.get("data_streams") and "subs" not in self.results:
+            rec = self.peeked_ttml()
+            return ("peek", None) if rec is None else (("ttml", None) if rec.get("ttml") is not None else None)
+        return None
+
+    def _peek_key(self):
+        st = self.proj.video.stat()
+        return f"{st.st_size}:{int(st.st_mtime)}"
+
+    def peeked_ttml(self):
+        """之前看过数据流的结果 {"ttml": 数据流序号或 None}；没看过、视频换过返回 None。"""
+        rec = load_json(self.proj.media("broadcast_peek.json"))
+        return rec if rec and rec.get("key") == self._peek_key() else None
+
+    def peek_ttml(self, info):
+        """读各数据流开头一小段，看有没有 4K 广播字幕（ARIB-TTML），记下来。还没运行就能知道有没有“广播字幕原样”。"""
+        from ..sources import media, subtitle
+
+        found = None
+        for idx in info.get("data_streams") or []:
+            try:
+                if media.peek_data_stream(str(self.proj.video), idx, subtitle.is_arib_ttml):
+                    found = idx
+                    break
+            except Exception as e:
+                log(f"检查数据流 #{idx} 失败：{e}")
+        save_json(self.proj.media("broadcast_peek.json"), {"key": self._peek_key(), "ttml": found})
+        return found
 
     def _write_broadcast(self):
         """字幕来自广播时，另外输出一份原样的原文 ASS（render/broadcast.py）。返回文件名，没有返回 None。"""

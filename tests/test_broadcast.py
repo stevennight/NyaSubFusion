@@ -79,7 +79,7 @@ def with_broadcast(sample, api_config, monkeypatch, tmp_path):
     fakellm.install(monkeypatch)
     assert cli.main(["run", str(sample), "--no-asr", "--no-ocr", "--config", str(api_config)]) == 0
     bin_path = ttml_file(tmp_path)
-    monkeypatch.setattr(pipeline.Run, "_broadcast_source", lambda self: ("ttml", bin_path))
+    monkeypatch.setattr(pipeline.Run, "_broadcast_source", lambda self, info=None, guess=False: ("ttml", bin_path))
     return sample
 
 
@@ -138,3 +138,66 @@ def test_burn_picks_subtitle(with_broadcast, api_config):
     # 默认还是第一个 ASS 方案
     first_ass = next(p.name for p in r.cfg.render.profiles if p.format == "ass" and p.enabled)
     assert [t["profile"] for t in _run(with_broadcast, api_config)._video_tracks("burn")] == [first_ass]
+
+
+# ---------- 还没运行就预先判断有没有广播字幕 ----------
+ARIB = {"codec": "arib_caption", "sub_index": 0, "lang": "jpn"}
+
+
+def _fresh(sample, api_config):
+    (sample.parent / "sample.srt").unlink()   # 有外挂字幕时用外挂的，就不是广播字幕了
+    return _run(sample, api_config)
+
+
+def test_guess_arib_track_before_run(sample, api_config):
+    r = _fresh(sample, api_config)
+    assert r._broadcast_source({"subtitles": [ARIB], "data_streams": []}, guess=True) == ("arib", ARIB)
+    assert r._broadcast_source({"subtitles": [], "data_streams": []}, guess=True) is None
+
+
+def test_guess_ttml_needs_peek(sample, api_config, monkeypatch):
+    from nyasub.sources import media
+
+    r = _fresh(sample, api_config)
+    info = {"subtitles": [], "data_streams": [1, 2]}
+    assert r._broadcast_source(info, guess=True) == ("peek", None)
+    assert r._broadcast_source(info) is None                 # 不是预先判断时照旧（运行时靠导出的数据）
+    seen = []
+    monkeypatch.setattr(media, "peek_data_stream", lambda path, idx, test: seen.append(idx) or test(b"x arib-ttml x" if idx == 2 else b"plain data"))
+    assert r.peek_ttml(info) == 2 and seen == [1, 2]
+    assert r._broadcast_source(info, guess=True) == ("ttml", None)
+    monkeypatch.setattr(media, "peek_data_stream", lambda path, idx, test: False)
+    assert r.peek_ttml(info) is None and r._broadcast_source(info, guess=True) is None
+
+
+def test_peek_data_stream_stops_early(sample):
+    from nyasub.sources import media
+
+    sizes = []
+    assert media.peek_data_stream(str(sample), 0, lambda d: sizes.append(len(d)) or len(d) > 0)
+    assert len(sizes) == 1                                    # 一看到就停
+    assert not media.peek_data_stream(str(sample), 0, lambda d: False, limit=200_000)
+
+
+def test_summary_checks_broadcast_in_background(sample, monkeypatch):
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from nyasub.server.app import create_app
+    from nyasub.sources import media
+
+    (sample.parent / "sample.srt").unlink()
+    probe = media.probe
+    monkeypatch.setattr(media, "probe", lambda p: {**probe(p), "subtitles": [], "data_streams": [5]})
+    monkeypatch.setattr(media, "peek_data_stream", lambda path, idx, test: time.sleep(0.3) or test(b"<tt xmlns='http://www.w3.org/ns/ttml'>"))
+    with TestClient(create_app()) as c:
+        pid = c.post("/api/projects", json={"path": str(sample)}).json()["id"]
+        s = c.get(f"/api/projects/{pid}").json()
+        assert s["broadcast_check"] == "checking" and s["broadcast"] is None
+        for _ in range(50):
+            s = c.get(f"/api/projects/{pid}").json()
+            if s["broadcast_check"] == "done":
+                break
+            time.sleep(0.1)
+        assert s["broadcast_check"] == "done" and s["broadcast"] == {"source": "ttml", "file": None}

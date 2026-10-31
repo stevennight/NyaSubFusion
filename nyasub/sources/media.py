@@ -122,6 +122,27 @@ def dump_data_stream(path, index, out_path, probe_bytes=0):
     return got
 
 
+def peek_data_stream(path, index, test, limit=1 << 20):
+    """读数据流开头一小段（最多 limit 字节、前 15 分钟），test(已读内容) 为真马上停。返回 test 的结果。"""
+    _need("ffmpeg")
+    cmd = ["ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-c", "copy", "-f", "data", "-t", "900", "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    data = b""
+    try:
+        while len(data) < limit:
+            buf = proc.stdout.read(1 << 16)
+            if not buf:
+                break
+            data += buf
+            if test(data):
+                return True
+        return bool(test(data))
+    finally:
+        proc.stdout.close()
+        proc.kill()
+        proc.wait()
+
+
 def frame_size(vinfo, height):
     h = min(height, vinfo["height"]) if height else vinfo["height"]
     h -= h % 2

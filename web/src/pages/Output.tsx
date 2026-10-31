@@ -56,7 +56,7 @@ export function OutputPage() {
   const [kind, key] = [sel.slice(0, 1), sel.slice(2)];
   const episode = doc.kind === "episode";
   const bc = episode ? s.summary?.broadcast : null;
-  const subsRead = !!s.summary?.plan.some((x) => x.stage === "subs" && ["done", "cached", "empty", "off", "stale"].includes(x.status));
+  const subsRead = s.summary?.broadcast_check !== "checking";   // 已经知道有没有广播字幕（没运行也会预先检查）
   const fileIdx = kind === "f" && key !== "broadcast" ? Number(key) : -1;
   const prof = r.profiles[fileIdx];
   // 预览哪个字幕文件：选中的；选了样式就找用到它的；否则第一个输出的 ASS
@@ -122,9 +122,9 @@ function OutList({ r, update, setSel, doc, sel, bc, subsRead, state }: {
       ))}
       <div className={`oi${sel === "f:broadcast" ? " sel" : ""}${doc.kind === "episode" && !bc ? " na" : ""}`} onClick={() => setSel("f:broadcast")}>
         <Sw on={r.broadcast && (doc.kind !== "episode" || !!bc)} disabled={doc.kind === "episode" && !bc}
-            title={doc.kind === "episode" && !bc ? (subsRead ? "这个视频的字幕不是电视广播字幕" : "运行过后才知道有没有电视广播字幕") : ""}
+            title={doc.kind === "episode" && !bc ? (subsRead ? "这个视频的字幕不是电视广播字幕（或者没用视频里的字幕）" : "正在检查视频里有没有电视广播字幕") : ""}
             onChange={(v) => update((x) => ({ ...x, broadcast: v }))} />
-        <div className="t">广播字幕原样 <span className="dim">· ASS</span><small>{doc.kind === "episode" && !bc ? (subsRead ? "这个视频没有广播字幕" : "运行过后才知道") : "日语原文，照搬电视上的样子"}</small></div>
+        <div className="t">广播字幕原样 <span className="dim">· ASS</span><small>{doc.kind === "episode" && !bc ? (subsRead ? "这个视频没有广播字幕" : "正在检查…") : "日语原文，照搬电视上的样子"}</small></div>
       </div>
       <div className="oadd" onClick={() => {
         const base = r.profiles[0];
@@ -485,7 +485,7 @@ function BroadcastEditor({ r, update, doc, bc, subsRead }: { r: R; update: Upd; 
       <div className="row" style={{ marginBottom: 12 }}><h2 className="ed-title">广播字幕原样</h2>
         <Sw on={r.broadcast && !na} disabled={na} onChange={(v) => update((x) => ({ ...x, broadcast: v }))} /><span className="dim">{na ? "没有广播字幕" : r.broadcast ? "输出" : "不输出"}</span></div>
       <div className="hint" style={{ marginBottom: 10 }}>字幕来自电视广播（4K 的 ARIB-TTML、2K 的 ARIB）时才有：日语原文，位置、字号、颜色、半透明底色、振假名照搬电视上的样子，时间按字幕对时的偏移挪过。
-        {na && <b style={{ color: "var(--warn)" }}> {subsRead ? "这个视频的字幕不是电视广播字幕。" : "还没运行过：读了字幕才知道。"}</b>}</div>
+        {na && <b style={{ color: "var(--warn)" }}> {subsRead ? "这个视频的字幕不是电视广播字幕（或者「处理 › 字幕」里没用视频里的字幕）。" : "正在检查视频里有没有电视广播字幕…"}</b>}</div>
       <div className="kv">
         <span className="lbl">文件名</span><span className="muted">{bc?.file ?? `${stem}.ja-broadcast.ass`}</span>
         <span className="lbl">字体</span>

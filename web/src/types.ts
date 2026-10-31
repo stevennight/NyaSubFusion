@@ -11,7 +11,8 @@ export interface ProjectSummary {
   meta: { duration: number; video?: { width: number; height: number; aspect: number; codec?: string } | null } | null;
   src: string | null; plan: PlanItem[]; job: Job | null; config_files: string[]; outputs: string[];
   videos?: { mux?: string; burn?: string };
-  broadcast?: { source: "ttml" | "arib"; file: string | null } | null;   // 字幕来自广播：能输出“广播字幕原样”
+  broadcast?: { source: "ttml" | "arib"; file: string | null } | null;   // 字幕来自广播：能输出“广播字幕原样”（没运行也预先判断）
+  broadcast_check?: "checking" | "done";   // checking：还在后台看数据流里有没有 4K 广播字幕
   render?: { status: StageStatus; note?: string; files: string[] };   // 输出字幕文件这一步
   proxy: "direct" | "ready" | "building" | "failed" | "none";
   configured?: boolean;

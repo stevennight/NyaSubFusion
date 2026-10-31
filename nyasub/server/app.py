@@ -167,6 +167,21 @@ def create_app(token: str | None = None) -> FastAPI:
     projects = Projects()
     hub = Hub()
     proxy_jobs: dict[str, dict] = {}  # 项目 → {"status": building / failed, "done", "total", "error"}
+    bc_peeks: set[str] = set()        # 正在后台看数据流里有没有 4K 广播字幕的项目
+
+    def peek_broadcast(pid, run, meta):
+        if pid in bc_peeks:
+            return
+        bc_peeks.add(pid)
+
+        def go():
+            try:
+                run.peek_ttml(meta)
+            except Exception as e:
+                env.log(f"检查广播字幕失败：{e}")
+            finally:
+                bc_peeks.discard(pid)
+        threading.Thread(target=go, daemon=True, name=f"nyasub-bcpeek-{pid}").start()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -218,14 +233,21 @@ def create_app(token: str | None = None) -> FastAPI:
             except Exception:
                 meta = None
         playable = media.browser_playable(p["video"], meta) if meta else None
+        # 字幕来自广播：能输出“广播字幕原样”。还没读字幕时也预先判断（2K 看字幕轨，4K 在后台看一眼数据流）
+        bs = run._broadcast_source(meta, guess=True) if meta else None
+        bc_check = "done"
+        if bs and bs[0] == "peek":
+            bs, bc_check = None, "checking"
+            peek_broadcast(pid, run, meta)
         return {
             "id": pid, "video": p["video"], "name": Path(p["video"]).name, "workdir": str(proj.root),
             "meta": meta, "src": run.src, "plan": (plan := run.plan()), "render": run.render_status(plan), "job": hub.status(pid),
             "config_files": run.config_files, "outputs": run.output_names(),
             "videos": {m: n for m, n in run.video_names().items() if Path(p["video"]).with_name(n).exists()},
-            # 字幕来自广播：能输出“广播字幕原样”（source：ttml / arib；file：已经输出了的文件名）
+            # source：ttml / arib；file：已经输出了的文件名；broadcast_check：checking = 还在看数据流
             "broadcast": ({"source": bs[0], "file": run.broadcast_name() if Path(p["video"]).with_name(run.broadcast_name()).exists() else None}
-                          if run.src and (bs := run._broadcast_source()) else None),
+                          if bs else None),
+            "broadcast_check": bc_check,
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
                                                 or media.hls_state(proj.media(media.HLS_DIR))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),

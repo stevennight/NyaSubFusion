@@ -110,6 +110,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { api.langs().then(setLangs).catch(() => {}); }, []);
   useEffect(() => { reload(); }, [reload, tick]);
+  // 还在后台检查有没有广播字幕：过一会儿再问一次
+  useEffect(() => {
+    if (!pid || summary?.broadcast_check !== "checking") return;
+    const t = window.setTimeout(() => api.project(pid).then((s) => { if (pidRef.current === pid) setSummary(s); }).catch(() => {}), 2000);
+    return () => clearTimeout(t);
+  }, [pid, summary]);
 
   // 实时事件
   useEffect(() => {
