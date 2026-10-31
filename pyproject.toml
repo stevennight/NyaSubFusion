@@ -1,6 +1,6 @@
 [project]
 name = "nyasub"
-version = "0.1.0"
+version = "0.2.0"
 description = "通用、可视化、可配置的多源字幕生成与翻译工具（内核）"
 readme = "README.md"
 requires-python = ">=3.11"
