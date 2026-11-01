@@ -236,7 +236,28 @@ def test_auto_split_screens_at_break_points():
     screens = layout._screens(zh, "这些家族会诞生被兽神选中的孩子　听说教会收养他们是为了得到那份力量", 16, 2)
     assert screens == [["这些家族会诞生被兽神选中的孩子"], ["听说教会收养他们", "是为了得到那份力量"]]
     # 原来的两行（标题 / 罗马字）各自成屏，罗马字那行折成两行也不拆开
-    assert layout._screens(zh, "新日本风土记\nSHIN NIHON FUDOKI", 16, 2) == [["新日本风土记"], ["SHIN NIHON", "FUDOKI"]]
+    assert layout._screens(zh, "新日本风土记\nSHIN NIHON FUDOKI", 16, 2) == [["新日本风土记"], ["SHIN", "NIHON FUDOKI"]]
+
+
+def test_wrap_no_orphan_and_short_first_line():
+    """最后一行不只剩三四个字；同样好的断点里第一行短、第二行长。"""
+    from nyasub import lang
+
+    zh = lang.get("zh-Hans")
+    assert zh.wrap("他心灵手巧　店里需要的东西　他都会做", 16) == ["他心灵手巧", "店里需要的东西　他都会做"]
+
+
+def test_llm_orphan_line_rejoined():
+    """大模型自己换的行，第二行只剩一个名字：旁白、原文没换行的对话重新断；可能是两个人在说、人名条的不动。"""
+    from nyasub import lang
+
+    zh = lang.get("zh-Hans")
+    one = lambda t, ok: layout._screens(zh, layout._rejoin(zh, zh.display(t, {}), 16, ok), 16, 2)
+    assert one("她嫁给了在这水边长大的丈夫\n武光", True) == [["她嫁给了在这水边长大的丈夫武光"]]
+    assert one("五金店老板负责吉他和\n篠笛", True) == [["五金店老板负责吉他和篠笛"]]
+    assert one("他心灵手巧 店里需要的东西\n他都会做", True) == [["他心灵手巧", "店里需要的东西他都会做"]]
+    assert one("这个不要了\n就这样吧", False) == [["这个不要了", "就这样吧"]]
+    assert one("明治时代\n利用丰富涌泉水造纸的工艺", True) == [["明治时代", "利用丰富涌泉水造纸的工艺"]]   # 第一行短：本来就好
     assert layout._screens(zh, "放得下的一句", 16, 2) == [["放得下的一句"]]
 
 

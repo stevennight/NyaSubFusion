@@ -6,6 +6,18 @@
 import re
 
 
+# 分屏、换行的要求（各语言共用）
+LINE_RULES = (
+    "换行用换行符，不要用“｜”换行。“｜”只用来分屏：一条 cue 合并了几条前后相接的来源（比如一句话被拆在两条字幕里），"
+    "或者一句话太长、两行放不下时，用“｜”分成几屏，每屏不超过 2 行；原文和译文必须分成同样多段、内容一一对应。"
+    "每段译文只译原文同一段里的内容，不要把前一段的意思挪到后一段（反过来也一样）：例如原文「明治時代　豊富な湧き水を利用した紙作りが｜一挙に広まり…」，"
+    "译文应是「明治时代 利用丰富泉水造纸｜迅速普及…」，不能是「明治时代｜利用丰富泉水造纸 迅速普及…」。"
+    "只有两种语言语序必须颠倒、实在拆不开时才可以跨段，这时也让每段的长度和原文那段差不多。一屏放得下的短句不要用“｜”。"
+    "一屏里换行时不要让第二行只剩一个名字或两三个字（“她嫁给了在这水边长大的丈夫\\n武光”这样不好）；放得下就写成一行；"
+    "一般第一行短、第二行长。两个人各说一句时才按说话人换行。"
+)
+
+
 class LanguagePack:
     code = ""
     name = ""
@@ -30,8 +42,7 @@ class LanguagePack:
         """作为目标语言时的长度、标点要求。"""
         n = int(opts.get("line_chars") or self.line_chars)
         unit = "个字符" if self.word_based else "个字"
-        return (f"字幕长度：每行不超过 {n} {unit}，每条最多 2 行（行之间用换行符，JSON 里写作 \\n）。"
-                "换行用换行符，不要用“｜”换行。“｜”只用来分屏：一条 cue 合并了几条前后相接的来源（比如一句话被拆在两条字幕里），或者一句话太长、两行放不下时，用“｜”分成几屏，每屏不超过 2 行；原文和译文必须分成同样多段、内容一一对应（语序不同时可以调整措辞，但每段的意思要和原文那段对得上）。一屏放得下的短句不要用“｜”。")
+        return f"字幕长度：每行不超过 {n} {unit}，每条最多 2 行（行之间用换行符，JSON 里写作 \\n）。" + LINE_RULES
 
     # ---------- 显示前的规范化 ----------
     def display(self, text: str, opts: dict) -> str:
@@ -116,6 +127,8 @@ _BREAK_COST = {3: 0, 2: 4, 1: 8}
 _MID_WORD = 40
 _PER_LINE = 5
 _SHORT_LINE = 12
+_ORPHAN = 6        # 最后一行只有三四个字
+_TOP_HEAVY = 0.25  # 上一行比最后一行每长一个字
 
 
 def _wrap_chars(text, maxc, levels, no_start):
@@ -141,7 +154,13 @@ def _best_breaks(line, maxc, lv, no_start):
 
     def seg_cost(q, p):  # line[q:p] 这一行本身的代价
         k = len(line[q:p].strip("　 "))
-        return _PER_LINE + (_SHORT_LINE if k < 3 else 0) + 0.005 * k * k  # 平方项：同样好时让各行等长
+        c = _PER_LINE + (_SHORT_LINE if k < 3 else 0) + 0.005 * k * k  # 平方项：同样好时让各行等长
+        if p == n and q > 0:
+            if k <= 4:
+                c += _ORPHAN  # 最后一行只剩一个名字、一个词（“…丈夫｜武光”）
+            prev = len(line[back[q]:q].strip("　 "))
+            c += _TOP_HEAVY * max(0, prev - k - 2)  # 习惯上第一行短、第二行长：不强制，差一两个字不管
+        return c
 
     best = [None] * (n + 1)
     back = [0] * (n + 1)
@@ -178,14 +197,14 @@ def _wrap_words(text, maxc):
                 cur = f"{cur} {w}" if cur else w
         if cur:
             out.append(cur)
-    # 两行时尽量等长
+    # 两行时尽量等长；差不多时第一行短一点
     if len(out) == 2:
         words = text.split()
         best = None
         for i in range(1, len(words)):
             a, b = " ".join(words[:i]), " ".join(words[i:])
             if len(a) <= maxc and len(b) <= maxc:
-                score = abs(len(a) - len(b))
+                score = abs(len(a) - len(b)) + _TOP_HEAVY * max(0, len(a) - len(b) - 2)
                 if best is None or score < best[0]:
                     best = (score, [a, b])
         if best:

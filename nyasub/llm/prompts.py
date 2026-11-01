@@ -186,7 +186,7 @@ def extra_target_system(src, tgt, ref, context: str, tgt_opts: dict) -> str:
 你会收到已经整理好的{src.name}字幕，每条带 id，并附有{ref.name}参考译文（只帮助理解，不要照搬它的措辞）。
 请把每条翻译成{tgt.name}，输出 JSON：{{"items": [{{"id": "q12", "tr": "译文"}}]}}，每个 id 都要有且只有一条。
 人名、地名、专有名词按术语表统一。{tgt.prompt_target_rules(tgt_opts)}
-原文里的“｜”是分段标记，译文要分成同样多段。"""
+原文里的“｜”是分段标记，译文要分成同样多段，每段只译原文同一段里的内容。"""
 
 
 def extra_target_prompt(cues, gl_text, src_code, ref_code) -> str:
