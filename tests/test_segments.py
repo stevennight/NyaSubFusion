@@ -296,3 +296,45 @@ def test_opening_quote_not_at_line_end():
     assert zh.wrap("交易的关键在于名为“茶叶经纪人”的中间商", 16) == ["交易的关键在于名为", "“茶叶经纪人”的中间商"]
     assert zh.split("交易的关键在于名为“茶叶经纪人”的中间商", [0.5, 0.5])[1].startswith("“")
     assert not any(l.endswith("「") for l in ja.wrap("取り引きの鍵を握るのは「才取り」と呼ばれる仲介業者", 16))
+
+
+_FUJI = {"o1104": {"id": "o1104", "src": "telop", "start": 2435.8, "end": 2439.5, "text": "ペーパーキットって富士市\n紙のまちなんで"},
+         "o1105": {"id": "o1105", "src": "telop", "start": 2439.5, "end": 2445.3,
+                   "text": "富士市でやらない手はないな\n会社辞めたらやろうかなって思ってたんですね"}}
+_FUJI_ORIG = "ペーパーキットって富士市｜紙のまちなんで｜富士市でやらない手はないな 会社辞めたらやろうかなって思ってたんですね"
+_FUJI_TR = "纸模型套件嘛，富士市是纸之城｜在富士市做再合适不过了｜我当时想，等辞职后就来做"
+
+
+def test_merge_translation_bar_by_length_not_index():
+    # 大模型把第一条画面字的换行当成了分屏，译文又按意思错开一段（“纸之城”已经在第 1 段）：
+    # 原文合第 1 个分界，译文该合第 2 个，不是同一个
+    cue = _cue(_FUJI_ORIG, _FUJI_TR, 2435.8, 2445.3, _FUJI)
+    assert segments.card_bars(cue, _FUJI) == [1]
+    assert segments.match_bar(_FUJI_ORIG, 1, _FUJI_TR) == 2
+    # 对得上的照旧合同一个
+    assert segments.match_bar("あいう｜えお｜かきくけこ", 1, "甲乙丙｜丁戊｜己庚辛壬癸") == 1
+
+
+def test_resegment_fixes_bar_inside_one_caption():
+    from nyasub import lang
+    from nyasub.llm.translate import resegment
+
+    cfg = config.Config()
+    good = _cue(_FUJI_ORIG, _FUJI_TR, 2435.8, 2445.3, _FUJI, type="narration")
+    still = dict(good, id="q2", orig=dict(good["orig"]), tr={"zh-Hans": {"text": _FUJI_TR}})
+
+    class Fake:
+        user = ""
+
+        def chat_json(self, system, user):
+            Fake.system, Fake.user = system, user
+            return {"items": [
+                {"id": "q1", "orig": "ペーパーキットって富士市 紙のまちなんで｜富士市でやらない手はないな 会社辞めたらやろうかなって思ってたんですね",
+                 "tr": "纸模型套件嘛，富士市是纸之城｜在富士市做再合适不过了 我当时想，等辞职后就来做"},
+                {"id": "q2", "orig": _FUJI_ORIG, "tr": _FUJI_TR}]}   # 还是分在一条画面字中间：不用
+
+    resegment(Fake(), [good, still], _FUJI, lang.get("ja"), "zh-Hans", cfg)
+    assert "q1" in Fake.user and "交界处" in Fake.system
+    assert good["orig"]["text"].count("｜") == 1
+    assert good["tr"]["zh-Hans"]["text"] == "纸模型套件嘛，富士市是纸之城｜在富士市做再合适不过了 我当时想，等辞职后就来做"
+    assert still["orig"]["text"] == _FUJI_ORIG and still["tr"]["zh-Hans"]["text"] == _FUJI_TR

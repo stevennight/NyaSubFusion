@@ -156,6 +156,32 @@ def join_at(text, k, code, sep=None):
     return "｜".join(ps[:k - 1] + [merged] + ps[k + 1:])
 
 
+def _cuts(ps):
+    """每个分界在整句里的位置（按字数的比例）。"""
+    lens = [len(norm(p)) or 1 for p in ps]
+    total, at, out = sum(lens), 0, []
+    for n in lens[:-1]:
+        at += n
+        out.append(at / total)
+    return out
+
+
+def match_bar(orig, k, tr):
+    """原文合掉第 k 个分界时，译文该合掉哪一个：段数一样不等于一一对应，大模型的译文常错开一段
+    （原文「…富士市｜紙のまちなんで｜富士市でやらない…」、译文「…富士市是纸之城｜在富士市做再合适不过了｜我当时想…」，
+    “纸之城”已经在第 1 段）。按合完以后各分界的位置比例挑最像原文的那个；一样像就用同一个。"""
+    ps, ts = pieces(orig), pieces(tr)
+    if len(ps) != len(ts) or not 0 < k < len(ps):
+        return k
+    want = _cuts(ps[:k - 1] + [ps[k - 1] + ps[k]] + ps[k + 1:])
+
+    def cost(j):
+        got = _cuts(ts[:j - 1] + [ts[j - 1] + ts[j]] + ts[j + 1:])
+        return sum(abs(a - b) for a, b in zip(want, got))
+
+    return min(range(1, len(ts)), key=lambda j: (round(cost(j), 6), j != k))
+
+
 def speech_parts(cue, segs):
     """每段的 [开始, 结束]：用语音识别的逐字时间找每段开口的时刻（对不上的分界按字数估）。
     没有语音识别、或者一段都对不上的返回 None（由来源 / 字数比例决定）。"""

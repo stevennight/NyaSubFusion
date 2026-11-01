@@ -1126,8 +1126,10 @@ class Run:
                     who = segments.voice_change(c, items, k)
                     head = segments.pieces(c["orig"]["text"])[k - 1].strip()
                     sep = "\n" if (who if who is not None else head[-1] in "。！？!?") else None
-                    trs = {code: segments.join_at(v["text"], k, code, sep) for code, v in c["tr"].items() if v["text"]}
-                    if any(segments.screen_lines(segments.pieces(t)[k - 1], code, self.cfg) > 2
+                    # 译文合哪个分界按长度比例挑（译文可能和原文错开一段，不一定是同一个）
+                    at = {code: segments.match_bar(c["orig"]["text"], k, v["text"]) for code, v in c["tr"].items() if v["text"]}
+                    trs = {code: segments.join_at(c["tr"][code]["text"], j, code, sep) for code, j in at.items()}
+                    if any(segments.screen_lines(segments.pieces(t)[at[code] - 1], code, self.cfg) > 2
                            for code, t in trs.items()):
                         continue
                     c["orig"]["text"] = segments.join_at(c["orig"]["text"], k, c["orig"]["lang"], sep)

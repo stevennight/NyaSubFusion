@@ -434,21 +434,33 @@ def enforce_terms(llm, cues, terms, src, tgt_code, cfg, batch=30):
 
 
 def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
-    """原文和译文的“｜”分段段数对不上的（几条字幕合成一句时常见）：请大模型按来源字幕的换屏和停顿重新分段，
-    原文和译文分成同样多段。原文只许动“｜”的位置；对不上的保持原样（排版时按译文的分段换屏）。"""
+    """原文和译文的“｜”分段段数对不上的（几条字幕合成一句时常见），或者“｜”落在一条字幕中间的（大模型把换行当成了分屏，
+    译文常跟着错开一段）：请大模型按来源字幕的换屏和停顿重新分段，原文和译文分成同样多段。
+    原文只许动“｜”的位置；对不上的保持原样（排版时按译文的分段换屏；落在一条字幕中间的整理时合回去）。"""
     from ..core import segments
 
-    todo = []
+    def inside(c, orig=None):
+        """“｜”落在同一条字幕 / 画面字中间：大模型把里面的换行当成了分屏（段数对得上也算，译文常错开一段）。"""
+        if c.get("type") not in ("dialogue", "narration"):
+            return False
+        return bool(segments.card_bars(c if orig is None else dict(c, orig=dict(c["orig"], text=orig)), items))
+
+    todo, wrong = [], set()
     for i, c in enumerate(cues):
         o, t = c["orig"]["text"], c.get("tr", {}).get(tgt_code, {}).get("text", "")
-        if t and "｜" in o + t and not segments.bars_ok(c) and not segments.reconcile(o, {tgt_code: t}):
+        if not t or "｜" not in o + t:
+            continue
+        if inside(c):
+            wrong.add(i)
+        if i in wrong or (not segments.bars_ok(c) and not segments.reconcile(o, {tgt_code: t})):
             todo.append(i)
     if not todo:
         return
-    log(f"重新分段：{len(todo)} 条字幕的原文和译文分段对不上")
+    log(f"重新分段：{len(todo)} 条字幕的原文和译文分段对不上，或者分屏落在一条字幕中间")
     tgt = lang.get(tgt_code)
     system = (f"你是{src.name}→{tgt.name}字幕校对。下面每条字幕由几条原来的字幕合成，要用“｜”分成几屏依次显示，"
-              "但原文和译文的分段对不上。请重新分段：\n"
+              "但原文和译文的分段对不上，或者“｜”放在了一条来源字幕的中间。请重新分段：\n"
+              "- 每条来源字幕原来就是一屏：“｜”只放在两条来源的交界处；来源里的“ / ”是同一屏里的换行，不是分屏，那里不能放“｜”；\n"
               "- 分段对应来源里原来的换屏和说话的停顿（看来源的时间），每屏一眼读得完、不超过 2 行，不要断在半句话中间；\n"
               "- 原文和译文分成同样多段、一一对应（每段译文就是那段原文的意思，语序可以在段之间微调）；\n"
               "- 原文只能调整“｜”的位置，文字一个字都不能改；译文尽量保持原来的措辞。\n"
@@ -474,7 +486,10 @@ def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
             c, g = cues[i], got.get(cues[i]["id"]) or {}
             o, t = (g.get("orig") or "").strip(), (g.get("tr") or "").strip()
             same_text = norm(o.replace("｜", "")) == norm(c["orig"]["text"].replace("｜", ""))
-            if o and t and same_text and len(segments.pieces(o)) == len(segments.pieces(t)) >= 2:
+            n = len(segments.pieces(o))
+            # 只有一条来源的，合成一屏（不分段）也对；分屏还落在一条字幕中间的不要
+            if (o and t and same_text and n == len(segments.pieces(t)) and (n >= 2 or i in wrong)
+                    and not inside(c, o)):
                 c["orig"]["text"], c["tr"][tgt_code] = o, {"text": t}
 
 
