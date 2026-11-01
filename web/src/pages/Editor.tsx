@@ -5,7 +5,7 @@ import { DROP } from "../components/SubtitleOverlay";
 import { Timeline } from "../components/Timeline";
 import { usePeaks, usePreview } from "../hooks";
 import { useStore } from "../store";
-import type { Candidate, Cue, EditResult, Word } from "../types";
+import type { Candidate, Cue, EditResult, Profile, Word } from "../types";
 import { FLAG_LBL, fmt, fmtHms, langName, SRC_LBL, TYPE_LBL } from "../util";
 
 type Filter = "all" | "todo" | "flag" | "asr" | "ocr";
@@ -515,6 +515,14 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
   const canSplit = time > cue.start + 0.2 && time < cue.end - 0.2;
   const s = useStore();
   const d = s.data!;
+  // “自动”只对设成“自动”的原文层生效；设成“开”的原文层画面上已有也照样显示（标签要说实话）
+  const origModes = ((s.config?.effective?.render?.profiles ?? []) as Profile[]).filter((p) => p.enabled)
+    .flatMap((p) => p.layers.filter((l) => l.role === "original").map((l) => ({ name: p.name, show: l.show })));
+  const alwaysOn = origModes.filter((m) => m.show === "on").map((m) => m.name);
+  const autoHides = origModes.some((m) => m.show === "auto");
+  const onscreenLbl = (where: string) => !alwaysOn.length ? `${where}画面上已有，不显示`
+    : autoHides ? `${where}画面上已有，不显示；但「${alwaysOn.join("」「")}」的原文层设成“开”，照样显示`
+    : `${where}画面上已有，但原文层设成“开”，照样显示`;
   // 每段：时间 + 原文 + 各译文。没分段的字幕就是一段
   const multi = !!cue.parts && cue.parts.length > 1;
   const segs: [number, number][] = multi ? cue.parts! : [[cue.start, cue.end]];
@@ -597,8 +605,8 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
           {!["info", "name", "title"].includes(cue.type) && (() => {
             // 原文要不要显示：默认画面上已经有这句硬字幕时不显示；审校时可以强制显示 / 不显示
             const onSegs = (cue.parts_onscreen ?? []).flatMap((on, i) => (on ? [i + 1] : []));
-            const auto = cue.onscreen ? "自动（画面上已有，不显示）"
-              : onSegs.length ? `自动（第 ${onSegs.join("、")} 段画面上已有，不显示）` : "自动（显示）";
+            const auto = cue.onscreen ? `自动（${onscreenLbl("")}）`
+              : onSegs.length ? `自动（${onscreenLbl(`第 ${onSegs.join("、")} 段`)}）` : "自动（显示）";
             return (<>
               <span className="lbl">原文</span>
               <select className="inp" value={cue.show_orig ?? "auto"} title="输出的字幕里显示不显示原文（只影响有原文图层的方案）"
@@ -665,7 +673,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
                 const ty = cue.parts_type?.[i] ?? "";
                 const sh = cue.parts_show?.[i] ?? "";
                 const autoOn = cue.show_orig ? (cue.show_orig === "on" ? "显示" : "不显示")
-                  : (cue.parts_onscreen?.[i] ? "画面上已有，不显示" : "显示");
+                  : (cue.parts_onscreen?.[i] ? onscreenLbl("") : "显示");
                 return (
                   <div className="row piece-opts">
                     <span className="lbl">类型</span>

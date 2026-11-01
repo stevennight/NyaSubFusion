@@ -113,7 +113,7 @@ def save_user(name: str, raw: dict, desc: str | None = None):
     user_dir().mkdir(parents=True, exist_ok=True)
     f = user_file(name)
     if f.is_file():
-        config.write_backup(f, "old")
+        config.write_backup(f, "old", every=600)
     f.write_text(tomli_w.dumps(raw), encoding="utf-8")
     if desc is not None:
         idx = _index()

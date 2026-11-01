@@ -398,10 +398,16 @@ def legacy_file() -> Path:
     return env.home() / "legacy_global.toml"
 
 
-def write_backup(path: Path, tag: str):
+def write_backup(path: Path, tag: str, every: float = 0):
+    """改之前留一份到旁边的 backup/。every>0（自动保存用）：离上一份同类备份不到这么多秒就不再存，
+    连着改很多下时只留改之前的那一份，不刷出一堆。"""
     import time
 
     path = Path(path)
+    if every:
+        olds = (path.parent / "backup").glob(f"{path.stem}-*-{tag}{path.suffix}")
+        if time.time() - max((p.stat().st_mtime for p in olds), default=0) < every:
+            return
     bak = path.parent / "backup" / f"{path.stem}-{time.strftime('%Y%m%d-%H%M%S')}-{tag}{path.suffix}"
     bak.parent.mkdir(parents=True, exist_ok=True)
     bak.write_bytes(path.read_bytes())

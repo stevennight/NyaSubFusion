@@ -33,7 +33,8 @@ const FONTS_LBL: Record<string, string> = { subset: "嵌入字体（只含用到
 const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编码，先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
   ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
 const DEFAULT_ANN: Annotate = { kind: "none", scope: "all", easy_kanji: "grade2", known_words: [], numbers: false, script: "hiragana", tone: "mark", size: 0.5, color: "", srt: "paren" };
-const newLayer = (role: Layer["role"], style: string): Layer => ({ role, lang: "", of: "original", show: "on", style, max_chars: 0, annotate: { ...DEFAULT_ANN }, tone: "mark" });
+// 新加的原文层和出厂的一样默认“自动”：画面上已经有这句硬字幕时不重复显示
+const newLayer = (role: Layer["role"], style: string): Layer => ({ role, lang: "", of: "original", show: role === "original" ? "auto" : "on", style, max_chars: 0, annotate: { ...DEFAULT_ANN }, tone: "mark" });
 const FACTORY_LBL: Record<string, string> = { main: "正文", sub: "小字", orig_main: "原文大字", info: "说明", translit: "转写" };
 
 /** 一个样式用在哪：图层 + 各 ASS 字幕文件的说明文字 */

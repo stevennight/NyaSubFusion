@@ -740,7 +740,7 @@ def create_app(token: str | None = None) -> FastAPI:
         sf = config_mod.series_file(name)
         text = _checked(_owned(raw), sf)
         if sf.exists():
-            config_mod.write_backup(sf, "old")
+            config_mod.write_backup(sf, "old", every=600)
         sf.parent.mkdir(parents=True, exist_ok=True)
         sf.write_text(text, encoding="utf-8")
 

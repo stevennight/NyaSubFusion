@@ -74,3 +74,25 @@ def test_series_needs_name(client, sample):
     pid, _ = opened(client, sample)
     assert client.put(f"/api/projects/{pid}/config", json={"series": {"ocr": {"fps": 2.0}}}).status_code == 400
     assert client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_series"}).status_code == 400
+
+
+def test_autosave_backup_throttled(tmp_path):
+    """自动保存时备份不刷屏：10 分钟内同类的只留第一份（改之前的样子）；别的备份照常每次都存。"""
+    import os
+    import time
+
+    from nyasub.core import config
+
+    f = tmp_path / "series.toml"
+    f.write_text("a = 1", encoding="utf-8")
+    for _ in range(3):
+        config.write_backup(f, "old", every=600)
+    baks = list((tmp_path / "backup").glob("series-*-old.toml"))
+    assert len(baks) == 1 and baks[0].read_text(encoding="utf-8") == "a = 1"
+    old = time.time() - 700
+    os.utime(baks[0], (old, old))                          # 过了 10 分钟：再留一份
+    time.sleep(1.1)
+    config.write_backup(f, "old", every=600)
+    assert len(list((tmp_path / "backup").glob("series-*-old.toml"))) == 2
+    config.write_backup(f, "before-sync")
+    assert len(list((tmp_path / "backup").glob("series-*.toml"))) == 3
