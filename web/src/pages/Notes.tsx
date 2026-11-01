@@ -45,7 +45,10 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
   if (!gl.v || !rd.v) return <div className="empty">加载中…</div>;
   const g = gl.v;
   const series = g.series;
-  const mine = (t: Term) => t.from === g.episode;
+  // 范围：相对这一集（本集整理的 / 以前各集积累的）；不属于作品的项目，手动加的也算本集
+  const mine = (t: Term) => t.from === g.episode || (!series && t.from === "manual");
+  // 来源：哪一集整理出来的（集名只取「」里的标题，全名在提示里）
+  const origin = (t: Term) => (t.from === "manual" ? "手动" : t.from ? (t.from.match(/「([^」]+)」/)?.[1] ?? t.from) : "—");
   const terms = g.terms.map((t, i) => [t, i] as const)
     .filter(([t]) => scope === "all" || (scope === "episode" ? mine(t) : !mine(t)))
     .filter(([t]) => !filter || [t.src, t.tr, t.reading].some((x) => x?.includes(filter)));
@@ -97,15 +100,15 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
           </div>
           {tab === "terms" ? (<>
             <div className="scroll-table">
-              <table className="tb"><thead><tr><th>原文</th><th>读音</th><th>译法</th><th>类型</th><th>{series ? "范围" : "来源"}</th><th /></tr></thead><tbody>
+              <table className="tb"><thead><tr><th>原文</th><th>读音</th><th>译法</th><th>类型</th><th>范围</th><th>来源</th><th /></tr></thead><tbody>
                 {terms.map(([t, i]) => (
                   <tr key={i}>
                     <td><input className="inp ja" value={t.src} onChange={(e) => updTerm(i, { src: e.target.value })} /></td>
                     <td><input className="inp ja" value={t.reading ?? ""} onChange={(e) => updTerm(i, { reading: e.target.value })} /></td>
                     <td><input className="inp" value={t.tr ?? ""} onChange={(e) => updTerm(i, { tr: e.target.value })} /></td>
                     <td><select className="inp" value={t.type ?? "其他"} onChange={(e) => updTerm(i, { type: e.target.value })}>{TYPES.map((x) => <option key={x}>{x}</option>)}</select></td>
-                    <td><span className={`scope ${series && !mine(t) ? "s" : "e"}`} title={t.from === "manual" ? "手动加的" : t.from ? `第「${t.from}」集整理出来的` : "以前的"}>
-                      {series ? (mine(t) ? "本集" : "作品") : ""}{t.from === "manual" ? " · 手动" : !series ? (mine(t) ? "本集" : "继承") : ""}</span></td>
+                    <td><span className={`scope ${series && !mine(t) ? "s" : "e"}`}>{mine(t) ? "本集" : series ? "作品" : "继承"}</span></td>
+                    <td><span className="origin selectable" title={t.from === "manual" ? "手动加的" : t.from ? `${t.from} 这一集整理出来的` : "以前的，没有记录"}>{origin(t)}</span></td>
                     <td><button className="btn sm ghost" onClick={() => gl.update((x) => ({ ...x, terms: x.terms.filter((_, k) => k !== i) }))}>×</button></td>
                   </tr>
                 ))}
