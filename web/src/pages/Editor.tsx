@@ -305,6 +305,17 @@ export function EditorPage() {
          to === "flag" ? `已标记 #${all.indexOf(here) + 1}「${here.orig.text.replace(/[｜\n]/g, " ").slice(0, 12)}」（再按 M 取消）` : `已取消 #${all.indexOf(here) + 1} 的标记`);
   }, [s, sel, edit]);
 
+  // Delete：删掉选中的这一条（Ctrl+Z 可撤销），选中移到列表里的下一条
+  const deleteSel = useCallback(() => {
+    const shown = cuesRef.current.filter((c) => FILTER_TEST[filter](c) || c.id === sel);
+    const i = shown.findIndex((c) => c.id === sel);
+    if (i < 0 || !s.pid) return;
+    const c = shown[i], next = shown[i + 1] ?? shown[i - 1];
+    edit(() => api.editCue(s.pid!, c.id, { delete: true }),
+         `已删除「${c.orig.text.replace(/[｜\n]/g, " ").slice(0, 12)}」（Ctrl+Z 撤销）`)
+      .then(() => { if (next) setSel(next.id); });
+  }, [s, sel, edit, filter]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.("input,textarea,select")) return;
@@ -320,6 +331,7 @@ export function EditorPage() {
       if ((e.key === "m" || e.key === "M") && !e.ctrlKey && !e.altKey) toggleFlag();
       if (e.key === "[") shiftRate(-1);
       if (e.key === "]") shiftRate(1);
+      if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !e.shiftKey) { e.preventDefault(); deleteSel(); }
       if (e.key === "j" || e.key === "J") step(-1);
       if (e.key === "k" || e.key === "K") step(1);
       if (e.ctrlKey && (e.key === "z" || e.key === "Z") && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -327,7 +339,7 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, undo, redo, shiftRate, toggleFlag, duration]);
+  }, [step, undo, redo, shiftRate, toggleFlag, deleteSel, duration]);
 
   if (!d) return <div className="empty">加载中…</div>;
   if (!cues.length) return <div className="empty">还没有字幕。先在「处理」里运行一次（右上角 ▶ 运行）。</div>;
@@ -454,7 +466,7 @@ export function EditorPage() {
             {unifying ? "统一中…" : "⇄ 统一译法"}</button>
           <button className="btn sm" title="撤销（Ctrl+Z）" disabled={!d.history?.undo} onClick={undo}>↶ 撤销</button>
           <button className="btn sm" title="重做（Ctrl+Y）" disabled={!d.history?.redo} onClick={redo}>↷ 重做</button>
-          <span className="dim">↑↓ / J K 上下条 · ←→ 快退快进 · 空格播放 · [ ] 倍速 · M 标记</span>
+          <span className="dim">↑↓ / J K 上下条 · ←→ 快退快进 · 空格播放 · [ ] 倍速 · M 标记 · Delete 删除</span>
         </div>
         <div className="bd">
           <table className="tb"><thead><tr><th /><th>#</th><th>时间</th><th>类型</th><th>来源</th><th>原文</th><th>译文</th><th>问题</th></tr></thead>
@@ -766,7 +778,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
                 onMouseEnter={() => prev && onHint(prev.id)} onMouseLeave={() => onHint(null)}>↑ 与上一条 #{index} 合并</button>
         <button className="btn" disabled={busy || !next} title={next ? mergeTip(cue, next) : "下面没有字幕"} onClick={onMergeDown}
                 onMouseEnter={() => next && onHint(next.id)} onMouseLeave={() => onHint(null)}>↓ 与下一条 #{index + 2} 合并</button>
-        <button className="btn ghost" disabled={busy} onClick={() => patch({ delete: true }, "已删除（Ctrl+Z 可撤销）")}>删除</button>
+        <button className="btn ghost" disabled={busy} title="删掉这一条（快捷键 Delete，Ctrl+Z 可撤销）" onClick={() => patch({ delete: true }, "已删除（Ctrl+Z 可撤销）")}>删除</button>
       </div>
 
       {pop && (
