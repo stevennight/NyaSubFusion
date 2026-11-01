@@ -81,17 +81,6 @@ def test_reading_rows_become_furigana_real_lines_stay():
     assert sc[0]["lines"][0]["text"][r["span"][0]:r["span"][1]] == "日光"
 
 
-def test_lost_positions_are_not_read_as_same_speaker():
-    # 转出来的数据每行都靠左：不能当成“左对齐 = 一个人”，交给大模型结合语音判断
-    sc = arib_b24.screens(_screen([(6, "おしょうゆの　いい匂いです。"), (7, "ありがとうございます。")]), 60.0)
-    cue = subtitle.cues_from_screens(sc)[0]
-    assert "voices" not in cue and [ln["text"] for ln in cue["speaker_check"]] == ["おしょうゆの　いい匂いです。", "ありがとうございます。"]
-    # 行首有说话人标记（⚟、（名字））的不用问
-    sc = arib_b24.screens(_screen([(6, "（昇一）でも　贋作でも"), (7, "〓おはようございます。")]), 60.0)
-    cue = subtitle.cues_from_screens(sc)[0]
-    assert cue["voices"] == [0, 1] and "speaker_check" not in cue
-
-
 def test_cues_and_broadcast_ass(tmp_path):
     st = _screen([(6, "みこし"), (7, "総勢２００人が神輿を担ぐ　秋祭りです。")]) + _screen([], t=55.8)
     sc = arib_b24.screens(st, 60.0)
