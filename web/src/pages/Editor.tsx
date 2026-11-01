@@ -394,11 +394,13 @@ export function EditorPage() {
                   edit(async () => { const r = await api.cueFromSource(s.pid!, c.id); got.push(r); return r; })
                     .then(() => got[0] && s.toast(got[0].note ? `已新建字幕；${got[0].note}` : `已新建字幕并翻译：${c.text.replace(/\n/g, " ")}`));
                 }}
-                onSourceAttach={(c: Candidate, id: string) => {
+                onSourceAttach={(c: Candidate, id: string, replace?: boolean) => {
                   const got: { note?: string | null }[] = [];
-                  s.toast(`正在把 ${c.id} 并入 #${id}（重新翻译要几秒）…`);
-                  edit(async () => { const r = await api.attachSource(s.pid!, id, c.id); got.push(r); return r; })
-                    .then(() => got[0] && s.toast(got[0].note ? `已并入 #${id}；${got[0].note}` : `已并入 #${id} 并重新翻译，记得看一下分段`));
+                  const verb = replace ? `用 ${c.id} 替换 #${id} 的原文` : `把 ${c.id} 并入 #${id}`;
+                  s.toast(`正在${verb}（重新翻译要几秒）…`);
+                  edit(async () => { const r = await api.attachSource(s.pid!, id, c.id, replace ? "replace" : undefined); got.push(r); return r; })
+                    .then(() => got[0] && s.toast(got[0].note ? `已${replace ? "替换" : "并入"} #${id}；${got[0].note}`
+                      : replace ? `已替换 #${id} 的原文并重新翻译（Ctrl+Z 撤销）` : `已并入 #${id} 并重新翻译，记得看一下分段`));
                 }}
                 onDropped={(c: Candidate) => {
                   player.current?.seek(c.start);

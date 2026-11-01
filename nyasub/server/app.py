@@ -1264,7 +1264,8 @@ def create_app(token: str | None = None) -> FastAPI:
     @app.post("/api/projects/{pid}/cues/{cid}/attach")
     def attach_source(pid: str, cid: str, body: dict = Body(...)):
         """把时间轴上的一块来源并入这条字幕（{"source": id}）：原文按时间先后接上它的文字（另起一屏），
-        时间放宽到包住它，来源里加上它；配了大模型就按新的原文整句重译、重新分段。算一步撤销，标成待审校。"""
+        时间放宽到包住它，来源里加上它；配了大模型就按新的原文整句重译、重新分段。算一步撤销，标成待审校。
+        {"mode": "replace"}：原文换成它的文字（画面字省掉了半句、语音才完整这类），时间不变（语音段的结尾常常拖到后面的静音里）。"""
         from ..core import segments
         from ..textutil import norm
 
@@ -1273,14 +1274,19 @@ def create_app(token: str | None = None) -> FastAPI:
         if not cue:
             raise HTTPException(404, "没有这条字幕")
         sid = body.get("source") or ""
+        replace = body.get("mode") == "replace"
         src = _source_item(run, sid)
         if src is None:
             raise HTTPException(404, "没有这一块来源")
-        if sid in cue.get("sources", []):
+        if sid in cue.get("sources", []) and not replace:
             raise HTTPException(400, "这一块已经关联在这条字幕上了")
         text = _source_text(run, src)
         old = cue["orig"]["text"]
-        if not norm(text) or norm(text) in norm(old):  # 文字已经在原文里（只是没记成来源）：只补关联和时间
+        if replace:
+            if not norm(text):
+                raise HTTPException(400, "这一块没有文字")
+            orig = text
+        elif not norm(text) or norm(text) in norm(old):  # 文字已经在原文里（只是没记成来源）：只补关联和时间
             orig = old
         else:  # 按时间插到对应的位置：分了段、每段有时间的看每段的开头，否则看整条的开头
             spans = cue.get("parts") or [[cue["start"], cue["end"]]]
@@ -1289,16 +1295,16 @@ def create_app(token: str | None = None) -> FastAPI:
                 ps, spans = [old], [[cue["start"], cue["end"]]]
             k = sum(1 for a, _ in spans if a <= src["start"])
             orig = "｜".join(p for p in ps[:k] + [text] + ps[k:] if p.strip())
-        start, end = min(cue["start"], src["start"]), max(cue["end"], src["end"])
-        body = {"orig": orig, "start": start, "end": end, "sources": list(cue.get("sources", [])) + [sid],
-                "review": "todo", "parts": None}
+        start, end = (cue["start"], cue["end"]) if replace else (min(cue["start"], src["start"]), max(cue["end"], src["end"]))
+        sources = list(cue.get("sources", [])) + ([] if sid in cue.get("sources", []) else [sid])
+        body = {"orig": orig, "start": start, "end": end, "sources": sources, "review": "todo", "parts": None}
         note = None
         if orig != old:
             items = run._items(cues)
             new = {k: v for k, v in cue.items() if k != "parts"}
             new.update(orig={**cue["orig"], "text": orig}, start=start, end=end, sources=body["sources"])
             alts, note = _translate_one(run, cues, new, _SOURCE_HINT[src["src"]],
-                                        [items[x] for x in cue.get("sources", []) if x in items]
+                                        [items[x] for x in cue.get("sources", []) if x in items and x != sid]
                                         + [_source_for_llm(src, cue.get("type"))], edited=True)
             tr = {}
             for code, a in alts.items():

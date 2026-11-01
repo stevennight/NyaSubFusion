@@ -334,6 +334,17 @@ def test_new_cue_from_any_source_and_attach(client, sample):
     after = next(c for c in client.get(f"/api/projects/{pid}/data").json()["cues"] if c["id"] == "q2")
     assert after["orig"] == before["orig"] and after["sources"] == ["c2"] and after["end"] == before["end"]
 
+    # 用它替换原文（画面字省掉半句、语音才完整）：原文换成它的文字，时间不变，整句重译；已经关联的也可以
+    llm_client.LLM._call = lambda self, s, u, images=None: {"alts": [{"orig": "寒いからね", "tr": "因为很冷嘛"}]}
+    for _ in range(2):
+        cue = client.post(f"/api/projects/{pid}/cues/q2/attach", json={"source": "a1", "mode": "replace"}).json()["cue"]
+        assert cue["orig"]["text"] == "寒いからね" and cue["sources"] == ["c2", "a1"] and cue["review"] == "todo"
+        assert (cue["start"], cue["end"]) == (before["start"], before["end"]) and cue["tr"]["zh-Hans"]["text"] == "因为很冷嘛"
+    client.post(f"/api/projects/{pid}/edits/undo")
+    client.post(f"/api/projects/{pid}/edits/undo")
+    after = next(c for c in client.get(f"/api/projects/{pid}/data").json()["cues"] if c["id"] == "q2")
+    assert after["orig"] == before["orig"] and after["sources"] == ["c2"]
+
 
 def test_batch_review_is_one_undo_step(client, sample):
     """播放看过的一批一起标成已审：一步撤销全部回到原样；还能人工标记（flag）。"""

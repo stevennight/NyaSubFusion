@@ -58,7 +58,8 @@ export const api = {
   restoreOcr: (pid: string, oid: string) => call<EditResult & { note?: string | null }>(`/api/projects/${pid}/ocr/${oid}/restore`, json("POST", {})),
   // 时间轴右键：以一块来源（字幕 / 画面字 / 语音）新建关联的字幕；并入一条字幕
   cueFromSource: (pid: string, sid: string) => call<EditResult & { note?: string | null }>(`/api/projects/${pid}/sources/${sid}/cue`, json("POST", {})),
-  attachSource: (pid: string, cid: string, sid: string) => call<EditResult & { note?: string | null }>(`/api/projects/${pid}/cues/${cid}/attach`, json("POST", { source: sid })),
+  attachSource: (pid: string, cid: string, sid: string, mode?: "replace") =>
+    call<EditResult & { note?: string | null }>(`/api/projects/${pid}/cues/${cid}/attach`, json("POST", { source: sid, mode })),
   clearOrphans: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/edits/orphans`, { method: "DELETE" }),
   // 几条一起改审校状态（播放看过的一批自动标成已审），算一步撤销
   setReview: (pid: string, ids: string[], review: "ok" | "todo" | "flag") => call<EditResult>(`/api/projects/${pid}/review`, json("POST", { ids, review })),

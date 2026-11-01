@@ -49,7 +49,7 @@ interface Props {
   onSegSplit?: (cueId: string, boundary: number) => void;            // 在第 boundary 个分界处拆成两条字幕
   // 参考轨（字幕 / 画面字 / 语音）上右键：以这一块新建一条关联的字幕 / 并入选中的字幕
   onSourceCue?: (c: Candidate) => void;
-  onSourceAttach?: (c: Candidate, cueId: string) => void;
+  onSourceAttach?: (c: Candidate, cueId: string, replace?: boolean) => void;
   refLanes?: boolean;                      // 显示参考轨（字幕 / 画面字 / 语音 / 原文）；false = 只留波形和译文
   onToggleRef?: () => void;
 }
@@ -359,7 +359,7 @@ export function Timeline(p: Props) {
         const inSel = !!selCue?.sources.includes(c.id);
         const close = (fn: () => void) => () => { fn(); setMenu(null); };
         return (
-          <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 210) }}
+          <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 240) }}
                onMouseDown={(e) => e.stopPropagation()}>
             <div className="dim">{menu.kind} {c.id}{used ? ` · 用在 #${used}` : " · 没有用到"}</div>
             <button disabled={!p.onSourceCue} title="时间用这一块的，原文用它的文字，配了大模型就顺手翻译"
@@ -368,6 +368,10 @@ export function Timeline(p: Props) {
                     title={!selCue ? "先在译文轨或字幕列表里选中一条字幕" : inSel ? "已经关联在这条字幕上了" : "原文按时间接上这一块的文字，时间放宽到包住它，整句重新翻译"}
                     onClick={close(() => selCue && p.onSourceAttach?.(c, selCue.id))}>
               ⇢ 并入选中的字幕{selCue ? ` #${selCue.id}` : ""}{inSel ? "（已关联）" : ""}</button>
+            <button disabled={!p.onSourceAttach || !selCue}
+                    title={!selCue ? "先在译文轨或字幕列表里选中一条字幕" : "原文换成这一块的文字（比如画面字省掉了半句、语音才完整），时间不变，整句重新翻译"}
+                    onClick={close(() => selCue && p.onSourceAttach?.(c, selCue.id, true))}>
+              ⇄ 用它替换选中字幕的原文{selCue ? ` #${selCue.id}` : ""}</button>
             <button title="复制这一块的文字，可以贴到已有的字幕里" onClick={close(() => copyText(c.text))}>⧉ 复制文字</button>
             {used && used !== p.selected && <button onClick={close(() => p.onSelect(used))}>选中用到它的字幕 #{used}</button>}
             <button onClick={close(() => p.onSeek(c.start))}>▶ 跳到这里</button>
