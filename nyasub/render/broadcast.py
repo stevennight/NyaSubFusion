@@ -158,6 +158,43 @@ def ttml_to_ass(path, out, offset=0.0, font=""):
     return len(docs)
 
 
+def screens_to_ass(screens, out, offset=0.0, font="", plane=(960, 540)):
+    """2K 广播字幕（sources/arib_b24.screens 整理好的）→ 原样的 ASS：每行按原来的上下位置、水平居中
+    （NHK 的字幕每行居中；有的台发出来的 2K 数据都从最左边写起）；振假名小一号放在注的那几个字上面。返回写了几屏。"""
+    font = pick_font(font)
+    em_scale = fonts.metrics(font).em_scale
+    k = 1080 / plane[1]  # 画布放大到 1920×1080
+    body = []
+    for s in screens:
+        a, b = s["start"] + offset, s["end"] + offset
+        if b <= 0:
+            continue
+        boxes, left = [], {}
+        for n, ln in enumerate(s["lines"]):
+            cw = ln["fw"] + ln["sp"]
+            w = len(ln["text"]) * cw
+            x0 = (plane[0] - w) / 2
+            left[n] = (x0, cw)
+            boxes.append({"x": x0 * k, "y": (ln["y"] - ln["h"]) * k, "w": w * k, "h": ln["h"] * k, "bg": None,
+                          "spans": [{"text": ln["text"], "fw": ln["fw"] * k, "fh": ln["fh"] * k, "sp": ln["sp"] * k,
+                                     "color": ln["color"]}]})
+        for rb in s["rubies"]:
+            ln = s["lines"][rb["line"]]
+            x0, cw = left[rb["line"]]
+            fw, sp = ln["fw"] / 2, ln["sp"] / 2
+            gw = len(rb["text"]) * (fw + sp)
+            cx = x0 + (rb["span"][0] + rb["span"][1]) / 2 * cw - ln["sp"] / 2
+            top = ln["y"] - ln["h"] * 1.1  # 振假名挨着这行字的上沿（字在字格里竖直居中，上面空着行距的一半）
+            boxes.append({"x": (cx - gw / 2) * k, "y": top * k, "w": gw * k, "h": ln["h"] * 0.4 * k, "bg": None,
+                          "spans": [{"text": rb["text"], "fw": fw * k, "fh": fw * k, "sp": sp * k, "color": ln["color"]}]})
+        for box in boxes:
+            body += _box_events(box, max(0.0, a), b, font, em_scale)
+    size = round(1080 / 15 / em_scale)
+    with open(out, "w", encoding="utf-8-sig", newline="\n") as f:
+        f.write(_header((1920, 1080), font, size) + "\n" + "\n".join(body) + "\n")
+    return len(screens)
+
+
 _ASS_TIME = re.compile(r"^(Dialogue:\s*\d+,)(\d+:\d\d:\d\d\.\d\d),(\d+:\d\d:\d\d\.\d\d),")
 
 

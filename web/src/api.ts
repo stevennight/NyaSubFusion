@@ -71,6 +71,8 @@ export const api = {
   retranslate: (pid: string, cid: string, body: { instruction?: string; lang?: string }) =>
     call<{ alts: { orig: string; tr: string }[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
+  exportBroadcast: (pid: string) =>
+    call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_broadcast`, json("POST", {})),
   exportVideo: (pid: string, mode: "mux" | "burn", profiles?: string[]) =>
     call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_video`, json("POST", { mode, profiles })),
   cancel: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/cancel`, { method: "POST" }),

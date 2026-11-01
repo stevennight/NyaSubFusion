@@ -21,7 +21,7 @@ interface Store {
   reload: () => Promise<void>;
   setConfig: (project: Cfg) => Promise<void>;
   run: (body?: { until?: string; redo?: string[]; translate?: string }) => Promise<void>;
-  exportVideo: (mode: "mux" | "burn", profiles?: string[]) => Promise<void>;
+  exportVideo: (mode: "mux" | "burn" | "broadcast", profiles?: string[]) => Promise<void>;   // broadcast：只输出广播字幕原样
   cancel: () => Promise<void>;
   bump: () => void;
   setError: (e: string | null) => void;
@@ -190,7 +190,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [pid]);
 
-  const exportVideo = useCallback(async (mode: "mux" | "burn", profiles?: string[]) => {
+  const exportVideo = useCallback(async (mode: "mux" | "burn" | "broadcast", profiles?: string[]) => {
     if (!pid) return;
     setLogs([]);
     setStageProg({});
@@ -198,8 +198,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProgress(null);
     setRunning(true);
     try {
-      const r = await api.exportVideo(pid, mode, profiles);
-      toast(`开始${mode === "mux" ? "封装" : "压制"}：${r.file}`);
+      const r = mode === "broadcast" ? await api.exportBroadcast(pid) : await api.exportVideo(pid, mode, profiles);
+      toast(`开始${{ mux: "封装", burn: "压制", broadcast: "导出广播字幕" }[mode]}：${r.file}`);
     } catch (e) {
       setRunning(false);
       setError(String((e as Error).message));

@@ -572,16 +572,40 @@ class Run:
         tracks.sort(key=lambda s: (s["codec"] != "arib_caption",
                                    want != "auto" and lang.canonical(s["lang"]) != lang.canonical(want)))
         tr = tracks[0]
+        if tr["codec"] == "arib_caption":
+            # 2K 广播字幕自己解码：“〓”换回 ➡ ♬ ⚟，振假名行不当台词（见 sources/arib_b24）
+            try:
+                cues = subtitle.cues_from_screens(self._arib_screens(tr, info))
+                if cues:
+                    log(f"字幕：2K 广播字幕（字幕轨 #{tr['sub_index']}），{len(cues)} 条")
+                    return cues
+            except Exception as e:
+                log(f"解码 2K 广播字幕失败，改用 libaribcaption：{e}")
         out = self.proj.media(f"embedded_sub_{tr['sub_index']}.ass")
         media.extract_sub_stream(str(self.proj.video), tr, str(out))
         cues = subtitle.load_cues(str(out), ratio)
         log(f"字幕：内封字幕轨 #{tr['sub_index']}（{tr['codec']} {tr['lang']}），{len(cues)} 条")
         return cues
 
-    def _arib_ttml(self, info, ratio):
+    def _arib_screens(self, tr, info):
+        """2K 广播字幕轨解码、整理成一屏屏（sources/arib_b24）。解码要把整个视频读一遍：结果存在 media 里，视频没换就直接用。"""
+        from ..sources import arib_b24
+
+        path = self.proj.media(f"arib_b24_{tr['sub_index']}.json")
+        rec = load_json(path)
+        if rec and rec.get("key") == self._peek_key():
+            statements = rec["statements"]
+        else:
+            log("正在读取 2K 广播字幕")
+            statements = arib_b24.decode(arib_b24.read_packets(str(self.proj.video), tr["sub_index"]))
+            save_json(path, {"key": self._peek_key(), "statements": statements})
+        return arib_b24.screens(statements, float((info or {}).get("duration") or 0))
+
+    def _ttml_bin(self, info):
+        """4K 广播字幕（ARIB-TTML）的数据流导出成文件，返回路径；没有返回 None。"""
         from ..sources import media, subtitle
 
-        for idx in info["data_streams"]:
+        for idx in info.get("data_streams") or []:  # 先读开头一小段看是不是，是才完整导出
             probe_path = self.proj.media(f"data_{idx}.probe")
             media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20)
             head = probe_path.read_bytes()
@@ -591,11 +615,17 @@ class Run:
             log(f"发现 4K 广播字幕（ARIB-TTML，数据流 #{idx}），正在完整导出")
             bin_path = self.proj.media(f"arib_ttml_{idx}.bin")
             media.dump_data_stream(str(self.proj.video), idx, str(bin_path))
-            cues = subtitle.load_arib_ttml(str(bin_path), ratio)
-            if cues:
-                log(f"字幕：ARIB-TTML（数据流 #{idx}），{len(cues)} 条")
-                return cues
-        return []
+            return bin_path
+        return None
+
+    def _arib_ttml(self, info, ratio):
+        from ..sources import subtitle
+
+        bin_path = self._ttml_bin(info)
+        cues = subtitle.load_arib_ttml(str(bin_path), ratio) if bin_path else []
+        if cues:
+            log(f"字幕：ARIB-TTML（{bin_path.stem}），{len(cues)} 条")
+        return cues
 
     def _asr_fixed(self, asr):
         """语音段修好时间再用（音乐和台词连在一起时第一个字会停在音乐开头，见 sources/asr.repair）。"""
@@ -1278,12 +1308,32 @@ class Run:
         save_json(self.proj.media("broadcast_peek.json"), {"key": self._peek_key(), "ttml": found})
         return found
 
-    def _write_broadcast(self):
-        """字幕来自广播时，另外输出一份原样的原文 ASS（render/broadcast.py）。返回文件名，没有返回 None。"""
+    def export_broadcast(self):
+        """只输出广播字幕原样，不用先跑完整个流程：没探测过就先探测，4K 的字幕数据流还没导出就先导出。返回文件名。"""
+        from ..sources import media
+
+        self.load_state()
+        info = self.results.get("probe") or self.stage("probe", lambda: media.probe(str(self.proj.video)))
+        guess = self._broadcast_source(info, guess=True)
+        if guess and guess[0] in ("peek", "ttml") and guess[1] is None:
+            self._ttml_bin(info)
+        if not self._broadcast_source(info):
+            raise RuntimeError("这个视频没有电视广播字幕（或者「处理 › 字幕」里没用视频里的字幕）")
+        if "align" not in self.results:
+            log("还没做字幕对时：时间照字幕数据原样（4K 广播字幕和画面常差 1 秒左右，跑过「字幕对时」再导出会挪好）")
+        name = self._write_broadcast(force=True)
+        if not name:
+            raise RuntimeError("广播字幕原样没有输出，原因见日志")
+        self._remember_outputs([name])
+        return name
+
+    def _write_broadcast(self, force=False):
+        """字幕来自广播时，另外输出一份原样的原文 ASS（render/broadcast.py）。返回文件名，没有返回 None。
+        force：单独导出（不看“输出广播字幕原样”开没开）。"""
         from ..render import broadcast
         from ..sources import media
 
-        if not self.cfg.render.broadcast:
+        if not self.cfg.render.broadcast and not force:
             return None
         src = self._broadcast_source()
         if not src:
@@ -1296,10 +1346,15 @@ class Run:
             if src[0] == "ttml":
                 n = broadcast.ttml_to_ass(str(src[1]), str(out), offset, font)
             else:
-                styled = self.proj.media(f"embedded_sub_{src[1]['sub_index']}_styled.{_slug(font)}.ass")
-                if not styled.exists():
-                    media.extract_arib_styled(str(self.proj.video), src[1], str(styled), font)
-                n = broadcast.shift_ass(str(styled), str(out), offset)
+                try:  # 自己解码：按 NHK 的样子补回居中、符号、振假名（见 sources/arib_b24）
+                    n = broadcast.screens_to_ass(self._arib_screens(src[1], self.results.get("probe")), str(out),
+                                                 offset, font)
+                except Exception as e:
+                    log(f"解码 2K 广播字幕失败，改用 libaribcaption：{e}")
+                    styled = self.proj.media(f"embedded_sub_{src[1]['sub_index']}_styled.{_slug(font)}.ass")
+                    if not styled.exists():
+                        media.extract_arib_styled(str(self.proj.video), src[1], str(styled), font)
+                    n = broadcast.shift_ass(str(styled), str(out), offset)
         except Exception as e:  # 不影响别的输出
             log(f"广播字幕原样没有输出：{e}")
             return None

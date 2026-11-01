@@ -1471,6 +1471,14 @@ def create_app(token: str | None = None) -> FastAPI:
         names = run.export(body.get("profiles"))
         return {"files": names, "dir": str(Path(run.proj.video).parent)}
 
+    @app.post("/api/projects/{pid}/export_broadcast")
+    def export_broadcast(pid: str):
+        """只输出广播字幕原样，不用先跑完整个流程（后台：要把视频读一遍，几十秒到一两分钟）。"""
+        run = make_run(pid)
+        run.cancel = threading.Event()
+        hub.start(pid, run.export_broadcast, run.cancel)
+        return {"started": True, "file": run.broadcast_name()}
+
     @app.post("/api/projects/{pid}/export_video")
     def export_video(pid: str, body: dict = Body(...)):
         """{"mode": "mux" | "burn", "profiles": [方案名]（可选）}：后台输出视频，进度推到项目频道。"""
