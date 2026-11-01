@@ -27,6 +27,7 @@ class LanguagePack:
     ocr_lang = "en"           # rapidocr 的 LangRec 值
     line_chars = 30           # 每行默认字数（按字计的语言）或字符数（按词计的语言）
     cps = 15                  # 每秒字数上限，超过就标记“语速过快”
+    generation = 0            # 分词学了新词（learn_words）就加一：之前按文字记住的注音结果作废
     word_based = False        # 按空格分词断行（英语等）
     direction = "ltr"
     hallucinations: tuple[str, ...] = ()   # 语音识别常见的幻觉句

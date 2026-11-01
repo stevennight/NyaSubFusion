@@ -13,6 +13,7 @@ export interface ProjectSummary {
   videos?: { mux?: string; burn?: string };
   broadcast?: { source: "ttml" | "arib"; file: string | null } | null;   // 字幕来自广播：能输出“广播字幕原样”（没运行也预先判断）
   broadcast_check?: "checking" | "done";   // checking：还在后台看数据流里有没有 4K 广播字幕
+  queued?: Queued | null;   // 这一集还在任务队列里排队
   render?: { status: StageStatus; note?: string; files: string[] };   // 输出字幕文件这一步
   proxy: "direct" | "ready" | "building" | "failed" | "none";
   configured?: boolean;
@@ -59,6 +60,14 @@ export interface Tokens { orig: Word[] | null; tr: Record<string, Word[]> }
 export interface EditResult {
   cue: Cue | null; history: { undo: number; redo: number };
   changed?: { id: string | null; at: number | null; what: string };   // 撤销 / 重做：改动的是哪一条、改了什么
+  patch?: CuePatch;
+}
+
+/** 改完以后只更新变了的部分（整集数据几 MB，每改一处都整个重读会卡）。sources_changed：来源变了，要整个重读 */
+export interface CuePatch {
+  order: string[]; cues: Cue[]; tokens: Record<string, Tokens | null>;
+  hardsub: ProjectData["hardsub"]; history: ProjectData["history"]; orphans: ProjectData["orphans"];
+  sources_changed: boolean;
 }
 
 export interface ProjectData {
@@ -117,7 +126,11 @@ export interface LiveEvent {
   type: string; name?: string; status?: string; msg?: string; seconds?: number; error?: string; t?: number; job?: Job | null;
   stage?: string; done?: number; total?: number; label?: string;   // type = "progress"：某一步的进度；type = "log"：stage 是写日志的步骤
   stages?: string[];   // type = "round"：这一轮运行会经过的步骤
+  queued?: Queued | null;   // type = "queued"：这一集在任务队列里排在第几（null = 不排了：开始跑了或者取消了）
 }
+/** 还在任务队列里排队的那一项：ahead 前面还有几项（正在跑的也算） */
+export interface Queued { item: string; kind: QueueKind; ahead: number }
+export type QueueKind = "run" | "mux" | "burn" | "broadcast";
 export interface Progress { stage: string; done: number; total: number; label?: string }
 export interface LogLine { msg: string; stage?: string }
 
@@ -147,6 +160,7 @@ export interface Settings {
 export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; context?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
 export interface QueueItem {
   id: string; pid: string; video: string; name: string; options: QueueOptions;
+  kind?: QueueKind; manual?: boolean;   // 一集里点的（运行 / 封装 / 压制 / 导出广播字幕原样）；没有 kind 的是批量加入的运行
   status: "pending" | "running" | "done" | "failed" | "waiting" | "cancelled";
   stage: string | null; error: string | null; note: string | null; added: number; started: number | null; finished: number | null;
 }

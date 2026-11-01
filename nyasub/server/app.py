@@ -248,6 +248,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "broadcast": ({"source": bs[0], "file": run.broadcast_name() if Path(p["video"]).with_name(run.broadcast_name()).exists() else None}
                           if bs else None),
             "broadcast_check": bc_check,
+            "queued": queue.waiting(pid),  # 还在任务队列里排队：{"item", "kind", "ahead"}
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
                                                 or media.hls_state(proj.media(media.HLS_DIR))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),
@@ -876,22 +877,23 @@ def create_app(token: str | None = None) -> FastAPI:
         return {"synced": done, "skipped": skipped}
 
     # ---------- 运行 ----------
+    def _submit(pid, kind, options):
+        """一集里点的任务都排进任务队列（一次只做一件，不同的集同时跑会抢显卡）。返回排在第几。"""
+        p, _ = project_paths(pid)
+        queue.submit(pid, p["video"], kind, options)
+        return {"started": True, "queued": queue.waiting(pid)}  # queued：还在排队（前面有别的任务）；None = 马上开始
+
     @app.post("/api/projects/{pid}/run")
     def run_project(pid: str, body: dict = Body(default={})):
-        _, proj = project_paths(pid)
-        pf = proj / "project.toml"
-        if pf.exists():  # 留一份这次运行时的设置（“回到上次运行时的设置”用）
-            (proj / "backup").mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(pf, proj / "backup" / "last-run.toml")
-        run = make_run(pid, body.get("until") or "render", body.get("redo") or (), body.get("translate"))
-        run.cancel = threading.Event()
-        hub.start(pid, run.run, run.cancel)
-        return {"started": True}
+        return _submit(pid, "run", {"until": body.get("until") or "render", "redo": body.get("redo") or [],
+                                    "translate": body.get("translate")})
 
     @app.post("/api/projects/{pid}/cancel")
     def cancel_project(pid: str):
         job = hub.jobs.get(pid)
         if not job or job.status != "running":
+            if queue.unqueue(pid):  # 还在排队：不排了
+                return {"ok": True}
             raise HTTPException(409, "没有在运行")
         if job.cancel is None:
             raise HTTPException(400, "这个任务不能取消")
@@ -994,17 +996,38 @@ def create_app(token: str | None = None) -> FastAPI:
     def _reannotate(pid):
         run = make_run(pid)
         try:
-            run.reannotate()
+            run.reannotate()  # 里面先读了各步结果，注音结果也换成了新的：不用再读一遍
         except RuntimeError as e:
             raise HTTPException(400, str(e))
-        run.load_state()
         return run
 
     def _edit_result(pid, cid=None):
-        run = _reannotate(pid)
-        cues, tokens, _, _ = run.render_context()
+        run = make_run(pid)
+        run.load_state()
+        before = run.results.get("annotate") or {}
+        try:
+            run.reannotate(loaded=True)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        cues, tokens, _, boxes = run.render_context()
         cue = next((c for c in cues if c["id"] == cid), None) if cid else None
-        return {"cue": cue, "tokens": tokens.get(cid) if cid else None, "history": EditStore(run.proj).depth()}
+        return {"cue": cue, "tokens": tokens.get(cid) if cid else None, "history": EditStore(run.proj).depth(),
+                "patch": _cue_patch(before, cues, tokens, boxes, run.proj)}
+
+    def _cue_patch(before, cues, tokens, boxes, proj):
+        """改完以后界面要更新的部分：只给变了的字幕和注音，加上顺序（整集的数据几 MB，每改一处都整个重读会卡）。
+        sources_changed：字幕用到的来源变了（删掉、挂上来源…），画面字的“丢弃”标记也要跟着变，界面整个重读。"""
+        old = {c["id"]: c for c in before.get("cues", [])}
+        old_tok = before.get("tokens") or {}
+        used = lambda cs: {s for c in cs for s in c.get("sources", [])}
+        store = EditStore(proj)
+        edits = store.load()
+        return {"order": [c["id"] for c in cues], "cues": [c for c in cues if old.get(c["id"]) != c],
+                "tokens": {c["id"]: tokens.get(c["id"]) for c in cues
+                           if c["id"] not in old or tokens.get(c["id"]) != old_tok.get(c["id"])},
+                "hardsub": boxes, "history": store.depth(),
+                "orphans": [rebase.describe(o) for o in edits.get("orphans", [])],
+                "sources_changed": used(old.values()) != used(cues)}
 
     @app.patch("/api/projects/{pid}/cues/{cid}")
     def edit_cue(pid: str, cid: str, body: dict = Body(...)):
@@ -1473,22 +1496,16 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.post("/api/projects/{pid}/export_broadcast")
     def export_broadcast(pid: str):
-        """只输出广播字幕原样，不用先跑完整个流程（后台：要把视频读一遍，几十秒到一两分钟）。"""
-        run = make_run(pid)
-        run.cancel = threading.Event()
-        hub.start(pid, run.export_broadcast, run.cancel)
-        return {"started": True, "file": run.broadcast_name()}
+        """只输出广播字幕原样，不用先跑完整个流程（排进任务队列：要把视频读一遍，几十秒到一两分钟）。"""
+        return {**_submit(pid, "broadcast", {}), "file": make_run(pid).broadcast_name()}
 
     @app.post("/api/projects/{pid}/export_video")
     def export_video(pid: str, body: dict = Body(...)):
-        """{"mode": "mux" | "burn", "profiles": [方案名]（可选）}：后台输出视频，进度推到项目频道。"""
+        """{"mode": "mux" | "burn", "profiles": [方案名]（可选）}：排进任务队列输出视频，进度推到项目频道。"""
         mode = body.get("mode")
         if mode not in pipeline.VIDEO_STAGES:
             raise HTTPException(400, "mode 只能是 mux / burn")
-        run = make_run(pid)
-        run.cancel = threading.Event()
-        hub.start(pid, lambda: run.export_video(mode, body.get("profiles") or None), run.cancel)
-        return {"started": True, "file": run.video_names()[mode]}
+        return {**_submit(pid, mode, {"profiles": body.get("profiles") or None}), "file": make_run(pid).video_names()[mode]}
 
     # ---------- 媒体 ----------
     def _media_info(pid):
@@ -1614,8 +1631,16 @@ def create_app(token: str | None = None) -> FastAPI:
                             opts.get("series") or "", opts.get("context") or "")
         put_config(pid, {"project": cfg})
 
+    def _keep_last_run(pid):
+        """留一份这次运行时的设置（“回到上次运行时的设置”用）。"""
+        _, proj = project_paths(pid)
+        pf = proj / "project.toml"
+        if pf.exists():
+            (proj / "backup").mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(pf, proj / "backup" / "last-run.toml")
+
     queue = Queue(hub, projects, make_run, _setup_from_options,
-                  lambda pid: (project_paths(pid)[1] / "project.toml").exists())
+                  lambda pid: (project_paths(pid)[1] / "project.toml").exists(), before_run=_keep_last_run)
     app.state.queue = queue
 
     @app.get("/api/queue")

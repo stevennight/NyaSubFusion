@@ -144,11 +144,11 @@ export function EditorPage() {
     const c = cues.find((x) => x.id === id);
     if (c && seek) player.current?.seek(c.start + Math.min(0.5, (c.end - c.start) / 3));
   }, [cues]);
-  // 结构修改（拆分 / 合并 / 插入 / 撤销 / 重做）：做完重新加载，选中结果条目
+  // 结构修改（拆分 / 合并 / 插入 / 撤销 / 重做）：做完只换掉变了的条目（来源变了才整个重读），选中结果条目
   const edit = useCallback(async (fn: () => Promise<EditResult>, msg?: string) => {
     try {
       const r = await fn();
-      await s.reload();
+      await s.applyEdit(r);
       if (r.cue) setSel(r.cue.id);
       if (msg) s.toast(msg);
     } catch (e) { s.setError((e as Error).message); }
@@ -159,7 +159,7 @@ export function EditorPage() {
     if (!s.pid) return;
     try {
       const r = await api.undoRedo(s.pid, action);
-      await s.reload();
+      await s.applyEdit(r);
       const ch = r.changed;
       let where = "";
       if (r.cue) {
@@ -253,8 +253,8 @@ export function EditorPage() {
     seen.current = { ids: new Set(), since: 0 };
     if (!ids.length || !s.pid) return;
     try {
-      await api.setReview(s.pid, ids, "ok");
-      await s.reload();
+      const r = await api.setReview(s.pid, ids, "ok");
+      await s.applyEdit(r);
       s.toast(`播放看过，${ids.length} 条已标成已审`, { label: "撤销 (Ctrl+Z)", run: () => undoRedoRef.current("undo") });
     } catch (e) { s.setError((e as Error).message); }
   }, [s]);
@@ -560,7 +560,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
   const patch = async (body: Record<string, unknown>, msg?: string) => {
     if (!s.pid) return;
     setBusy(true);
-    try { await api.editCue(s.pid, cue.id, body); await s.reload(); if (msg) s.toast(msg); }
+    try { await s.applyEdit(await api.editCue(s.pid, cue.id, body)); if (msg) s.toast(msg); }
     catch (e) { s.setError((e as Error).message); }
     finally { setBusy(false); }
   };

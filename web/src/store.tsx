@@ -1,7 +1,7 @@
 // 全局状态：当前项目、数据、配置、运行中的实时事件。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, subscribe } from "./api";
-import type { Cfg, ConfigState, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, StageStatus } from "./types";
+import type { Cfg, ConfigState, CuePatch, LangInfo, LiveEvent, LogLine, Progress, ProjectData, ProjectSummary, Queued, StageStatus } from "./types";
 
 interface Store {
   pid: string | null;
@@ -14,11 +14,14 @@ interface Store {
   live: Record<string, StageStatus>;      // 这一轮里各步骤的状态（还没走到的是 pending）
   liveSec: Record<string, number>;        // 这一轮里已完成步骤的用时
   running: boolean;
+  queued: Queued | null;        // 还在任务队列里排队（一次只做一件）：排在第几、是什么任务
   progress: Progress | null;    // 输出视频的进度
   version: number;              // 数据 / 配置变了就加一，预览据此刷新
   error: string | null;
   open: (pid: string | null) => void;
   reload: () => Promise<void>;
+  /** 改字幕之后：只换掉变了的字幕和注音（不重读整集几 MB 的数据）；来源变了、或者没有 patch 就整个重读 */
+  applyEdit: (r: { patch?: CuePatch } | null | undefined) => Promise<void>;
   setConfig: (project: Cfg) => Promise<void>;
   run: (body?: { until?: string; redo?: string[]; translate?: string }) => Promise<void>;
   exportVideo: (mode: "mux" | "burn" | "broadcast", profiles?: string[]) => Promise<void>;   // broadcast：只输出广播字幕原样
@@ -56,6 +59,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [live, setLive] = useState<Record<string, StageStatus>>({});
   const [liveSec, setLiveSec] = useState<Record<string, number>>({});
   const [running, setRunning] = useState(false);
+  const [queued, setQueued] = useState<Queued | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -82,6 +86,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setData(d);
       setCfg(c);
       setRunning(s.job?.status === "running");
+      setQueued(s.queued ?? null);
       setVersion((v) => v + 1);
       setError(null);
     } catch (e) {
@@ -89,6 +94,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (String((e as Error).message).includes("没有这个项目")) open(null);
     }
   }, [pid]);
+
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const applyEdit = useCallback(async (r: { patch?: CuePatch } | null | undefined) => {
+    const p = r?.patch, d = dataRef.current;
+    if (!pid || !p || !d || p.sources_changed) return reload();
+    const byId = new Map(d.cues.map((c) => [c.id, c]));
+    for (const c of p.cues) byId.set(c.id, c);
+    if (p.order.some((id) => !byId.has(id))) return reload();   // 对不上（界面上的数据比较旧）：整个重读
+    const tokens: ProjectData["tokens"] = {};
+    for (const id of p.order) {
+      const t = id in p.tokens ? p.tokens[id] : d.tokens[id];
+      if (t) tokens[id] = t;
+    }
+    setData({ ...d, cues: p.order.map((id) => byId.get(id)!), tokens, hardsub: p.hardsub, history: p.history, orphans: p.orphans });
+    setVersion((v) => v + 1);
+    api.project(pid).then(setSummary).catch(() => {});   // 运行条上“下次运行会做…”：数据小，不用等
+  }, [pid, reload]);
 
   const pidRef = useRef(pid);
   pidRef.current = pid;
@@ -101,6 +124,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSummary(null);
     setData(null);
     setCfg(null);
+    setQueued(null);
     setLogs([]);
     setStageProg({});
     setLive({});
@@ -155,6 +179,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setStageProg((m) => { const n = { ...m }; delete n[name]; return n; });
       }
       if (e.type === "hello") setRunning(e.job?.status === "running");
+      if (e.type === "queued") setQueued(e.queued ?? null);
       if (e.type === "job") {
         setRunning(false);
         setProgress(null);
@@ -181,11 +206,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setStageProg({});
     setLive({});
     setLiveSec({});
-    setRunning(true);
-    try {
-      await api.run(pid, body);
+    try {  // 排进任务队列：轮到了才开始（开始时会收到步骤事件，显示成运行中）
+      setQueued((await api.run(pid, body)).queued);
     } catch (e) {
-      setRunning(false);
       setError(String((e as Error).message));
     }
   }, [pid]);
@@ -196,25 +219,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setStageProg({});
     setLive({});
     setProgress(null);
-    setRunning(true);
-    try {
+    try {  // 排进任务队列：轮到了才开始
       const r = mode === "broadcast" ? await api.exportBroadcast(pid) : await api.exportVideo(pid, mode, profiles);
-      toast(`开始${{ mux: "封装", burn: "压制", broadcast: "导出广播字幕" }[mode]}：${r.file}`);
+      setQueued(r.queued);
+      const what = { mux: "封装", burn: "压制", broadcast: "导出广播字幕" }[mode];
+      toast(r.queued?.ahead ? `已排进任务队列（前面还有 ${r.queued.ahead} 项），轮到了就${what}：${r.file}` : `开始${what}：${r.file}`);
     } catch (e) {
-      setRunning(false);
       setError(String((e as Error).message));
     }
   }, [pid, toast]);
 
   const cancel = useCallback(async () => {
     if (!pid) return;
-    try { await api.cancel(pid); toast("正在取消…"); } catch (e) { setError(String((e as Error).message)); }
-  }, [pid, toast]);
+    const waiting = !!queued && !running;   // 还在排队：从任务队列里拿掉
+    try { await api.cancel(pid); toast(waiting ? "已取消排队" : "正在取消…"); } catch (e) { setError(String((e as Error).message)); }
+  }, [pid, toast, queued, running]);
 
   const value = useMemo<Store>(() => ({
-    pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error,
-    open, reload, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, progress, version, error, open, reload, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
+    pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, error,
+    open, reload, applyEdit, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, error, open, reload, applyEdit, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

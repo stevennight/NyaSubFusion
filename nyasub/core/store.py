@@ -5,12 +5,14 @@ import os
 from pathlib import Path
 
 
-def save_json(path, obj):
+def save_json(path, obj, compact=False):
+    """compact：不缩进（各步的结果几 MB，带缩进要走纯 Python 的编码，审校时每改一处都要写一遍注音结果，慢好几倍）。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(obj, ensure_ascii=False, indent=1)
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=1)
+        f.write(text)
     os.replace(tmp, path)
 
 

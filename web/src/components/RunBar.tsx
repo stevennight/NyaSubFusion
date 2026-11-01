@@ -6,6 +6,7 @@ import { STAGE_LBL } from "../util";
 
 export const REDO_STAGES = ["subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate"];
 const UNTIL = ["subs", "asr", "ocr", "fuse", "translate", "annotate", "render"];
+export const KIND_LBL: Record<string, string> = { run: "运行", mux: "封装 MKV", burn: "压制硬字幕", broadcast: "导出广播字幕原样" };
 
 export function RunBar() {
   const s = useStore();
@@ -29,18 +30,22 @@ export function RunBar() {
     s.setRunOpts((x) => ({ ...RUN_DEFAULT, until: x.until }));  // 重做、清掉修改只对这一次有效
     s.run({ until: o.until, redo: body });
   };
+  const q = !s.running ? s.queued : null;   // 还在任务队列里排队（一次只做一件）
+  const busy = s.running || !!q;
   return (
     <div className="runbar" ref={box}>
-      <span className={`pending${s.running ? " muted" : ""}`}>
+      <span className={`pending${busy ? " muted" : ""}`}>
         {s.running ? "正在运行：现在改的设置下次运行才生效"
+          : q ? `${KIND_LBL[q.kind]}排进了任务队列：${q.ahead ? `前面还有 ${q.ahead} 项，轮到了自动开始（「任务」页能调整顺序）` : "马上开始…"}`
           : unsaved ? "正在保存设置…"
           : stale.length ? `已自动保存。下次运行会做：${stale.join(" → ")}` : "已自动保存。都是最新的"}
-        {extra.length > 0 && !s.running && <span className="acc">（{extra.join("；")}）</span>}
+        {extra.length > 0 && !busy && <span className="acc">（{extra.join("；")}）</span>}
       </span>
       {s.running && <button className="btn" onClick={s.cancel}>■ 停止</button>}
+      {q && <button className="btn" onClick={s.cancel}>取消排队</button>}
       <div className="runbtn">
-        <button className="btn pri" disabled={s.running || unsaved} onClick={start}>{s.running ? "运行中…" : "▶ 运行"}</button>
-        <button className="btn pri runmore" disabled={s.running} title="运行到哪一步、强制重做…" onClick={() => setMenu(!menu)}>▾</button>
+        <button className="btn pri" disabled={busy || unsaved} onClick={start}>{s.running ? "运行中…" : q ? "排队中…" : "▶ 运行"}</button>
+        <button className="btn pri runmore" disabled={busy} title="运行到哪一步、强制重做…" onClick={() => setMenu(!menu)}>▾</button>
       </div>
       {menu && (
         <div className="menu runmenu">

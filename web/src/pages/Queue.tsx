@@ -9,6 +9,14 @@ import { pct, STAGE_LBL } from "../util";
 
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 import { MEDIA_EXTS } from "./Library";
+import { KIND_LBL } from "../components/RunBar";
+
+/** 这一项是什么任务：一集里点的标出来；批量加入的写做到哪一步 */
+function what(it: QueueItem) {
+  const kind = it.kind ?? "run";
+  const until = it.options.until && it.options.until !== "render" ? `（做到${STAGE_LBL[it.options.until] ?? it.options.until}）` : "";
+  return (kind === "run" ? `运行${until}` : KIND_LBL[kind]) + (it.manual ? " · 单集" : " · 批量");
+}
 const STATUS: Record<QueueItem["status"], [string, string]> = {
   pending: ["待处理", ""], running: ["运行中", "acc"], done: ["完成", "ok"], failed: ["失败", "bad"],
   waiting: ["等外部翻译", "warn"], cancelled: ["已取消", ""],
@@ -66,7 +74,8 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
               return (
                 <tr key={it.id}>
                   <td className="dim">{i + 1}</td>
-                  <td><b>{it.name}</b><div className="dim" style={{ fontSize: 11.5, wordBreak: "break-all" }}>{it.video}</div></td>
+                  <td><b>{it.name}</b> <span className="chip">{what(it)}</span>
+                    <div className="dim" style={{ fontSize: 11.5, wordBreak: "break-all" }}>{it.video}</div></td>
                   <td style={{ whiteSpace: "nowrap" }}><span className={`chip ${cls}`}>{lbl}{it.status === "running" && it.stage ? ` · ${STAGE_LBL[it.stage] ?? it.stage}` : ""}{it.status === "running" && (it.stage === "mux" || it.stage === "burn") && prog[it.id] ? ` ${pct(prog[it.id])}%` : ""}</span></td>
                   <td className="dim" style={{ whiteSpace: "nowrap" }}>{dur(it.started, it.status === "running" ? null : it.finished)}</td>
                   <td style={{ fontSize: 12, color: it.error ? "var(--bad)" : "var(--tx2)", maxWidth: 320, wordBreak: "break-all" }}>{it.error ?? it.note ?? ""}</td>
@@ -83,7 +92,8 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
             })}
           </tbody></table>
         )}
-        <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>取消正在运行的项会在几秒内停下（已完成的步骤保留，重试时接着做）。程序重启后队列会恢复。</div>
+        <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>所有任务都在这里排队，一次只做一件：批量加入的，和在一集里点的运行、封装、压制、导出广播字幕原样（这些插在批量加入的前面）。
+          暂停只停批量加入的，一集里点的照常排队运行。取消正在运行的项会在几秒内停下（已完成的步骤保留，重试时接着做）。程序重启后队列会恢复。</div>
       </div>
       {adding && <AddDialog onClose={closeAdd} onAdded={(r) => { setQ(r); closeAdd(); }} />}
     </div></div>

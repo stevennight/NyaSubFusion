@@ -58,6 +58,7 @@ class Chinese(LanguagePack):
             jieba.add_word(w)
         _LEARNED.update(new)
         _words.cache_clear()
+        self.generation += 1  # 分词变了：按文字记住的注音结果作废（core/pipeline._ANN_CACHE）
 
     def break_levels(self, text):
         """空格 / 标点后（3）之外，按分词补上词与词之间（1），助词之后、连词之前算小句里的停顿（2）。"""

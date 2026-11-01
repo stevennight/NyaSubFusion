@@ -5,6 +5,7 @@
     输出指纹 = hash(这一步的结果内容)
 输入指纹没变就直接复用；上游重跑但结果内容没变时，下游也不用重跑。
 """
+import copy
 import os
 import re
 import time
@@ -18,6 +19,7 @@ from .edits import normalize as normalize_edits
 
 STAGES = ["probe", "audio", "subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate", "render"]
 ALIASES = {"merge": "fuse", "extract": "audio"}
+_ANN_CACHE = {}  # (语言, 分词版本, 读音词典指纹, 文字) → 注音结果（见 _annotate）
 VIDEO_EXTS = (".mp4", ".mkv", ".ts", ".m2ts", ".mts", ".avi", ".mov", ".webm", ".flv", ".wmv", ".mpg", ".mpeg")
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 
@@ -227,7 +229,7 @@ class Run:
             # 中途按了停止：有的地方会把取消当成一次失败接着往下做（结果不完整），不能存成“完成”，下次还要重做
             emit({"type": "stage", "name": name, "status": "cancelled"})
             raise Cancelled()
-        save_json(self._out_path(name), result)
+        save_json(self._out_path(name), result, compact=True)
         rec = {"in": fp_in, "out": digest(result), "seconds": round(time.time() - t, 1)}
         save_json(self._fp_path(name), rec)
         pending = self._pending()
@@ -378,10 +380,12 @@ class Run:
         for code in {lang.canonical(t) for t in self.cfg.project.targets}:
             lang.get(code).learn_words(words)
 
-    def reannotate(self):
+    def reannotate(self, loaded=False):
         """只重做注音（编辑字幕、改读音词典后调用）：直接用已有的翻译结果。
-        就算上游配置改过、翻译已经“过期”，也不会在这里重新识别或重新翻译（那要用户自己点运行）。"""
-        self.load_state()
+        就算上游配置改过、翻译已经“过期”，也不会在这里重新识别或重新翻译（那要用户自己点运行）。
+        loaded：已经调过 load_state（不用再读一遍）。"""
+        if not loaded:
+            self.load_state()
         translated = self.results.get("translate")
         if translated is None:
             raise RuntimeError("还没有翻译结果，先运行一次")
@@ -991,14 +995,26 @@ class Run:
         cues = self._tidy(cues, edits, rects)
         readings = self._readings(translated.get("glossary"))
         warned = set()
+        mine_by = {}  # 每种语言用的读音词典 + 它的指纹（缓存的键）
 
         def ann(code, text):
             pack = lang.get(code)
             if not pack.annotations and not pack.translit_name:
                 return None
-            mine = [r for r in readings if lang.canonical(r.get("lang") or self.src) == pack.code]
+            if pack.code not in mine_by:
+                mine = [r for r in readings if lang.canonical(r.get("lang") or self.src) == pack.code]
+                mine_by[pack.code] = (mine, digest(mine))
+            mine, sig = mine_by[pack.code]
+            # 审校时每改一处都要重做整集的注音：没改的字幕文字一样，结果也一样，记住上次的（分词学了新词就作废）
+            key = (pack.code, getattr(pack, "generation", 0), sig, text)
+            if key in _ANN_CACHE:
+                return copy.deepcopy(_ANN_CACHE[key])
             try:
-                return pack.annotate(text.replace("｜", ""), mine)
+                words = pack.annotate(text.replace("｜", ""), mine)
+                if len(_ANN_CACHE) > 50000:
+                    _ANN_CACHE.clear()
+                _ANN_CACHE[key] = copy.deepcopy(words)
+                return words
             except ImportError as e:
                 if code not in warned:
                     warned.add(code)

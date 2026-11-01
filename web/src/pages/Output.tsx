@@ -512,7 +512,7 @@ function BroadcastEditor({ r, update, doc, bc, subsRead }: { r: R; update: Upd; 
         {na && <b style={{ color: "var(--warn)" }}> {subsRead ? "这个视频的字幕不是电视广播字幕（或者「处理 › 字幕」里没用视频里的字幕）。" : "正在检查视频里有没有电视广播字幕…"}</b>}</div>
       {doc.kind === "episode" && (
         <div className="row" style={{ marginBottom: 12 }}>
-          <button className="btn" disabled={na || s.running} onClick={() => s.exportVideo("broadcast")}>现在导出</button>
+          <button className="btn" disabled={na || s.running || !!s.queued} onClick={() => s.exportVideo("broadcast")}>现在导出</button>
           <span className="dim">不用先跑完整个流程，只读视频里的广播字幕（几十秒到一两分钟）</span>
         </div>)}
       <div className="kv">
@@ -541,7 +541,7 @@ function VideoEditor({ r, update, doc, mode, bc }: { r: R; update: Upd; doc: Con
   const defId = muxed.includes(vc.default) ? vc.default : rows.find((x) => muxed.includes(x.id))?.id;
   const burnId = ids.includes(vc.burn) ? vc.burn : rows.find((x) => x.id !== "broadcast" && x.fmt === "ASS")?.id;
   const episode = doc.kind === "episode";
-  const ready = episode && !!s.data?.cues.length && !s.running;
+  const ready = episode && !!s.data?.cues.length && !s.running && !s.queued;
   const p = s.progress && s.progress.stage === mode ? s.progress : null;
   const done = s.summary?.videos?.[mode];
   const stem = (s.summary?.name ?? "视频名").replace(/\.[^.]+$/, "");

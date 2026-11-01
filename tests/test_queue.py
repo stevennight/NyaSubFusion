@@ -145,3 +145,47 @@ def test_cancel_running_item_stops_between_stages(client, tmp_path, monkeypatch)
     st = _wait(client, lambda s: s["items"][1]["status"] == "done")
     assert st["items"][0]["status"] == "cancelled"
     assert not v1.with_name("sample.zh-Hans.ass").exists()  # 停在了“自带字幕”之后
+
+
+def test_episode_tasks_go_through_the_queue(client, tmp_path):
+    # 一集里点的运行 / 封装 / 导出：也排进任务队列，插在批量加入的前面；暂停只停批量加入的
+    v1, v2, v3 = _videos(tmp_path, 3)
+    p1, p2, p3 = (_configure(client, v) for v in (v1, v2, v3))
+    client.post("/api/queue/pause", json={"paused": True})
+    client.post("/api/queue", json={"paths": [str(v1), str(v2)]})
+    r = client.post(f"/api/projects/{p3}/run", json={"until": "render"}).json()
+    assert r["started"]
+    st = client.get("/api/queue").json()
+    assert [(i["pid"], i.get("kind", "run")) for i in st["items"][:1]] == [(p3, "run")]
+    st = _wait(client, lambda s: next(i for i in s["items"] if i["pid"] == p3)["status"] == "done")
+    assert next(i for i in st["items"] if i["pid"] == p3)["options"]["until"] == "render"
+    assert all(i["status"] == "pending" for i in st["items"] if i["pid"] != p3)  # 批量加入的还暂停着
+    # 封装 MKV 也排进来，跑完和运行一样
+    client.post(f"/api/projects/{p3}/export_video", json={"mode": "mux"})
+    st = _wait(client, lambda s: any(i.get("kind") == "mux" and i["status"] in ("done", "failed") for i in s["items"]))
+    mux = next(i for i in st["items"] if i.get("kind") == "mux")
+    assert mux["pid"] == p3 and mux["status"] == "done", mux
+    # 还在排队的可以在一集页上取消（自己点的直接拿掉，批量加入的标成已取消）
+    assert client.get(f"/api/projects/{p1}").json()["queued"]["kind"] == "run"
+    assert client.post(f"/api/projects/{p1}/cancel").json()["ok"]
+    st = client.get("/api/queue").json()
+    assert next(i for i in st["items"] if i["pid"] == p1)["status"] == "cancelled"
+    assert client.get(f"/api/projects/{p1}").json()["queued"] is None
+
+
+def test_same_task_waiting_is_updated_not_repeated(isolated_home, sample):
+    # 同一集同一种任务还在排队时再点：换成这次的选项，不重复排（前面有别的任务在跑时常见）
+    from nyasub.server.app import Hub
+    from nyasub.server.queue import Queue
+
+    q = Queue(Hub(), None, None, None, lambda pid: True)
+    q.paused = True
+    q.items.append({"id": "busy", "pid": "other", "status": "running", "kind": "run"})
+    q.hub.jobs["p1"] = type("Job", (), {"status": "running"})()  # 这一集在别处跑着：后台线程先不动它
+    a = q.submit("p1", str(sample), "run", {"until": "translate"})
+    b = q.submit("p1", str(sample), "run", {"until": "render"})
+    assert a is b and b["options"] == {"until": "render"}
+    assert q.waiting("p1") == {"item": a["id"], "kind": "run", "ahead": 1}
+    c = q.submit("p1", str(sample), "burn", {})
+    assert c is not a and [i["id"] for i in q.items] == ["busy", a["id"], c["id"]]
+    assert q.unqueue("p1") and q.waiting("p1") is None and [i["id"] for i in q.items] == ["busy"]

@@ -1,5 +1,5 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
-import type { MediaInfo } from "./types";
+import type { MediaInfo, Queued } from "./types";
 import type { Cfg, ConfigState, OverwriteDir, PresetDoc, PresetInfo, SeriesDoc, SeriesInfo, TemplateInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
@@ -40,7 +40,7 @@ export const api = {
   overwrite: (pid: string, direction: OverwriteDir) =>
     call<{ config: ConfigState; plan: PlanItem[] }>(`/api/projects/${pid}/series/overwrite`, json("POST", { direction })),
   run: (pid: string, body: { until?: string; redo?: string[]; translate?: string }) =>
-    call<{ started: boolean }>(`/api/projects/${pid}/run`, json("POST", body)),
+    call<{ started: boolean; queued: Queued | null }>(`/api/projects/${pid}/run`, json("POST", body)),
   log: (pid: string) => call<LiveEvent[]>(`/api/projects/${pid}/log`),
   stageLog: (pid: string, stage: string) => call<{ lines: string[] }>(`/api/projects/${pid}/stages/${stage}/log`),
   data: (pid: string) => call<ProjectData>(`/api/projects/${pid}/data`),
@@ -72,9 +72,9 @@ export const api = {
     call<{ alts: { orig: string; tr: string }[]; lang: string }>(`/api/projects/${pid}/cues/${cid}/retranslate`, json("POST", body)),
   export: (pid: string, profiles?: string[]) => call<{ files: string[]; dir: string }>(`/api/projects/${pid}/export`, json("POST", { profiles })),
   exportBroadcast: (pid: string) =>
-    call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_broadcast`, json("POST", {})),
+    call<{ started: boolean; file: string; queued: Queued | null }>(`/api/projects/${pid}/export_broadcast`, json("POST", {})),
   exportVideo: (pid: string, mode: "mux" | "burn", profiles?: string[]) =>
-    call<{ started: boolean; file: string }>(`/api/projects/${pid}/export_video`, json("POST", { mode, profiles })),
+    call<{ started: boolean; file: string; queued: Queued | null }>(`/api/projects/${pid}/export_video`, json("POST", { mode, profiles })),
   cancel: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/cancel`, { method: "POST" }),
   langs: () => call<LangInfo[]>("/api/langs"),
   asrModels: () => call<{ id: string; label: string; desc: string }[]>("/api/asr_models"),
