@@ -71,6 +71,11 @@ DEFS = {
     "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
 }
 VIDEO_STAGES = ("mux", "burn")
+# 4K 视频里带的是 2K 广播字幕：原生的 2K 字幕只会配 2K 视频，这多半是录制时把 4K 节目转成 .ts、字幕跟着从 4K 字幕转了一道。
+# 片源的问题，软件不找补，只提醒（界面「输出 › 广播字幕原样」也有同样的提示）
+CONVERTED_2K = ("注意：这个 4K 视频带的是 2K 广播字幕，多半是录制时从 4K 字幕（ARIB-TTML）转出来的："
+                "符号（➡ ♬ ⚟）会显示成“〓”，每行的位置、说话人的颜色丢了，振假名会变成单独的一整行。"
+                "建议换成保留 4K 原始字幕的片源（比如 .m2ts）")
 STAGE_NAMES = {"probe": "读取视频信息", "audio": "提取音频", "subs": "读取字幕", "asr": "语音识别", "ocr": "画面字识别",
                "ocr_refine": "VLM 复核", "align": "字幕对时", "fuse": "规则融合", "translate": "融合 + 翻译",
                "annotate": "注音", "render": "输出字幕文件", "mux": "封装 MKV", "burn": "压制硬字幕"}
@@ -572,42 +577,16 @@ class Run:
         tracks.sort(key=lambda s: (s["codec"] != "arib_caption",
                                    want != "auto" and lang.canonical(s["lang"]) != lang.canonical(want)))
         tr = tracks[0]
-        if tr["codec"] == "arib_caption":
-            # 从 4K 字幕转出来的 2K 字幕自己解码：“〓”换回 ➡ ♬ ⚟，振假名行不当台词（见 sources/arib_b24）；原生的用 libaribcaption
-            try:
-                sc = self._arib_screens(tr, info)
-                cues = subtitle.cues_from_screens(sc) if sc is not None else None
-                if cues:
-                    log(f"字幕：2K 广播字幕（字幕轨 #{tr['sub_index']}），{len(cues)} 条")
-                    return cues
-            except Exception as e:
-                log(f"解码 2K 广播字幕失败，改用 libaribcaption：{e}")
+        if tr["codec"] == "arib_caption" and (info.get("video") or {}).get("height", 0) > 1080:
+            log(CONVERTED_2K)
         out = self.proj.media(f"embedded_sub_{tr['sub_index']}.ass")
         media.extract_sub_stream(str(self.proj.video), tr, str(out))
         cues = subtitle.load_cues(str(out), ratio)
         log(f"字幕：内封字幕轨 #{tr['sub_index']}（{tr['codec']} {tr['lang']}），{len(cues)} 条")
         return cues
 
-    def _arib_screens(self, tr, info):
-        """降过级的 2K 广播字幕（从 4K 字幕转出来的）解码、补好、整理成一屏屏（sources/arib_b24）；
-        原生的 2K 字幕返回 None（照旧用 libaribcaption）。解码要把整个视频读一遍：结果存在 media 里，视频没换就直接用。"""
-        from ..sources import arib_b24
-
-        path = self.proj.media(f"arib_b24_{tr['sub_index']}.json")
-        rec = load_json(path)
-        if rec and rec.get("key") == self._peek_key():
-            statements = rec["statements"]
-        else:
-            log("正在读取 2K 广播字幕")
-            statements = arib_b24.decode(arib_b24.read_packets(str(self.proj.video), tr["sub_index"]))
-            save_json(path, {"key": self._peek_key(), "statements": statements})
-        if not arib_b24.degraded(statements):
-            return None
-        log("2K 广播字幕是从 4K 字幕转出来的（每行都靠左、符号成了“〓”、振假名成了整行）：按 NHK 的样子补回")
-        return arib_b24.screens(statements, float((info or {}).get("duration") or 0))
-
     def _ttml_bin(self, info):
-        """4K 广播字幕（ARIB-TTML）的数据流导出成文件，返回路径；没有返回 None。"""
+        """4K 广播字幕（ARIB-TTML）的数据流导出成文件，返回路径；没有返回 None（单独导出广播字幕原样用，和 _arib_ttml 导出的是同一个文件）。"""
         from ..sources import media, subtitle
 
         for idx in info.get("data_streams") or []:  # 先读开头一小段看是不是，是才完整导出
@@ -624,13 +603,23 @@ class Run:
         return None
 
     def _arib_ttml(self, info, ratio):
-        from ..sources import subtitle
+        from ..sources import media, subtitle
 
-        bin_path = self._ttml_bin(info)
-        cues = subtitle.load_arib_ttml(str(bin_path), ratio) if bin_path else []
-        if cues:
-            log(f"字幕：ARIB-TTML（{bin_path.stem}），{len(cues)} 条")
-        return cues
+        for idx in info["data_streams"]:
+            probe_path = self.proj.media(f"data_{idx}.probe")
+            media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20)
+            head = probe_path.read_bytes()
+            probe_path.unlink()
+            if not subtitle.is_arib_ttml(head):
+                continue
+            log(f"发现 4K 广播字幕（ARIB-TTML，数据流 #{idx}），正在完整导出")
+            bin_path = self.proj.media(f"arib_ttml_{idx}.bin")
+            media.dump_data_stream(str(self.proj.video), idx, str(bin_path))
+            cues = subtitle.load_arib_ttml(str(bin_path), ratio)
+            if cues:
+                log(f"字幕：ARIB-TTML（数据流 #{idx}），{len(cues)} 条")
+                return cues
+        return []
 
     def _asr_fixed(self, asr):
         """语音段修好时间再用（音乐和台词连在一起时第一个字会停在音乐开头，见 sources/asr.repair）。"""
@@ -1351,18 +1340,12 @@ class Run:
             if src[0] == "ttml":
                 n = broadcast.ttml_to_ass(str(src[1]), str(out), offset, font)
             else:
-                try:  # 从 4K 字幕转出来的：自己解码，按 NHK 的样子补回居中、符号、振假名（见 sources/arib_b24）
-                    sc = self._arib_screens(src[1], self.results.get("probe"))
-                except Exception as e:
-                    log(f"解码 2K 广播字幕失败，改用 libaribcaption：{e}")
-                    sc = None
-                if sc is not None:
-                    n = broadcast.screens_to_ass(sc, str(out), offset, font)
-                else:  # 原生的 2K 字幕：libaribcaption 转得很好（位置、颜色、背景、振假名、外字）
-                    styled = self.proj.media(f"embedded_sub_{src[1]['sub_index']}_styled.{_slug(font)}.ass")
-                    if not styled.exists():
-                        media.extract_arib_styled(str(self.proj.video), src[1], str(styled), font)
-                    n = broadcast.shift_ass(str(styled), str(out), offset)
+                if ((self.results.get("probe") or {}).get("video") or {}).get("height", 0) > 1080:
+                    log(CONVERTED_2K)
+                styled = self.proj.media(f"embedded_sub_{src[1]['sub_index']}_styled.{_slug(font)}.ass")
+                if not styled.exists():
+                    media.extract_arib_styled(str(self.proj.video), src[1], str(styled), font)
+                n = broadcast.shift_ass(str(styled), str(out), offset)
         except Exception as e:  # 不影响别的输出
             log(f"广播字幕原样没有输出：{e}")
             return None
