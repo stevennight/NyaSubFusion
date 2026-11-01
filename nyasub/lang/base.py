@@ -138,6 +138,7 @@ _BREAK_COST = {3: 0, 2: 4, 1: 8}
 _MID_WORD = 40
 _PER_LINE = 5
 _SHORT_LINE = 12
+_SHORT3 = 3        # 一行只有三个字（“今天呢｜要去买点东西…”）：比第一行稍长更难看
 _ORPHAN = 6        # 最后一行只有三四个字
 _TOP_HEAVY = 0.25  # 上一行比最后一行每长一个字
 
@@ -165,7 +166,7 @@ def _best_breaks(line, maxc, lv, no_start, no_end=frozenset()):
 
     def seg_cost(q, p):  # line[q:p] 这一行本身的代价
         k = len(line[q:p].strip("　 "))
-        c = _PER_LINE + (_SHORT_LINE if k < 3 else 0) + 0.005 * k * k  # 平方项：同样好时让各行等长
+        c = _PER_LINE + (_SHORT_LINE if k < 3 else _SHORT3 if k == 3 else 0) + 0.005 * k * k  # 平方项：同样好时让各行等长
         if p == n and q > 0:
             if k <= 4:
                 c += _ORPHAN  # 最后一行只剩一个名字、一个词（“…丈夫｜武光”）
