@@ -369,6 +369,26 @@ def test_title_card_misjudged_as_scene_is_rescued():
     assert not a.get("dropped") and not b.get("dropped") and sign["dropped"] == "scene"
 
 
+def test_caption_line_merged_with_scene_text_is_kept():
+    """沿线地图的字和下面的硬字幕连成了一框，整框判成实物上的字：底部居中、和语音对得上的那一行留下来当画面字
+    （位置是那一行的，时间收到那段语音），语音不再单独成条；地图的字照旧丢掉。"""
+    box = dict(_ocr("o84", 128.6, 134.4, "岳南電車全駅から富士山が望める鉄道\n沿線MAP Gakunan Electric Train map\nこの“赤がえる”撮りたいの私",
+                    (0.268, 0.7056, 0.7289, 0.9833)), kind="scene",
+               pieces=[[0.4301, 0.7264, 0.566, 0.8333, "全駅から富士山が望める鉄道"], [0.4133, 0.7792, 0.5469, 0.9299, "沿線MAP"],
+                       [0.268, 0.9, 0.7289, 0.9833, "この“赤がえる”撮りたいの私"]])
+    sign = dict(_ocr("o85", 128.6, 134.4, "駅前商店街\nようこそ", (0.3, 0.75, 0.7, 0.98)), kind="scene",
+                pieces=[[0.3, 0.75, 0.7, 0.85, "駅前商店街"], [0.3, 0.88, 0.7, 0.98, "ようこそ"]])   # 和语音对不上：照旧丢掉
+    asr = [{"id": "a3-2", "start": 126.0, "end": 129.5, "text": "ここ11時29分？降りました。"},
+           {"id": "a3-3", "start": 130.1, "end": 132.2, "text": "いや、この赤蛙を撮りたいの、私。"}]
+    out = fuse([], [box, sign], asr, FUSION, lang.get("ja"), 3600)
+    items = {it["id"]: it for it in out["items"]}
+    o = items["o84"]
+    assert o["src"] == "telop" and o["text"] == "この“赤がえる”撮りたいの私" and o["rect"] == [0.268, 0.9, 0.7289, 0.9833]
+    assert 129.7 <= o["start"] <= 130.1 and o["end"] <= 132.8
+    assert "a3-3" not in items and "o85" not in items and sign["dropped"] == "scene"
+    assert box["caption"]["from"].startswith("岳南電車") and out["stats"]["ocr_caption"] == 1
+
+
 def test_info_translation_beside_box_when_above_and_below_blocked():
     """标题卡第二行“鮭とば”：上面是第一行，下面到画面边了，译文放在右边，不跑到画面顶部。"""
     cfg = config.Config()

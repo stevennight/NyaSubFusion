@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Modal } from "../components/Modal";
-import { Player, type PlayerHandle } from "../components/Player";
+import { lastPos, Player, type PlayerHandle } from "../components/Player";
 import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc } from "../doc";
 import { usePreview } from "../hooks";
 import { useStore } from "../store";
@@ -748,6 +748,7 @@ function OutPreview({ profile, exportable, hl, hlLabel }: { profile?: string; ex
   useEffect(() => {
     if (jumped.current || firstT === undefined) return;
     jumped.current = true;
+    if (s.pid && lastPos(s.pid) > 0.5) return;   // 播过的：播放器自己跳回上次的地方
     const t = setTimeout(() => player.current?.seek(firstT + 0.5), 400);
     return () => clearTimeout(t);
   }, [firstT]);

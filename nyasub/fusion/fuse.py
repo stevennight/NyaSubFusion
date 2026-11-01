@@ -9,7 +9,7 @@
 """
 import re
 
-from ..textutil import full_sim, overlap, sim
+from ..textutil import full_sim, norm, overlap, sim
 
 # 字幕里不是“说话”的部分：（笑い声）（競りの声）这类括号说明、♪♬〜 音乐记号、➡ 接续符号
 _NOT_SPEECH = re.compile(r"[（(\[［【][^）)\]］】]*[）)\]］】]|[♪♬〜～➡→]")
@@ -112,11 +112,42 @@ def prefilter(ocr_events, duration, pack):
         e["prefiltered"] = e.get("dropped") in ("logo", "junk", "ruby")  # 台标和杂讯不用送去视觉复核
 
 
+def _caption_lines(ocr_events, asr, pack, asr_th):
+    """识别时把背景上的字（地图、报纸、海报）和下面的硬字幕连成了一个框，整框被判成实物上的字丢掉，
+    硬字幕那一行也跟着没了。丢掉的框里逐行看：底部居中、和同一时间的语音对得上的那几行留下来当画面字
+    （位置换成那几行的，时间收到对上的那段语音），别的行照旧丢掉。返回留下来的个数。"""
+    n = 0
+    for e in ocr_events:
+        pieces = e.get("pieces") or []
+        if e.get("dropped") != "scene" or e.get("vertical") or len(pieces) < 2:
+            continue
+        a_hit, a_text = _concat(asr, e["start"], e["end"])
+        if not a_text:
+            continue
+        lines = [p for p in pieces if p[1] >= 0.7 and abs((p[0] + p[2]) / 2 - 0.5) < 0.12
+                 and len(norm(p[4])) >= 3 and pack.meaningful.search(p[4]) and sim(p[4], a_text) >= asr_th]
+        if not lines or len(lines) == len(pieces):
+            continue
+        lines.sort(key=lambda p: p[1])
+        text = "\n".join(p[4] for p in lines)
+        said = [a for a in a_hit if sim(a["text"], text) >= asr_th] or a_hit
+        rect = [round(min(p[0] for p in lines), 4), round(min(p[1] for p in lines), 4),
+                round(max(p[2] for p in lines), 4), round(max(p[3] for p in lines), 4)]
+        e["caption"] = {"text": text, "rect": rect, "from": e["text"]}
+        e.update(text=text, rect=rect, lines=len(lines), zone="bottom",
+                 start=round(max(e["start"], min(a["start"] for a in said) - 0.3), 3),
+                 end=round(min(e["end"], max(a["end"] for a in said) + 0.5), 3))
+        e.pop("dropped")
+        n += 1
+    return n
+
+
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     """m 是 FusionCfg 的 dict，pack 是源语言的语言包。"""
     dup_th, asr_th = m["dup_similarity"], m["asr_match_similarity"]
 
     prefilter(ocr_events, duration, pack)
+    n_caption = _caption_lines(ocr_events, asr, pack, asr_th)
     ocr_all = ocr_events
     ocr_events = [e for e in ocr_events if not e.get("dropped")]
 
@@ -204,6 +235,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         "ocr_scene": sum(1 for e in ocr_all if e.get("dropped") == "scene"),
         "ocr_ruby": sum(1 for e in ocr_all if e.get("dropped") == "ruby"),
         "ocr_dup": sum(1 for e in ocr_events if e.get("dup_of")),
+        "ocr_caption": n_caption,
         "telop": sum(1 for o in ocr_items if o["src"] == "telop"),
         "info": sum(1 for o in ocr_items if o["src"] == "info"),
         "asr_total": len(asr),

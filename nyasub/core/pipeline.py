@@ -752,23 +752,24 @@ class Run:
         events = [dict(e) for e in ocr_events]
         out = fuse(aligned["subs"], events, asr["segments"], self.cfg.fusion.model_dump(), lang.get(self.src),
                    info["duration"])
-        out["ocr_marks"] = {e["id"]: {k: e[k] for k in ("dropped", "dup_of") if e.get(k)} for e in events}
+        out["ocr_marks"] = {e["id"]: {k: e[k] for k in ("dropped", "dup_of", "caption") if e.get(k)} for e in events}
         return out
 
     def _log_fuse(self, fused):
         s = fused["stats"]
         log(f"融合：字幕 {s['subs']} 条；画面字 {s['ocr_total']} 条（台标 {s['ocr_logo']}，杂讯 {s['ocr_junk']}，"
-            f"实物上的字 {s['ocr_scene']}，振假名 {s.get('ocr_ruby', 0)}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
+            f"实物上的字 {s['ocr_scene']}" + (f"，和实物上的字连成一框的硬字幕 {s['ocr_caption']}（只留硬字幕那几行）" if s.get("ocr_caption") else "") + f"，振假名 {s.get('ocr_ruby', 0)}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
             f"语音 {s['asr_total']} 段（无字幕覆盖 {s['asr_uncovered']}，作为参考附到字幕上 {s['asr_hint']}）")
 
     def _hardsub_boxes(self, ocr_events, fused, rects=None, cues=()):
         """真正的硬字幕框（排除台标、背景文字），渲染时用来让开位置。rects：注音时收紧了的框（_text_rects）；
-        cues：字幕用到的画面字（手动恢复了的被丢弃画面字）也算。"""
+        cues：字幕用到的画面字（手动恢复了的被丢弃画面字）也算。和背景的字连成一框、只留下硬字幕那几行的，用那几行的框。"""
         keep = {it["id"] for it in fused["items"] if it["src"] in ("telop", "info")}
         keep |= {s for c in cues for s in c.get("sources", [])}
         marks = fused.get("ocr_marks", {})
         rects = rects or {}
-        return [{"start": e["start"], "end": e["end"], "rect": rects.get(e["id"], e["rect"]), "vertical": e.get("vertical")}
+        cap = lambda e: (marks.get(e["id"]) or {}).get("caption") or {}
+        return [{"start": e["start"], "end": e["end"], "rect": cap(e).get("rect") or rects.get(e["id"], e["rect"]), "vertical": e.get("vertical")}
                 for e in ocr_events if e["id"] in keep or marks.get(e["id"], {}).get("dup_of")]
 
     # ---------- 翻译 ----------

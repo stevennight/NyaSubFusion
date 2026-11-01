@@ -9,6 +9,20 @@ import { SubtitleOverlay, useSize, type OnMoveSub } from "./SubtitleOverlay";
 
 export interface PlayerHandle { seek: (t: number) => void; toggle: () => void; playing: boolean }
 
+// 每一集播到哪：审校页、输出页共用，切到别的页面再回来、下次打开都从这里接着播
+const POS = "nyasub.pos.";
+const posMem = new Map<string, number>();
+export function lastPos(pid: string): number {
+  if (!posMem.has(pid)) {
+    try { posMem.set(pid, Number(localStorage.getItem(POS + pid)) || 0); } catch { posMem.set(pid, 0); }
+  }
+  return posMem.get(pid) ?? 0;
+}
+function keepPos(pid: string, t: number, save = false) {
+  posMem.set(pid, t);
+  if (save) try { localStorage.setItem(POS + pid, t.toFixed(1)); } catch { /* 存不了就只记在内存里 */ }
+}
+
 export const Player = forwardRef<PlayerHandle, {
   preview: Preview | null; boxes?: Candidate[]; showSubs?: boolean; onTime: (t: number) => void; style?: React.CSSProperties;
   controls?: boolean;   // 在画面下方显示播放 / 进度条（审校页有自己的时间轴，不用）
@@ -28,6 +42,7 @@ export const Player = forwardRef<PlayerHandle, {
   const [attached, setAttached] = useState(false);
   const [noHls, setNoHls] = useState(false);
   const duration = s.summary?.meta?.duration ?? 0;
+  const restored = useRef(false);
 
   const seek = (t: number) => {
     const v = video.current;
@@ -37,7 +52,21 @@ export const Player = forwardRef<PlayerHandle, {
     if (v) v.currentTime = to;
     setTime(to);
     onTime(to);
+    if (s.pid) keepPos(s.pid, to, true);
   };
+  // 视频能播了：跳回上次播到的地方（只跳一次）
+  const restore = () => {
+    if (restored.current || !s.pid) return;
+    restored.current = true;
+    const t = lastPos(s.pid);
+    if (t > 0.5) seek(t);
+  };
+  useEffect(() => { restored.current = false; }, [s.pid]);
+  // 离开页面时记下播到哪
+  useEffect(() => {
+    const pid = s.pid;
+    return () => { const v = video.current; if (pid && v && restored.current) keepPos(pid, v.currentTime, true); };
+  }, [s.pid]);
   useImperativeHandle(ref, () => ({
     seek,
     toggle: () => { const v = video.current; if (v) (v.paused ? v.play() : v.pause()); },
@@ -95,11 +124,12 @@ export const Player = forwardRef<PlayerHandle, {
       const t = video.current?.currentTime ?? 0;
       setTime(t);
       onTime(t);
+      if (s.pid) keepPos(s.pid, t);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, onTime]);
+  }, [playing, onTime, s.pid]);
 
   const direct = src?.kind === "direct" || src?.kind === "mp4";
   const building = src?.kind === "hls" && src.status === "building";
@@ -113,9 +143,10 @@ export const Player = forwardRef<PlayerHandle, {
         {s.pid && (direct || src?.kind === "hls") && (
           <video ref={video} src={direct ? api.videoUrl(s.pid) : undefined} preload="auto"
                  style={{ visibility: ready ? "visible" : "hidden" }}
-                 onPlay={() => { setPlaying(true); onPlaying?.(true); }} onPause={() => { setPlaying(false); onPlaying?.(false); }}
-                 onLoadedMetadata={applyRate}
-                 onSeeked={(e) => { const t = e.currentTarget.currentTime; setTime(t); onTime(t); }} />
+                 onPlay={() => { setPlaying(true); onPlaying?.(true); }}
+                 onPause={(e) => { setPlaying(false); onPlaying?.(false); if (s.pid) keepPos(s.pid, e.currentTarget.currentTime, true); }}
+                 onLoadedMetadata={() => { applyRate(); restore(); }}
+                 onSeeked={(e) => { const t = e.currentTarget.currentTime; setTime(t); onTime(t); if (s.pid && restored.current) keepPos(s.pid, t, true); }} />
         )}
         {building && !canAttach && (
           <div className="wait">
