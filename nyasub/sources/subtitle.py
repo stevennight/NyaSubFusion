@@ -220,11 +220,12 @@ def load_arib_ttml(path, ruby_ratio=0.7):
 
 
 def cues_from_screens(screens, width=960):
-    """2K 广播字幕（sources/arib_b24.screens 整理好的一屏屏）→ [{start,end,text}]：振假名不要，符号已经换回来了。
-    说话人线索和别的字幕一样看颜色、每行左右的位置。width：字幕平面的宽。"""
+    """从 4K 字幕转出来的 2K 广播字幕（sources/arib_b24.screens 整理好的一屏屏）→ [{start,end,text}]：
+    振假名不要，符号已经换回来了。转的时候每行的位置丢了（都从最左边写起），不能当成“左对齐 = 同一个人”：
+    位置当成不知道，只看颜色和行首的（名字）、⚟；看不出来的交给大模型结合语音判断（speaker_check）。width：字幕平面的宽。"""
     cues = []
     for s in screens:
-        ls = [(ln["text"], (ln["color"], ln["x"], ln["x1"], 1.5 * (ln["fw"] or 36))) for ln in s["lines"]]
+        ls = [(ln["text"], (ln["color"], None, None, 1.5 * (ln["fw"] or 36))) for ln in s["lines"]]
         if not ls or s["end"] <= s["start"]:
             continue
         cue = {"start": round(s["start"], 3), "end": round(s["end"], 3), "text": "\n".join(t for t, _ in ls)}
