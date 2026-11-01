@@ -39,6 +39,16 @@ def test_decode_positions_and_geta():
     assert st[1]["chars"] == []
 
 
+def test_only_degraded_data_is_rebuilt():
+    # 从 4K 字幕转出来的：每行都从最左边写起、没有小字
+    assert arib_b24.degraded(_screen([(6, "みこし"), (7, "総勢が神輿を担ぐ")]))
+    # 原生的 2K 字幕：每行有自己的位置，振假名是小字（交给 libaribcaption）
+    body = SETUP + _aps(7, 5) + _kanji("日本を代表する景勝地") + _aps(8, 3) + _kanji("栃木県日光です")
+    assert not arib_b24.degraded(arib_b24.decode([(1.0, _packet(body))]))
+    small = SETUP + bytes([0x88]) + _aps(13, 0) + _hira("にっこう") + bytes([0x8A]) + _aps(7, 0) + _kanji("日光")
+    assert not arib_b24.degraded(arib_b24.decode([(1.0, _packet(small))]))
+
+
 def test_fix_geta_by_position():
     assert arib_b24.fix_geta("風の中に〓") == "風の中に➡"
     assert arib_b24.fix_geta("〓〜") == "♬〜"

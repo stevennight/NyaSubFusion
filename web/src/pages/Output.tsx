@@ -506,7 +506,7 @@ function BroadcastEditor({ r, update, doc, bc, subsRead }: { r: R; update: Upd; 
       <div className="row" style={{ marginBottom: 12 }}><h2 className="ed-title">广播字幕原样</h2>
         <Sw on={r.broadcast && !na} disabled={na} onChange={(v) => update((x) => ({ ...x, broadcast: v }))} /><span className="dim">{na ? "没有广播字幕" : r.broadcast ? "输出" : "不输出"}</span></div>
       <div className="hint" style={{ marginBottom: 10 }}>字幕来自电视广播（4K 的 ARIB-TTML、2K 的 ARIB）时才有：日语原文，位置、字号、颜色、半透明底色、振假名照搬电视上的样子，时间按字幕对时的偏移挪过（还没对时就照字幕数据原样）。
-        2K 字幕里显示不了的符号（“〓”）按位置换回 ➡ ♬ ⚟，每行居中，写成一整行的振假名放回注的字上面。
+        4K 节目录成 .ts 时转出来的 2K 字幕（每行都靠左、符号成了“〓”、振假名成了整行）会按 NHK 的样子补回：符号换回 ➡ ♬ ⚟，每行居中，振假名放回注的字上面。
         {na && <b style={{ color: "var(--warn)" }}> {subsRead ? "这个视频的字幕不是电视广播字幕（或者「处理 › 字幕」里没用视频里的字幕）。" : "正在检查视频里有没有电视广播字幕…"}</b>}</div>
       {doc.kind === "episode" && (
         <div className="row" style={{ marginBottom: 12 }}>

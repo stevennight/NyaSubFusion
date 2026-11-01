@@ -1,7 +1,8 @@
 """2K 广播字幕（ARIB STD-B24，ffmpeg 里叫 arib_caption）：自己解码，按电视上的样子整理成一屏屏的字幕。
 
-不用 libaribcaption 转出的 ASS，是因为有的台（比如 BS4K 频道附带的 2K 字幕）发出来的数据本身就降过级，
-需要按 NHK 自己 4K 字幕（ARIB-TTML）的样子补回来，而这要看到原始数据：
+只用在降过级的数据上（degraded）：BS4K 节目录成 .ts 时，录制端把 4K 字幕（ARIB-TTML）转成了 2K 字幕，
+转的时候丢了东西，要按 NHK 自己 4K 字幕的样子补回来，而这要看到原始数据。原生的 2K 字幕照旧用 libaribcaption。
+降过级的数据：
 
 - 接下一条的箭头 ➡、歌曲 ♬、画外音 ⚟ 这些 2K 字符集里没有的符号，发的是“〓”（显示不了的字）：按位置换回来
   （行尾 → ➡；行首、后面是“〜”或空格 → ♬；行首、后面直接是话 → ⚟）；
@@ -278,6 +279,19 @@ def decode(packets):
         if changed:
             out.append({"t": round(t, 3), "chars": [dict(c) for c in st.chars]})
     return out
+
+
+def degraded(statements):
+    """是不是降过级的数据（从 4K 字幕转出来的那种）：每行都从最左边写起，也没有小号的字（振假名）。
+    原生的 2K 字幕每行有自己的位置、振假名是小字，libaribcaption 转得很好（还带背景、颜色、外字），不用这里补。"""
+    starts, small = [], False
+    for s in statements:
+        rows = {}
+        for c in s["chars"]:
+            rows.setdefault(round(c["y"] + c["h"], 1), c["x"])
+            small = small or c["fh"] < 30
+        starts += rows.values()
+    return bool(starts) and not small and sum(x < 1 for x in starts) >= 0.95 * len(starts)
 
 
 # ---------------- 整理成一屏屏 ----------------
