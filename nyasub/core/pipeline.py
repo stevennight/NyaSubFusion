@@ -1133,6 +1133,22 @@ class Run:
                     c["orig"]["text"] = segments.join_at(c["orig"]["text"], k, c["orig"]["lang"], sep)
                     for code, t in trs.items():
                         c["tr"][code]["text"] = t
+            if touched and "orig" not in mine and "｜" in c["orig"]["text"] and not segments.bars_ok(c):
+                # 只改了译文：译文是对着整理过的样子改的，原文却还是大模型的原样（上面两步不动改过的条目），
+                # 段数对不上就整段都不分了（“纸之城｜在富士市…”的“｜”露在字里）。原文照没改过时一样整理：
+                # 落在同一条字幕中间的“｜”合回去，直到和译文段数一样；译文只有一段的，原文也不分
+                want = {len(segments.pieces(v["text"])) for v in c["tr"].values() if v["text"]}
+                orig = c["orig"]["text"]
+                for k in reversed(segments.card_bars(c, items)):
+                    if len(segments.pieces(orig)) in want:
+                        break
+                    who = segments.voice_change(c, items, k)
+                    head = segments.pieces(orig)[k - 1].strip()
+                    orig = segments.join_at(orig, k, c["orig"]["lang"], "\n" if (who if who is not None else head[-1:] in ("。", "！", "？", "!", "?")) else None)
+                if want == {1}:
+                    orig = segments.unbar(orig, c["orig"]["lang"])
+                if len(segments.pieces(orig)) in want or want == {1}:
+                    c["orig"]["text"] = orig
             n_pieces = len(segments.pieces(c["orig"]["text"]))
             for key in ("parts_type", "parts_show"):  # 每段单独的设置：段数变了就不再适用
                 if c.get(key) is not None and (len(c[key]) != n_pieces or n_pieces < 2):

@@ -465,3 +465,21 @@ def test_vertical_name_card_translation_is_vertical(tmp_path):
     en = dict(cue, tr={"en": {"text": "Kazuo Aihara"}})
     prof3 = ProfileCfg(name="t", layers=[LayerCfg(role="translation", lang="en")])
     assert "vchars" not in ass.place(layout.build([en], prof3, cfg, "ja"), prof3, cfg.render.styles, 16 / 9, [])[3][0]
+
+
+def test_edited_translation_keeps_segments(sample):
+    """只改了译文（把放错段的半句剪掉）：原文照没改过时一样整理（落在同一条字幕中间的“｜”合回去），
+    和译文段数一样，照常分段——不会因为对不上整条变成一段、“｜”露在字里。"""
+    from nyasub.core import pipeline, segments
+
+    r = pipeline.Run(sample, config.Config(), pipeline.Options())
+    r.results = {"fuse": {"items": [
+        {"id": "c500", "src": "subs", "start": 2435.8, "end": 2438.5, "text": "ペーパーキットって富士市\n紙のまちなんで"},
+        {"id": "c501", "src": "subs", "start": 2438.5, "end": 2443.0, "text": "富士市でやらない手はないな\n会社辞めたらやろうかなって思ってたんですね"}]}}
+    orig = "ペーパーキットって富士市｜紙のまちなんで｜富士市でやらない手はないな 会社辞めたらやろうかなって思ってたんですね"
+    tr = "纸模型套件嘛，富士市是纸之城｜在富士市做再合适不过了 我当时想，等辞职后就来做"
+    cue = {"id": "q457", "start": 2435.8, "end": 2443.0, "type": "dialogue", "sources": ["c500", "c501"], "onscreen": False,
+           "orig": {"lang": "ja", "text": orig}, "tr": {"zh-Hans": {"text": tr}}}
+    out = r._tidy([cue], {"q457": {"tr": {"zh-Hans": tr}}})[0]
+    assert segments.pieces(out["orig"]["text"]) == ["ペーパーキットって富士市　紙のまちなんで", "富士市でやらない手はないな 会社辞めたらやろうかなって思ってたんですね"]
+    assert out["tr"]["zh-Hans"]["text"] == tr and segments.bars_ok(out) and len(out["parts"]) == 2
