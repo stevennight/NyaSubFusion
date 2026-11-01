@@ -176,6 +176,7 @@ class ProfileCfg(_M):
     layers: list[LayerCfg]
     info_mode: Literal["near", "top", "off"] = "near"  # 说明 / 人名条：贴原文旁 / 顶部 / 不显示
     info_style: str = "info"
+    info_vertical: bool = True               # 原文是竖排的说明（人名条）：译文是中文 / 日文时也竖排
     avoid_hardsub: bool = True
     max_lines: int = 2
     min_duration: float = 1.0

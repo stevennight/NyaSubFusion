@@ -454,6 +454,11 @@ function FileEditor({ r, update, setSel, doc, i, li, setLi }: {
             </select>
             <span className="link" onClick={() => setSel(`s:${r.styles[p.info_style || "info"] ? p.info_style || "info" : r.fallback_style}`)}>编辑 →</span>
           </>)}
+          {p.format === "ass" && p.info_mode === "near" && (
+            <label className="row" title="原文是竖排的人名条、说明：译文（中文、日文）也竖排，贴在竖条外侧，不容易压到人">
+              <input type="checkbox" checked={p.info_vertical ?? true} onChange={(e) => updP({ info_vertical: e.target.checked })} />竖排的也竖排
+            </label>
+          )}
         </div>
         <span /><span className="hint">说明文字 = 人名条、地名、标题这些画面上的说明。</span>
       </div>

@@ -101,8 +101,10 @@ def _info_item(cue, layers, cfg):
         if text:
             pack = lang.get(code)
             opts = _opts(cfg, code)
-            lines = pack.wrap(pack.display(text, opts), _max_chars(ly, pack, opts) + 4)
+            shown = pack.display(text, opts)
+            lines = pack.wrap(shown, _max_chars(ly, pack, opts) + 4)
             return {"start": cue["start"], "end": cue["end"], "kind": "info", "layers": [(ly, code, [[(l, None)] for l in lines])],
+                    "text": shown,  # 没折行的（竖排时按原来的换行、空格分列）
                     "rect": cue.get("rect"), "sources": cue.get("sources", []), "cue": cue.get("id"), "pos": _pos(cue)}
     return None
 

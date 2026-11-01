@@ -3,8 +3,10 @@
 - 图层按方案顺序从上到下叠在一条字幕里（整块底边对齐），每层用自己的样式。
 - 带注音的字幕逐块定位（libass 不支持 ruby）：底字和注音用同一个中心 x，注音一定在底字正上方。
 - 台词只在真的会撞上原画面硬字幕（或已放好的说明译文）时才往上让。
-- 说明类画面字的译文贴在原文旁边。
+- 说明类画面字的译文贴在原文旁边；原文竖排、译文是中文 / 日文的也竖排（一个字一个事件，各自定位）。
 """
+import re
+
 from . import fonts
 
 
@@ -128,6 +130,47 @@ def _info_spot(it, vertical, w, h, px, py, boxes):
     return an, int(bx0 if an % 3 == 1 else bx0 + w / 2 if an % 3 == 2 else bx0 + w), y, bx0, by0
 
 
+# 竖排说明译文：标点换成竖排的写法
+_VFORMS = str.maketrans({"（": "︵", "）": "︶", "(": "︵", ")": "︶", "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄",
+                         "“": "﹁", "”": "﹂", "‘": "﹃", "’": "﹄", "【": "︻", "】": "︼", "《": "︽", "》": "︾",
+                         "〈": "︿", "〉": "﹀", "…": "︙", "—": "︱", "ー": "︱", "－": "︱", "-": "︱",
+                         "～": "︴", "〜": "︴", "：": "︓", ":": "︓"})
+VERTICAL_LANGS = ("zh", "ja")   # 能竖排的译文语言
+_ROW, _COL = 1.08, 1.25         # 竖排：每个字占的高度、每列占的宽度（字号的倍数）
+
+
+def vertical_columns(text, max_rows):
+    """说明译文竖排：按换行和空格分列（“店主 杉山淑子” → 两列，和原来的人名条一样），一列太长再拆；
+    标点换成竖排的写法，一两位的数字 / 字母放在一格里（纵中横），更长的一个一格。返回 [[每格的字]]，第一列在最右边。"""
+    cols = []
+    for tok in re.split(r"[\s　]+", text or ""):
+        cells = []
+        for run in re.findall(r"[0-9A-Za-z]+|[^0-9A-Za-z]", tok):
+            if run[0].isascii() and run[0].isalnum():
+                cells += [run] if len(run) <= 2 else list(run)
+            else:
+                cells.append(run.translate(_VFORMS))
+        n = -(-len(cells) // max_rows)  # 放不下时拆成几列，各列一样长（不剩下一两个字单独一列）
+        per = -(-len(cells) // n) if n else 0
+        cols += [cells[k:k + per] for k in range(0, len(cells), per)] if per else []
+    return [c for c in cols if c]
+
+
+def _vertical(it, size, px, py):
+    """竖排说明译文的列和大小：一列最多和原来的竖条一样高（至少 3 个字），也不超出画面。返回 (列, 宽, 高)。"""
+    x0, y0, x1, y1 = it["rect"]
+    rows = max(3, min(int((y1 - y0) * py / (size * _ROW)), int((py - 40) / (size * _ROW))))
+    text = it.get("text") or "\n".join(plain(l) for l in it["layers"][0][2])
+    cols = vertical_columns(text, rows)
+    return cols, len(cols) * size * _COL, max((len(c) for c in cols), default=0) * size * _ROW
+
+
+def _vchars(cols, bx0, by0, w, size):
+    """每个字的中心位置：[[x, y, 字]]，第一列在最右边。"""
+    return [[round(bx0 + w - size * _COL * (i + 0.5)), round(by0 + size * _ROW * (j + 0.5)), ch]
+            for i, col in enumerate(cols) for j, ch in enumerate(col)]
+
+
 def _box(start, end, x0, x1, top, bottom):
     return {"start": start, "end": end, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
 
@@ -198,7 +241,20 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
     info_st = used.get(profile.info_style)
     for it in (i for i in items if i["kind"] == "info"):
         lines = [plain(l) for l in it["layers"][0][2]]
-        if it.get("pos"):  # 手动拖过：底边中点放在拖到的地方
+        vert = (getattr(profile, "info_vertical", True) and profile.info_mode == "near" and it.get("rect")
+                and is_vertical(it["rect"], aspect) and it["layers"][0][1].split("-")[0] in VERTICAL_LANGS)
+        if vert:  # 竖排：贴着竖条放，手动拖过的底边中点放在拖到的地方
+            size = info_st.size
+            cols, w, h = _vertical(it, size, px, py)
+            if it.get("pos"):
+                bx0, by0 = it["pos"][0] * px - w / 2, it["pos"][1] * py - h
+            else:
+                _, _, _, bx0, by0 = _info_spot(it, True, w, h, px, py, boxes)
+            if profile.avoid_hardsub:
+                boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
+            placed.append({"kind": "info", "item": it, "an": 7, "x": round(bx0), "y": round(by0),
+                           "vbox": [round(bx0), round(by0), round(w), round(h)], "vchars": _vchars(cols, bx0, by0, w, size)})
+        elif it.get("pos"):  # 手动拖过：底边中点放在拖到的地方
             placed.append({"kind": "info", "item": it, "an": 2, "x": round(it["pos"][0] * px), "y": round(it["pos"][1] * py)})
         elif profile.info_mode == "near" and it.get("rect"):
             m = fonts.metrics(info_st.font)
@@ -240,6 +296,10 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
     out = [header(px, py, used, info_styles={profile.info_style})]
     for p in placed:
         it = p["item"]
+        if p["kind"] == "info" and p.get("vchars"):  # 竖排：一个字一个事件，各自定位（各家播放器显示得都一样）
+            out += [f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{{\\an5\\pos({x},{y})}}{esc(ch)}"
+                    for x, y, ch in p["vchars"]]
+            continue
         if p["kind"] == "info":
             text = esc("\n".join(plain(l) for l in it["layers"][0][2]))
             tag = "{\\an8}" if p.get("top") else f"{{\\an{p['an']}\\pos({p['x']},{p['y']})}}"

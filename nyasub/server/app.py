@@ -980,7 +980,8 @@ def create_app(token: str | None = None) -> FastAPI:
                     "cue": it.get("cue"), "moved": bool(it.get("pos"))}
             if p["kind"] == "info":
                 base.update(style=prof.info_style, lines=[layout.plain(l) for l in it["layers"][0][2]],
-                            top=bool(p.get("top")), an=p.get("an"), x=p.get("x"), y=p.get("y"))
+                            top=bool(p.get("top")), an=p.get("an"), x=p.get("x"), y=p.get("y"),
+                            **({"vbox": p["vbox"], "vchars": p["vchars"]} if p.get("vchars") else {}))
             else:
                 base.update(margin_v=p["margin_v"], type=it.get("type"), x=p.get("x"), y=p.get("y"), rows=[
                     {"style": r["ly"].style, "role": r["ly"].role, "layer": lidx.get(id(r["ly"]), -1), "chunks": [[t, rt] for t, rt, _, _ in r["chunks"]],

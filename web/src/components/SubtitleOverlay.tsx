@@ -231,6 +231,17 @@ function Info({ it, preview, k, ctl, hl }: { it: PreviewItem; preview: Preview; 
       </div>
     );
   }
+  if (it.vchars && it.vbox) {  // 竖排：每个字按导出的 ASS 一样的位置放
+    const [bx, by, bw, bh] = it.vbox;
+    return (
+      <div {...props} className={`near ${props.className ?? ""}${hl ? " hl" : ""}`}
+           style={{ left: bx * k, top: by * k, width: bw * k, height: bh * k, transform: shift(off).trim() || undefined }}>
+        {it.vchars.map(([x, y, ch], i) => (
+          <span key={i} style={{ ...css, position: "absolute", left: (x - bx) * k, top: (y - by) * k, transform: "translate(-50%, -50%)" }}>{ch}</span>
+        ))}
+      </div>
+    );
+  }
   const an = it.an ?? 2;
   const tx = an % 3 === 1 ? "0" : an % 3 === 2 ? "-50%" : "-100%";
   const ty = an <= 3 ? "-100%" : an <= 6 ? "-50%" : "0";

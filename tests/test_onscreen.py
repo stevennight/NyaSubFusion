@@ -435,3 +435,33 @@ def test_vertical_name_card_translation_goes_outward():
     # 条在左半：放左边（外侧）
     an, x, y, bx0, by0 = _info_spot(it((0.30, 0.2, 0.36, 0.7)), True, w, h, px, py, [])
     assert an == 9 and bx0 + w <= 0.30 * px
+
+
+def test_vertical_name_card_translation_is_vertical(tmp_path):
+    """竖排人名条的中文译文也竖排：按空格分列（头衔一列、名字一列，从右往左），贴在竖条外侧；
+    导出的 ASS 一个字一个事件；关掉开关、或者译成英文的照旧横排。"""
+    cfg = config.Config()
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+    rect = [0.527, 0.25, 0.612, 0.71]
+    cue = {"id": "q1", "start": 10, "end": 14, "type": "info", "onscreen": True, "rect": rect,
+           "orig": {"lang": "ja", "text": "富士製紙協同組合\n相原和生さん"}, "tr": {"zh-Hans": {"text": "富士造纸合作社 相原和生"}}, "sources": ["o1"]}
+    items = layout.build([cue], prof, cfg, "ja")
+    px, py, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [])
+    p = placed[0]
+    cols = {}
+    for x, y, ch in p["vchars"]:
+        cols.setdefault(x, []).append(ch)
+    xs = sorted(cols, reverse=True)
+    assert ["".join(cols[x]) for x in xs] == ["富士造纸合作社", "相原和生"]   # 第一列在右边
+    assert p["vbox"][0] >= rect[2] * px                                       # 在竖条外侧（右边）
+    out = tmp_path / "v.ass"
+    ass.write(out, items, prof, cfg.render.styles, 16 / 9, [])
+    ev = [l for l in out.read_text(encoding="utf-8-sig").splitlines() if l.startswith("Dialogue")]
+    assert len(ev) == 11 and all("{\\an5\\pos(" in l for l in ev)
+    # 关掉开关：横排
+    prof2 = ProfileCfg(name="t", layers=[LayerCfg(role="translation")], info_vertical=False)
+    assert "vchars" not in ass.place(layout.build([cue], prof2, cfg, "ja"), prof2, cfg.render.styles, 16 / 9, [])[3][0]
+    # 译成英文：横排
+    en = dict(cue, tr={"en": {"text": "Kazuo Aihara"}})
+    prof3 = ProfileCfg(name="t", layers=[LayerCfg(role="translation", lang="en")])
+    assert "vchars" not in ass.place(layout.build([en], prof3, cfg, "ja"), prof3, cfg.render.styles, 16 / 9, [])[3][0]

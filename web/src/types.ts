@@ -87,6 +87,8 @@ export interface PreviewItem {
   margin_v?: number; rows?: PreviewRow[]; type?: string;
   style?: string; lines?: string[]; top?: boolean; an?: number; x?: number | null; y?: number | null;
   cue?: string; moved?: boolean;   // 属于哪条字幕；是不是手动拖过位置
+  vbox?: [number, number, number, number];   // 竖排说明译文：整块的左、上、宽、高
+  vchars?: [number, number, string][];       // 竖排说明译文：每个字的中心和字
 }
 /** 预览里要框出来的：某个图层，或者用某个样式的所有行（含说明文字） */
 export interface PreviewHl { layer?: number; style?: string }
@@ -106,7 +108,7 @@ export interface Layer {
 }
 export interface Profile {
   name: string; enabled: boolean; format: "ass" | "srt"; filename: string; layers: Layer[];
-  info_mode: "near" | "top" | "off"; info_style: string; avoid_hardsub: boolean; max_lines: number; min_duration: number;
+  info_mode: "near" | "top" | "off"; info_style: string; info_vertical?: boolean; avoid_hardsub: boolean; max_lines: number; min_duration: number;
   simultaneous?: "stack" | "merge";   // 几乎同时开始的几条字幕：分开显示（上下错开）/ 合成一屏
 }
 export type Cfg = Record<string, any>;
