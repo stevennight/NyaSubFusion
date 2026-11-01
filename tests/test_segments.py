@@ -247,17 +247,15 @@ def test_wrap_no_orphan_and_short_first_line():
     assert zh.wrap("他心灵手巧　店里需要的东西　他都会做", 16) == ["他心灵手巧", "店里需要的东西　他都会做"]
 
 
-def test_llm_orphan_line_rejoined():
-    """大模型自己换的行，第二行只剩一个名字：旁白、原文没换行的对话重新断；可能是两个人在说、人名条的不动。"""
+def test_model_line_breaks_kept():
+    """大模型给的换行照用（换行处可能是个停顿：“我果然还是喜欢大海\\n真的”并成一行就丢了停顿，规则判断不了）；
+    只有一行超长时才自己折行。"""
     from nyasub import lang
 
     zh = lang.get("zh-Hans")
-    one = lambda t, ok: layout._screens(zh, layout._rejoin(zh, zh.display(t, {}), 16, ok), 16, 2)
-    assert one("她嫁给了在这水边长大的丈夫\n武光", True) == [["她嫁给了在这水边长大的丈夫武光"]]
-    assert one("五金店老板负责吉他和\n篠笛", True) == [["五金店老板负责吉他和篠笛"]]
-    assert one("他心灵手巧 店里需要的东西\n他都会做", True) == [["他心灵手巧", "店里需要的东西他都会做"]]
-    assert one("这个不要了\n就这样吧", False) == [["这个不要了", "就这样吧"]]
-    assert one("明治时代\n利用丰富涌泉水造纸的工艺", True) == [["明治时代", "利用丰富涌泉水造纸的工艺"]]   # 第一行短：本来就好
+    one = lambda t: layout._screens(zh, zh.display(t, {}), 16, 2)
+    assert one("我果然还是喜欢大海\n真的") == [["我果然还是喜欢大海", "真的"]]
+    assert one("这个不要了\n就这样吧") == [["这个不要了", "就这样吧"]]
     assert layout._screens(zh, "放得下的一句", 16, 2) == [["放得下的一句"]]
 
 

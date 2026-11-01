@@ -109,19 +109,6 @@ def _info_item(cue, layers, cfg):
     return None
 
 
-def _rejoin(pack, text, maxc, ok):
-    """大模型自己换的两行，第二行只剩三四个字（“她嫁给了在这水边长大的丈夫\\n武光”）、并起来两行放得下的：
-    并成一行交给折行重新断（中文、日文直接接上：换行处多半在一个短语中间，“吉他和\\n篠笛”加空格反而怪）。
-    ok=False 时不动（可能是两个人在说、人名条的头衔和名字）。"""
-    lines = text.split("\n")
-    if not ok or len(lines) != 2:
-        return text
-    a, b = (len(x.strip("　 ")) for x in lines)
-    if b > 4 or a < b + 3 or a + b + 1 > 2 * maxc:
-        return text
-    return (" " if pack.word_based else "").join(x.strip("　 ") for x in lines)
-
-
 def _screens(pack, text, maxc, max_lines):
     """一段放不下的文字分成几屏，每屏折行后不超过 max_lines 行：[[这一屏的行]]。
     先按原来的换行分（两个人的话、标题的两行），一行太长的在空格 / 标点处切开（pack.split 会吸附到附近的断点），
@@ -193,20 +180,9 @@ def _expand(cue, layers, profile, cfg, tok, seen):
     _, p_ly, p_code, p_text, _ = texts[pi]
     p_pack, p_opts = lang.get(p_code), _opts(cfg, p_code)
     p_pieces = [p for p in p_text.split("｜") if p.strip()] or [p_text]
-    orig_ps = segments.pieces(cue["orig"]["text"]) if bars else [cue["orig"]["text"]]
-
-    def may_rejoin(k):
-        """大模型自己换的行能不能重新断：旁白可以；对话只有原文这里没换行（不会是两个人在说）才可以；说明、人名条不动。"""
-        t = (seg_type[k] if seg_type and k < len(seg_type) else None) or cue.get("type")
-        if t == "narration":
-            return True
-        return t == "dialogue" and "\n" not in (orig_ps[k] if k < len(orig_ps) else cue["orig"]["text"])
-
     groups = []  # [(piece_index, [主图层行])]
     for k, piece in enumerate(p_pieces):
-        maxc = _max_chars(p_ly, p_pack, p_opts)
-        text = _rejoin(p_pack, p_pack.display(piece, p_opts), maxc, may_rejoin(k))
-        chunks = _screens(p_pack, text, maxc, profile.max_lines)
+        chunks = _screens(p_pack, p_pack.display(piece, p_opts), _max_chars(p_ly, p_pack, p_opts), profile.max_lines)
         groups += [(k, g) for g in chunks]
     weights = [max(1, sum(len(l) for l in g)) for _, g in groups]
 
