@@ -32,6 +32,7 @@ class LanguagePack:
     meaningful = re.compile(r"\w")         # 判断画面字是否像正经文字
     break_after = set(" ,.;:!?)]}\"'")
     no_line_start = set(",.;:!?)]}")
+    no_line_end = set("([{")              # 不放在行末的字（开括号、开引号）
 
     # ---------- 给大模型的说明 ----------
     def prompt_source_notes(self) -> str:
@@ -60,13 +61,23 @@ class LanguagePack:
             out.update({p: 3 for p in range(1, len(text)) if text[p] == " "})
         return out
 
+    def _break_points(self, text: str) -> dict[int, int]:
+        """break_levels 再加上：开引号 / 开括号不放在行末（“名为“｜茶叶…”），它前面是个好断点（引用、括注的开头）。"""
+        out = self.break_levels(text)
+        for p in range(1, len(text)):
+            if text[p - 1] in self.no_line_end:
+                out.pop(p, None)
+            elif text[p] in self.no_line_end:
+                out[p] = max(out.get(p, 0), 2)
+        return out
+
     def learn_words(self, words) -> None:
         """告诉分词这些是一个词（术语表里的人名、地名），折行时不拆开。没有分词的语言不用管。"""
 
     def wrap(self, text: str, max_chars: int) -> list[str]:
         if self.word_based:
             return _wrap_words(text, max_chars)
-        return _wrap_chars(text, max_chars, self.break_levels, self.no_line_start)
+        return _wrap_chars(text, max_chars, self._break_points, self.no_line_start, self.no_line_end)
 
     def split(self, text: str, ratios: list[float]) -> list[str]:
         """按比例把一段文字切成几份（分屏用），切点选在附近好的断点上（空格 / 标点 > 小句停顿 > 词边界），不切在词中间。"""
@@ -74,7 +85,7 @@ class LanguagePack:
             return [text]
         parts, start, acc = [], 0, 0.0
         n = len(text)
-        lv = self.break_levels(text)
+        lv = self._break_points(text)
         for r in ratios[:-1]:
             acc += r
             target = int(round(n * acc))
@@ -131,24 +142,24 @@ _ORPHAN = 6        # 最后一行只有三四个字
 _TOP_HEAVY = 0.25  # 上一行比最后一行每长一个字
 
 
-def _wrap_chars(text, maxc, levels, no_start):
+def _wrap_chars(text, maxc, levels, no_start, no_end=frozenset()):
     """按字数断行：整行一起选断点，使总代价最小——断在好的断点上（空格 / 标点 > 小句里的停顿 > 词与词之间），
-    不断在一个词中间；为了不拆开小句可以多一行；不留孤零零的一两个字；同样好时各行尽量等长；禁则字符不放行首。
+    不断在一个词中间；为了不拆开小句可以多一行；不留孤零零的一两个字；同样好时各行尽量等长；禁则字符不放行首、开括号不放行末。
     levels(line) → {位置: 好坏}（见 LanguagePack.break_levels）。"""
     out = []
     for line in text.split("\n"):
         if len(line) > maxc:
-            out += _best_breaks(line, maxc, levels(line), no_start)
+            out += _best_breaks(line, maxc, levels(line), no_start, no_end)
         elif line:
             out.append(line)
     return out
 
 
-def _best_breaks(line, maxc, lv, no_start):
+def _best_breaks(line, maxc, lv, no_start, no_end=frozenset()):
     n = len(line)
 
-    def brk(p):  # 在 p 处断开的代价；None = 不能断（下一行会以禁则字符开头）
-        if line[p] in no_start:
+    def brk(p):  # 在 p 处断开的代价；None = 不能断（下一行会以禁则字符开头、这一行以开括号结尾）
+        if line[p] in no_start or line[p - 1] in no_end:
             return None
         return _BREAK_COST.get(lv.get(p), _MID_WORD)
 

@@ -288,3 +288,13 @@ def test_simultaneous_lines_merged_on_request_keep_pairs():
     assert len(items) == 1 and (items[0]["start"], items[0]["end"]) == (1390.72, 1393.91)
     assert [[layout.plain(l) for l in ls] for _, _, ls in items[0]["layers"]] == [
         ["我当时觉得 这下可糟了"], ["いや、やばいなと思ったんですね"], ["做雪纳豆真不容易啊"], ["雪納豆づくり大変ですね"]]
+
+
+def test_opening_quote_not_at_line_end():
+    """开引号 / 开括号不放在行末：断在它前面（“名为｜“茶叶经纪人”…”）。"""
+    from nyasub import lang
+
+    zh, ja = lang.get("zh-Hans"), lang.get("ja")
+    assert zh.wrap("交易的关键在于名为“茶叶经纪人”的中间商", 16) == ["交易的关键在于名为", "“茶叶经纪人”的中间商"]
+    assert zh.split("交易的关键在于名为“茶叶经纪人”的中间商", [0.5, 0.5])[1].startswith("“")
+    assert not any(l.endswith("「") for l in ja.wrap("取り引きの鍵を握るのは「才取り」と呼ばれる仲介業者", 16))

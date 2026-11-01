@@ -45,6 +45,7 @@ class Chinese(LanguagePack):
     meaningful = re.compile(r"[㐀-鿿]")
     break_after = set("　 ，。、；：？！…」』）】》”")
     no_line_start = set("，。、；：？！…」』）】》”")
+    no_line_end = set("“‘（「『《【〈〔")
 
     def learn_words(self, words):
         """术语表里的译名告诉 jieba（“加贺市”“差间正树”），折行时不拆开；加了新词就清掉分词缓存。"""

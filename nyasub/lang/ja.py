@@ -97,6 +97,7 @@ class Japanese(LanguagePack):
     meaningful = re.compile(r"[぀-ヿ㐀-鿿]")
     break_after = set("　 、。，；：？！…」』）】》”")
     no_line_start = set("、。，．・：；？！ー」』）】》ぁぃぅぇぉっゃゅょァィゥェォッャュョ")
+    no_line_end = set("「『（【《〈〔“‘")
 
     def break_levels(self, text):
         """空格 / 标点后（3）之外，按分词补上：助词、助动词之后（文节的边界，2）、其他词与词之间（1）；
