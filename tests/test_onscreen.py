@@ -418,3 +418,20 @@ def test_subs_line_also_printed_on_screen_hides_original(sample):
     out = {c["id"]: c for c in r._tidy([cue("q653", "c470", 3111.6, 3115.0, "（取材者）百姓たちが作り上げた野菜。　そう　農家が。"),
                                         cue("q33", "c33", 162.4, 166.0, "舞台は日本海に　ほど近い　片野鴨池。")], {})}
     assert out["q653"]["onscreen"] and not out["q33"]["onscreen"]
+
+
+def test_vertical_name_card_translation_goes_outward():
+    """竖排人名条：人一般在条的里侧（靠画面中间），译文放外侧；外侧放不下才放里侧；不压在条上。"""
+    from nyasub.render.ass import _info_spot
+
+    px, py, w, h = 1920, 1080, 460, 52
+    it = lambda r: {"start": 0, "end": 3, "rect": list(r)}
+    # 截图那张：条在画面中间偏右，人在左边 → 放右边
+    an, x, y, bx0, by0 = _info_spot(it((0.527, 0.25, 0.612, 0.71)), True, w, h, px, py, [])
+    assert an == 7 and bx0 >= 0.612 * px
+    # 条贴着右边：右边放不下 → 放左边（里侧），也不压在条上
+    an, x, y, bx0, by0 = _info_spot(it((0.88, 0.2, 0.95, 0.7)), True, w, h, px, py, [])
+    assert bx0 + w <= 0.88 * px
+    # 条在左半：放左边（外侧）
+    an, x, y, bx0, by0 = _info_spot(it((0.30, 0.2, 0.36, 0.7)), True, w, h, px, py, [])
+    assert an == 9 and bx0 + w <= 0.30 * px

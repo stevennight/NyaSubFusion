@@ -59,10 +59,12 @@ def info_pos(rect, vertical, px, py):
     """说明文字的译文放在原文旁边，不盖住原文。返回 (an, x, y)。"""
     x0, y0, x1, y1 = rect
     gap = 10
-    if vertical:
+    if vertical:  # 竖排的人名条一般打在人旁边的空处，人在里侧（靠画面中间）：译文放外侧（靠画面边），外侧太窄才放里侧
+        right = (7, int(x1 * px) + gap, int(y0 * py))
+        left = (9, int(x0 * px) - gap, int(y0 * py))
         if (x0 + x1) / 2 > 0.5:
-            return 9, int(x0 * px) - gap, int(y0 * py)
-        return 7, int(x1 * px) + gap, int(y0 * py)
+            return right if 1 - x1 > 0.18 else left
+        return left if x0 > 0.18 else right
     cx = (x0 + x1) / 2
     below = (y0 + y1) / 2 < 0.5
     if cx < 0.33:
@@ -78,11 +80,15 @@ def info_pos(rect, vertical, px, py):
 def _info_spot(it, vertical, w, h, px, py, boxes):
     """说明译文放哪：先试贴着原文（near），再试原文的另一侧，最后放画面顶部 / 底部正中。
     选第一个不出画面、也不压住同一时间其他画面字（含已经放好的说明译文）的位置。
-    标题卡这种大字常常只识别出一部分框，只看自己的框会压到没识别全的字上。返回 (an, x, y, 左, 上)。"""
+    标题卡这种大字常常只识别出一部分框，只看自己的框会压到没识别全的字上。返回 (an, x, y, 左, 上)。
+    竖排的：外侧（靠画面边）> 竖条下面 > 里侧（靠画面中间，多半是人）。"""
     x0, y0, x1, y1 = it["rect"]
     first = info_pos(it["rect"], vertical, px, py)
     cands = [first]
-    if not vertical:  # 另一侧：原文在下半就放到原文下面，反之放上面
+    if vertical:
+        cands += [(8, int((x0 + x1) / 2 * px), int(y1 * py) + 10),
+                  (7, int(x1 * px) + 10, int(y0 * py)), (9, int(x0 * px) - 10, int(y0 * py))]
+    else:  # 另一侧：原文在下半就放到原文下面，反之放上面
         an, x, _ = first
         flip = {1: 7, 2: 8, 3: 9, 7: 1, 8: 2, 9: 3}[an]
         cands.append((flip, x, int(y1 * py) + 10 if flip in (7, 8, 9) else int(y0 * py) - 10))
@@ -99,6 +105,9 @@ def _info_spot(it, vertical, w, h, px, py, boxes):
 
     def clear(bx0, by0):
         if by0 < 0 or by0 + h > py:
+            return False
+        # 不压在自己的原文上（挪进画面时可能被推回到原文上；竖排的框不在 boxes 里）
+        if x0 * px < bx0 + w and bx0 < x1 * px and y0 * py < by0 + h and by0 < y1 * py:
             return False
         for b in boxes:
             if min(it["end"], b["end"]) - max(it["start"], b["start"]) <= 0.2:
