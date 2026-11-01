@@ -17,6 +17,7 @@
 // 其余照旧：点一下选中；在刻度 / 波形上拖 = 拖播放头；在空白处（包括参考轨）拖 = 左右平移。
 import { useEffect, useRef, useState } from "react";
 import type { Candidate, Cue, FusedItem } from "../types";
+import { useStore } from "../store";
 import { fmt, fmtHms } from "../util";
 
 type Span = [number, number];
@@ -54,6 +55,7 @@ interface Props {
 }
 
 export function Timeline(p: Props) {
+  const s = useStore();
   const showRef = p.refLanes ?? true;
   const W = Math.max(200, p.duration * p.pps + 30);
   const scroll = useRef<HTMLDivElement>(null);
@@ -133,6 +135,20 @@ export function Timeline(p: Props) {
     { x: number; y: number; cue: string; seg: number; n: number; src?: undefined }
     | { x: number; y: number; src: Candidate; kind: string }
     | null>(null);
+  // 参考轨上的文字复制出来，贴到已有的字幕里（不一定要新建一条）
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const t = document.createElement("textarea");
+      t.value = text;
+      document.body.appendChild(t);
+      t.select();
+      document.execCommand("copy");
+      t.remove();
+    }
+    s.toast(`已复制「${text.replace(/\n/g, " ").slice(0, 16)}」`);
+  };
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -343,7 +359,7 @@ export function Timeline(p: Props) {
         const inSel = !!selCue?.sources.includes(c.id);
         const close = (fn: () => void) => () => { fn(); setMenu(null); };
         return (
-          <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 170) }}
+          <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 210) }}
                onMouseDown={(e) => e.stopPropagation()}>
             <div className="dim">{menu.kind} {c.id}{used ? ` · 用在 #${used}` : " · 没有用到"}</div>
             <button disabled={!p.onSourceCue} title="时间用这一块的，原文用它的文字，配了大模型就顺手翻译"
@@ -352,6 +368,7 @@ export function Timeline(p: Props) {
                     title={!selCue ? "先在译文轨或字幕列表里选中一条字幕" : inSel ? "已经关联在这条字幕上了" : "原文按时间接上这一块的文字，时间放宽到包住它，整句重新翻译"}
                     onClick={close(() => selCue && p.onSourceAttach?.(c, selCue.id))}>
               ⇢ 并入选中的字幕{selCue ? ` #${selCue.id}` : ""}{inSel ? "（已关联）" : ""}</button>
+            <button title="复制这一块的文字，可以贴到已有的字幕里" onClick={close(() => copyText(c.text))}>⧉ 复制文字</button>
             {used && used !== p.selected && <button onClick={close(() => p.onSelect(used))}>选中用到它的字幕 #{used}</button>}
             <button onClick={close(() => p.onSeek(c.start))}>▶ 跳到这里</button>
           </div>
