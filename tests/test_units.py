@@ -97,6 +97,19 @@ def test_fuse_rules():
     assert out["stats"]["asr_total"] == 2
 
 
+def test_fuse_drops_music_only_subs():
+    """只有「♬〜」的字幕不要（一挂十几秒，还会把并进来的片名拉长）；带歌词的留着；放音乐时语音认出的杂音照旧不单独成条。"""
+    from nyasub.fusion.fuse import music_only
+
+    assert music_only("♬〜") and music_only("♪ ～") and not music_only("♬今夜 どろぶねで") and not music_only("（笑い声）")
+    ja = lang.get("ja")
+    subs = [{"id": "c1", "start": 1.0, "end": 16.0, "text": "♬〜"},
+            {"id": "c2", "start": 20.0, "end": 23.0, "text": "♬今夜 どろぶねで"}]
+    asr = [{"id": "a1", "start": 3.0, "end": 9.0, "text": "あーあーあー"}]
+    out = fuse(subs, [], asr, FUSION, ja, 30)
+    assert [it["id"] for it in out["items"]] == ["c2"] and out["stats"]["subs_music"] == 1
+
+
 # ---------------- 翻译结果校验 ----------------
 
 

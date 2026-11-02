@@ -60,7 +60,7 @@ DEFS = {
     "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
-    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
+    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=3),  # v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
     "translate": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
                                      "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=4),
     # v4：原文照抄字幕的字；人名全部进术语表、各段沿用新译名、最后统一一遍
@@ -800,7 +800,7 @@ class Run:
 
     def _log_fuse(self, fused):
         s = fused["stats"]
-        log(f"融合：字幕 {s['subs']} 条；画面字 {s['ocr_total']} 条（台标 {s['ocr_logo']}，杂讯 {s['ocr_junk']}，"
+        log(f"融合：字幕 {s['subs']} 条" + (f"（只有音乐记号的 {s['subs_music']} 条不要）" if s.get("subs_music") else "") + f"；画面字 {s['ocr_total']} 条（台标 {s['ocr_logo']}，杂讯 {s['ocr_junk']}，"
             f"实物上的字 {s['ocr_scene']}" + (f"，和实物上的字连成一框的硬字幕 {s['ocr_caption']}（只留硬字幕那几行）" if s.get("ocr_caption") else "") + f"，振假名 {s.get('ocr_ruby', 0)}，与字幕重复 {s['ocr_dup']}，台词 {s['telop']}，说明 {s['info']}）；"
             f"语音 {s['asr_total']} 段（无字幕覆盖 {s['asr_uncovered']}，作为参考附到字幕上 {s['asr_hint']}）")
 

@@ -20,6 +20,11 @@ def spoken(text):
     return _NOT_SPEECH.sub("", text or "").strip()
 
 
+def music_only(text):
+    """只有音乐记号的字幕（「♬〜」）：只是告诉观众在放音乐，一挂十几秒，不翻译、不显示；后面带歌词的不算。"""
+    return bool(re.search(r"[♪♬]", text or "")) and not re.sub(r"[♪♬〜～\s]", "", text)
+
+
 def _concat(items, t0, t1, slack=0.0):
     hit = [x for x in items if overlap(x["start"] - slack, x["end"] + slack, t0, t1) > 0]
     return hit, "".join(x["text"] for x in hit)
@@ -198,8 +203,10 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         ocr_items.append(item)
 
     # 2. 语音：没被覆盖的单独成条；重叠但对不上的作为参考附到那条上（否则会被当成另一句话翻译，叠在一起显示）
-    sub_items = [dict(c, src="subs") for c in subs]
-    text_items = sub_items + [o for o in ocr_items if o["src"] == "telop"]
+    sub_items = [dict(c, src="subs") for c in subs if not music_only(c["text"])]
+    # 只有音乐记号的字幕不要了，但还算“这段有字幕”：放音乐时语音识别出的歌声、杂音不单独成条（和以前一样）
+    music = [dict(c, src="subs") for c in subs if music_only(c["text"])]
+    text_items = sub_items + music + [o for o in ocr_items if o["src"] == "telop"]
     intervals = [(x["start"], x["end"]) for x in text_items]
     asr_items, n_hint = [], 0
     for a in asr:
@@ -229,7 +236,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
             cue["rect"] = it["rect"]
         cues.append(cue)
     stats = {
-        "subs": len(subs), "ocr_total": len(ocr_all),
+        "subs": len(subs), "subs_music": len(music), "ocr_total": len(ocr_all),
         "ocr_logo": sum(1 for e in ocr_all if e.get("dropped") == "logo"),
         "ocr_junk": sum(1 for e in ocr_all if e.get("dropped") == "junk"),
         "ocr_scene": sum(1 for e in ocr_all if e.get("dropped") == "scene"),
