@@ -346,9 +346,9 @@ def waveform_peaks(wav_path, per_second=50):
     return {"per_second": rate / step, "peaks": np.clip(peaks * 255 // top, 0, 255).astype(int).tolist()}
 
 
-def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, exact=False):
+def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, exact=False, quality=5):
     """在这些时间点各截一张小图（翻译时给大模型看画面）。按 0.5 秒取整，截过的直接用。
-    exact：按毫秒截（视觉复核要在画面上框出字的位置，差半秒字可能已经挪了）。
+    exact：按毫秒截（视觉复核要按画面上字的位置对上本地识别的结果，差半秒字可能已经挪了）。quality：JPEG 质量（ffmpeg -q:v，越小越清楚）。
     返回 {取整后的时间: 图片路径}；截不出来的（片尾之后、解码失败）不在里面。"""
     from concurrent.futures import ThreadPoolExecutor
     from pathlib import Path
@@ -368,7 +368,7 @@ def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, ex
         check_cancel()
         try:
             subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{k:.3f}", "-i", str(path), "-frames:v", "1",
-                            "-vf", f"scale={width}:-2", "-q:v", "5", str(f)],
+                            "-vf", f"scale={width}:-2", "-q:v", str(quality), str(f)],
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
         except subprocess.TimeoutExpired:
             pass

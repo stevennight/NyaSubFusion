@@ -193,8 +193,8 @@ def test_subs_wording_kept_and_names_checked():
     assert term_misses(cues, terms, "zh-Hans") == [(0, [("キミイ", "纪美")])]
 
 
-def test_refine_context_frames_shared_by_same_moment():
-    from nyasub.llm.refine import plan_groups
+def test_refine_moments_shared_when_on_screen():
+    from nyasub.llm.refine import plan_moments
 
     def ev(i, start, end, snap, rect, crop=None, **kw):
         return {"id": i, "start": start, "end": end, "snap_t": snap, "rect": rect, "crop_rect": crop or rect, **kw}
@@ -203,48 +203,81 @@ def test_refine_context_frames_shared_by_same_moment():
     one = ev("o19", 64.2, 65.6, 64.5, [0.98, 0.4, 0.99, 0.44])           # 同一时刻在画面上：共用 o18 那一帧
     pan = ev("o42", 63.0, 66.0, 64.6, [0.5, 0.1, 0.6, 0.2], [0.3, 0.1, 0.6, 0.2])  # 镜头摇移，别的时刻框不准
     later = ev("o50", 70.0, 72.0, 70.5, [0.1, 0.8, 0.9, 0.9])
-    groups = plan_groups([later, pan, one, bottle], 4, context=True)
-    assert [[e["id"] for e in g] for g, _ in groups] == [["o18", "o19", "o42", "o50"]]
-    assert groups[0][1] == [64.4, 64.4, 64.6, 70.5]
-    # 不带画面：顺序、分批和以前一样（请求缓存照样命中）
-    assert [[e["id"] for e in g] for g, at in plan_groups([later, pan, one, bottle], 3)] == [["o50", "o42", "o19"], ["o18"]]
+    m = plan_moments([later, pan, one, bottle])
+    assert {t: [e["id"] for e in es] for t, es in m.items()} == {64.4: ["o18", "o19"], 64.6: ["o42"], 70.5: ["o50"]}
 
 
-def test_refine_context_frame_marked(tmp_path):
+def test_refine_match_merges_split_title_and_finds_misses():
+    from nyasub.llm.refine import match_moment, read_items
+
+    def ev(i, rect, start=10.0, end=14.0):
+        return {"id": i, "start": start, "end": end, "rect": rect, "text": i}
+
+    # 标题「サヨナラまでの日々」被本地切成两块（一起出现）；下面一条字幕被标题的框盖住一部分；
+    # 一条不在这一刻复核的字；一条模型没读到的字
+    a, b = ev("o1", [0.35, 0.76, 0.6, 0.89]), ev("o2", [0.62, 0.75, 0.96, 0.91], start=10.2)
+    sub = ev("o3", [0.2, 0.84, 0.8, 0.9], start=11.0, end=20.0)
+    other = ev("o4", [0.1, 0.1, 0.3, 0.2])
+    unseen = ev("o5", [0.5, 0.3, 0.6, 0.35])
+    raw = {"items": [{"text": "サヨナラまでの日々", "kind": "caption", "bbox": [354, 764, 957, 892]},
+                     {"text": "字幕です", "kind": "caption", "bbox": [200, 840, 800, 900]},
+                     {"text": "せふり", "kind": "scene", "bbox": [160, 360, 300, 490]},       # 本地漏掉的
+                     {"text": "看板", "kind": "scene", "bbox": [100, 100, 300, 200]},         # 归 o4（不在这一刻复核）
+                     {"text": "私の居場所", "kind": "caption", "bbox": [850, 140, 945, 172]},  # 台标：排除区
+                     {"text": "", "bbox": [0, 0, 10, 10]}]}
+    regions = [{"rect": [0, 0, 1, 1], "exclude": False}, {"rect": [0.824, 0.025, 0.976, 0.181], "exclude": True}]
+    items = read_items(raw, regions)
+    assert [it["text"] for it in items] == ["サヨナラまでの日々", "字幕です", "せふり", "看板"]
+    visible = [(e, e["rect"]) for e in (a, b, sub, other, unseen)]
+    groups, misses = match_moment(items, visible, {"o1", "o2", "o3", "o5"})
+    got = {tuple(e["id"] for e in evs): [it["text"] for it in its] for evs, its in groups}
+    assert got == {("o1", "o2"): ["サヨナラまでの日々"], ("o3",): ["字幕です"], ("o5",): []}
+    assert [it["text"] for it in misses] == ["せふり"]
+
+
+def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     import cv2
     import numpy as np
 
-    from nyasub.llm.refine import mark_frame
-
-    f = tmp_path / "f.jpg"
-    cv2.imwrite(str(f), np.full((720, 1280, 3), 128, np.uint8))
-    e = {"id": "o19", "start": 64.2, "end": 65.6, "snap_t": 64.5, "rect": [0.98, 0.4, 0.99, 0.44]}
-    out = mark_frame(str(f), [e], [1], 64.5, str(tmp_path / "m"))
-    img = cv2.imread(out)
-    assert img.shape[:2] == (360, 640)
-    assert (np.abs(img.astype(int) - 128).sum(axis=2) > 60).sum() > 50  # 画上了框和编号
-
-
-def test_refine_context_asks_with_frames(tmp_path):
+    from nyasub.core.config import Config
     from nyasub.llm import refine
+    from nyasub.sources import media, ocr
 
-    paths = []
-    for i in range(2):
-        f = tmp_path / f"{i}.jpg"
-        f.write_bytes(b"x%d" % i)
-        paths.append(str(f))
-    group = [{"id": "o18", "text": "辛口純米"}, {"id": "o19", "text": "生"}]
-    calls = []
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (t - 2, t + 3))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o1", "start": 10.0, "end": 14.0, "snap_t": 12.0, "rect": [0.62, 0.75, 0.96, 0.91], "text": "わでの曰々",
+               "vertical": False, "lines": 1, "crop": "crops/o1.jpg", "pieces": [[0.62, 0.75, 0.96, 0.91, "わでの曰々"]]},
+              {"id": "o2", "start": 10.2, "end": 14.0, "snap_t": 12.0, "rect": [0.35, 0.76, 0.6, 0.89], "text": "坂道の上の家",
+               "vertical": False, "lines": 1, "crop": "crops/o2.jpg", "pieces": [[0.35, 0.76, 0.6, 0.89, "坂道の上の家"]]}]
+    asked = []
 
     class Fake:
         def chat_json(self, system, user, images=None):
-            calls.append((system, [i["label"] for i in images]))
-            return {"items": [{"no": 1, "text": "辛口純米", "kind": "scene"}, {"no": 2, "text": "生", "kind": "scene"}]}
+            asked.append(system)
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": "サヨナラまでの日々", "kind": "caption", "bbox": [354, 764, 957, 892]},
+                                  {"text": "せふり さしみコンニャク", "kind": "scene", "bbox": [160, 300, 700, 600]}]}
+            return {"text": "サヨナラまでの日々", "kind": "caption"}
 
-    got = refine._ask(Fake(), group, paths, lambda idx: [(paths[0], list(range(len(idx))))])
-    assert calls[0][0] == refine.VLM_CTX_SYSTEM
-    assert calls[0][1] == ["画面 A（框出了编号 1、2）", "第 1 张（编号 1 的特写，在画面 A 上）", "第 2 张（编号 2 的特写，在画面 A 上）"]
-    assert [g["kind"] for g in got] == ["scene", "scene"]
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    assert sorted(e["id"] for e in out) == ["o1", "v1"]  # o2 并进了 o1；补出一条本地漏掉的
+    t, v = (next(e for e in out if e["id"] == i) for i in ("o1", "v1"))
+    assert (t["text"], t["text_local"], t["kind"], t["start"], t["merged"]) == \
+        ("サヨナラまでの日々", "わでの曰々\n坂道の上の家", "caption", 10.0, ["o2"])
+    assert t["rect"] == [0.354, 0.764, 0.957, 0.892] and t["rect_local"] == [0.62, 0.75, 0.96, 0.91]
+    assert len(t["pieces"]) == 2
+    assert (v["text"], v["kind"], v["start"], v["end"], v["found_by"]) == ("せふり さしみコンニャク", "scene", 10.0, 15.0, "vlm")
+    assert (tmp_path / v["crop"]).exists()
+    # 本地读的和模型读的差很多：截特写再问了一次；临时截的画面删掉了
+    assert asked.count(refine.RECHECK_SYSTEM) == 1
+    assert not (tmp_path / "crops" / "read").exists()
 
 
 def test_refine_keeps_kind_when_mixed_up_or_batch_fails(tmp_path):
@@ -286,48 +319,6 @@ def test_refine_keeps_kind_when_mixed_up_or_batch_fails(tmp_path):
         client.LLM = orig
     assert calls == [2, 1, 1]  # 一批失败后逐条单独问
     assert [(e["text"], e["kind"]) for e in events] == [("ok", "scene"), ("ok", "scene")]
-
-
-def test_refine_recrop_boxes_text_at_snapshot(tmp_path):
-    import cv2
-    import numpy as np
-
-    from nyasub.llm import refine
-
-    f = tmp_path / "f.jpg"
-    cv2.imwrite(str(f), np.full((1080, 1920, 3), 128, np.uint8))
-    # 镜头摇移：截图框是整段移动范围（会带进片名），截图那一刻的位置只在其中一小块
-    pan = {"id": "o42", "start": 238.0, "end": 242.0, "snap_t": 238.9, "lines": 1, "vertical": False,
-           "rect": [0.5, 0.1, 0.55, 0.2], "crop_rect": [0.4, 0.05, 0.9, 0.3], "snap_rect": [0.8, 0.12, 0.85, 0.22]}
-    p = refine.recrop(str(f), pan, 238.9, str(tmp_path / "r"))
-    img = cv2.imread(p)
-    assert img.shape[1] < 0.2 * 1920  # 只截了那一刻字的位置（整段移动范围有 960 宽）
-    red = (img[:, :, 2] > 200) & (img[:, :, 1] < 80)
-    assert red.sum() > 50  # 框出了要转写的字
-    # 旧项目没记下那一刻的位置、字又挪过：框不准，用原来的特写
-    old = dict(pan)
-    del old["snap_rect"]
-    assert refine.recrop(str(f), old, 238.9, str(tmp_path / "r")) is None
-
-
-def test_refine_boxed_crops_told_to_model(tmp_path):
-    from nyasub.llm import refine
-
-    paths = []
-    for i in range(2):
-        f = tmp_path / f"{i}.jpg"
-        f.write_bytes(b"x%d" % i)
-        paths.append(str(f))
-    calls = []
-
-    class Fake:
-        def chat_json(self, system, user, images=None):
-            calls.append((system, [i["label"] for i in images]))
-            return {"items": [{"no": 1, "text": "ネプ山坂", "kind": "scene"}, {"no": 2, "text": "第十号", "kind": "scene"}]}
-
-    refine._ask(Fake(), [{"id": "o42", "text": "ネプ山坊"}, {"id": "o60", "text": "第十号"}], paths, boxed=[True, False])
-    assert calls[0][0] == refine.VLM_SYSTEM + refine.BOXED_NOTE
-    assert calls[0][1] == ["第 1 张（红框里是要转写的字）", "第 2 张"]
 
 
 def test_dialogue_slides_aside_from_name_card():
@@ -483,3 +474,23 @@ def test_edited_translation_keeps_segments(sample):
     out = r._tidy([cue], {"q457": {"tr": {"zh-Hans": tr}}})[0]
     assert segments.pieces(out["orig"]["text"]) == ["ペーパーキットって富士市　紙のまちなんで", "富士市でやらない手はないな 会社辞めたらやろうかなって思ってたんですね"]
     assert out["tr"]["zh-Hans"]["text"] == tr and segments.bars_ok(out) and len(out["parts"]) == 2
+
+
+def test_track_region_follows_overlay_on_busy_background(tmp_path):
+    """本地漏掉的字（补出来的）前后找时间：满是边缘、一直在变的背景上叠着一块字，2~5 秒在画面上。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.sources.ocr import track_region
+
+    path = str(tmp_path / "v.mp4")
+    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (640, 360))
+    rng = np.random.default_rng(0)
+    for i in range(80):
+        img = rng.integers(0, 120, (360, 640, 3), dtype=np.uint8)  # 碎石一样的背景，每帧都不一样
+        if 20 <= i < 50:
+            cv2.putText(img, "SAYONARA", (120, 300), cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 3)
+        out.write(img)
+    out.release()
+    start, end = track_region(path, 3.5, [0.17, 0.68, 0.83, 0.86], aspect=16 / 9, window=8)
+    assert abs(start - 2.0) <= 0.4 and abs(end - 5.0) <= 0.4

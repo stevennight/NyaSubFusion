@@ -335,6 +335,85 @@ def crop_at(video, ev, t, path, height=720):
             os.remove(full)
 
 
+def track_region(video, t, rect, aspect=16 / 9, window=15.0, fps=5.0, height=720):
+    """视觉复核时模型在 t 秒的画面上读到、本地 OCR 漏掉的字（花字标题、手写招牌）：前后找它在画面上待了多久。
+    本地识别认不出这种字，改比笔画边缘：t 那一刻框里的边缘，别的帧上还剩多少（字不动、背景在变也认得出）。
+    碎石、草丛这种满是边缘的背景，字的边缘只比碰巧重合的多一点，门槛按 t 附近的得分定；连着三帧（0.6 秒，压缩画质偶尔掉一两帧）不够就算字没了。
+    不跨镜头切换（字淡出后背景不动时，背景的边缘还在，光看边缘会一直算下去）。
+    返回 (start, end)；读不出画面时返回 t 前后各 1 秒。"""
+    import subprocess
+
+    W = int(round(height * aspect / 2)) * 2
+    x0, y0 = max(0, int(rect[0] * W) - 2), max(0, int(rect[1] * height) - 2)
+    x1, y1 = min(W, int(rect[2] * W) + 2), min(height, int(rect[3] * height) + 2)
+    t0 = max(0.0, t - window)
+    fallback = (round(max(0.0, t - 1), 3), round(t + 1, 3))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return fallback
+    cmd = ["ffmpeg", "-v", "quiet", "-ss", f"{t0:.3f}", "-i", str(video), "-t", f"{t + window - t0:.3f}",
+           "-vf", f"fps={fps},scale={W}:{height},format=gray", "-f", "rawvideo", "-"]
+    crops, thumbs = [], []
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        size = W * height
+        while True:
+            check_cancel()
+            buf = proc.stdout.read(size)
+            if len(buf) < size:
+                break
+            img = np.frombuffer(buf, np.uint8).reshape(height, W)
+            crops.append(img[y0:y1, x0:x1].copy())
+            thumbs.append(cv2.resize(img, (64, 36), interpolation=cv2.INTER_AREA).astype(np.int16))
+        proc.stdout.close()
+        proc.wait()
+    except OSError:
+        return fallback
+    if not crops:
+        return fallback
+    i0 = min(len(crops) - 1, max(0, round((t - t0) * fps)))
+    edges = [cv2.Canny(c, 60, 160) > 0 for c in crops]
+    ref = edges[i0]
+    n = int(ref.sum())
+    if n < 30:
+        return fallback
+    kernel = np.ones((3, 3), np.uint8)
+
+    def score(i):
+        # 扣掉碰巧重合的：泥土、草丛这种满是边缘的画面，随便哪块都能和字的边缘重合一大半
+        near = cv2.dilate(edges[i].astype(np.uint8), kernel) > 0
+        chance = near.mean()
+        return ((ref & near).sum() / n - chance) / max(1e-6, 1 - chance)
+
+    # 门槛按这块字自己定：t 前后 1 秒内得分的中位数（字在的时候）的一半。碎石背景上字只有 0.25 左右，
+    # 草地上 0.5 左右；字没了、只剩不动的背景时只有这个的一半不到
+    scores = {i: score(i) for i in range(len(crops))}
+    near_t = [scores[i] for i in range(max(0, i0 - int(fps)), min(len(crops), i0 + int(fps) + 1)) if i != i0]
+    th = max(0.08, 0.5 * float(np.median(near_t))) if near_t else 0.08
+
+    def present(i):
+        return scores[i] >= th
+
+    def cut(a, b):
+        return np.abs(thumbs[a] - thumbs[b]).mean() > 25
+
+    def walk(step):
+        i, last, miss = i0, i0, 0
+        while 0 <= i + step < len(crops):
+            if cut(i, i + step):
+                break
+            i += step
+            if present(i):
+                last, miss = i, 0
+            else:
+                miss += 1
+                if miss >= 3:
+                    break
+        return last
+
+    half = 0.5 / fps
+    return round(max(0.0, t0 + walk(-1) / fps - half), 3), round(t0 + walk(1) / fps + half, 3)
+
+
 def _zone(rect, vertical):
     x0, y0, x1, y1 = rect
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2

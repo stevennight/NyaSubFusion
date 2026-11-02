@@ -1,5 +1,11 @@
-"""视觉大模型复核画面字：纠正 OCR 错字，并判断是不是实物上本来就有的字（招牌、包装…）。"""
-import hashlib
+"""视觉大模型复核画面字：纠正 OCR 错字、补全框不全的字、补出本地漏掉的字，并判断是不是实物上本来就有的字（招牌、包装…）。
+
+做法：在画面字出现的时刻从原视频截一帧干净的画面（不画框、不附本地结果），让模型自己找出画面上所有的字，
+框出位置、转写、判断类型；程序再按位置和本地 OCR 的结果对上——时间用本地的，字、类型、位置用模型的。
+- 本地把一个标题切成几块的：几块对到模型的同一块字上，合成一条。
+- 模型读到、本地完全没找到的（花字标题、手写招牌）：按模型的框补一条，回原视频前后找它什么时候出现、消失。
+- 两边读得差很多的、字很小的、模型没读到的：从原视频按原分辨率截这一块的特写，再问一次。
+不把本地结果给模型：给了它会顺着本地的框和错字走（框不全，补全时读错）。"""
 import os
 import re
 import shutil
@@ -10,6 +16,31 @@ from ..textutil import full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
+_KINDS = """   - "caption"：节目后期叠加在画面上的字，比如采访台词字幕、人名条、地名、说明文字、标题、资料来源、片尾字幕。
+     特征：浮在画面最上层，字体规整清晰，通常有描边或阴影，横平竖直，不随镜头透视变形，不受画面光影影响。
+   - "scene"：拍摄到的实物上本来就有的字，比如招牌、海报、地图、古文书、日历、商品包装和瓶子上的标签、手写的纸、车身文字和车牌、书脊。
+     特征：印在、写在、挂在画面里的物体上，跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。"""
+
+READ_SYSTEM = f"""你是影视节目的画面文字校对员。给你视频里的一帧画面，找出画面上所有能读出来的文字，每一块一条：
+一行或上下连在一起的几行字幕、一列或几列竖排字、一个标题、招牌 / 包装上的一组字。
+对每一块：
+1. text：准确、完整地转写，每一行、每一个字都要转写，不能漏字、漏掉行尾。
+   同一块里的几行用 " / " 分隔；竖排按从右到左的列顺序，每列用 " / " 分隔。读不出来的块不要输出。
+   汉字上方（竖排是右边）标读音的小字（振假名）不要转写，也不单独算一块。
+2. kind：这块字是哪一类——
+{_KINDS}
+3. bbox：这块字在画面上的范围 [x0, y0, x1, y1]，按画面宽高归一到 0~1000（左上角是 0,0，右下角是 1000,1000），把每个字的笔画完整包进去。
+输出 JSON：{{"items": [{{"text": "原文", "kind": "caption", "bbox": [x0, y0, x1, y1]}}, ...]}}；画面上没有字就输出 {{"items": []}}。"""
+
+RECHECK_SYSTEM = f"""你是影视节目的画面文字校对员。给你视频画面里一处文字的高清特写（四周多截了一圈背景）。
+1. text：准确、完整地转写特写中间那一块文字（一行或几行字幕、一列竖排字、一个标题、招牌上的一组字），每一个字都要转写；
+   边上露出来的别处的字不要写。几行用 " / " 分隔；竖排按从右到左的列顺序，每列用 " / " 分隔；振假名（标读音的小字）不要转写。
+   看不清就输出空字符串。附带的候选是别的程序读出来的，可能都不对，一切以图为准。
+2. kind：这块字是哪一类——
+{_KINDS}
+输出 JSON：{{"text": "原文", "kind": "caption"}}"""
+
+# 没有原视频（只剩识别时截的特写）时用：一批几张特写，附本地 OCR 参考
 VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张截图，每张前面标着「第 n 张」，每张是画面上一处文字及其周围一小圈背景。
 各张图互不相关：每张只转写这一张图里的字，不要把别的图上的字写进来。
 对每张图做两件事：
@@ -24,30 +55,10 @@ VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张�
      特征：跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。
 输出 JSON：{"items": [{"no": 1, "text": "第1张原文", "kind": "caption"}, ...]}，no 是图前面标的编号，数量必须和图片数量一致。"""
 
-# 带整帧画面的版本：每处文字都给一张它所在时刻的整帧画面（框出位置、标上编号；同一时刻的几处共用一张），再给每处的特写
-VLM_CTX_SYSTEM = """你是影视节目的画面文字校对员。会给你一到几张整帧画面（画面 A、画面 B…）和若干张特写。
-整帧画面上用彩色框框出了文字的位置，框旁标着编号；特写「第 n 张」是编号 n 那处文字（连同周围一小圈背景）放大的样子。
-各处文字互不相关：每处只转写它自己的字，不要把别处的字写进来。
-对每处文字做两件事：
-1. text：看特写，准确、完整地转写原文，每一行、每一个字都要转写，不能漏行、漏掉行尾。
-   横排多行用 " / " 分隔；竖排按从右到左的列顺序，每列用 " / " 分隔。看不清就输出空字符串。
-   附带的“本地 OCR 参考”可能有错字、多出噪点字符，也可能少字；一切以图片为准。
-   汉字上方（竖排是右边）标读音的小字（振假名）不是单独的一行，不要转写。
-2. kind：结合整帧画面判断这处文字是哪一类——
-   - "caption"：节目后期叠加在画面上的字幕，比如采访台词字幕、人名条、地名、说明文字、标题、资料来源、片尾字幕。
-     特征：浮在画面最上层，字体规整清晰，通常有描边或阴影，横平竖直，不随镜头透视变形，不受画面光影影响。
-   - "scene"：拍摄到的实物上本来就有的字，比如招牌、海报、地图、古文书、日历、商品包装和瓶子上的标签、手写字、车身文字、电视台台标。
-     特征：印在、写在、挂在画面里的物体上，跟随物体有透视或弯曲，受光照、景深、反光影响，字体五花八门。
-     特写里看起来像字幕的单个字、短词，要看它在整帧画面里的位置：在某个物体（瓶子、包装、招牌…）上就是 scene。
-   没有给整帧画面的那几处，只看特写判断。
-输出 JSON：{"items": [{"no": 1, "text": "第1处原文", "kind": "caption"}, ...]}，no 是编号，数量必须和特写数量一致。"""
-
-# 特写是从截图那一帧重新截的、上面框出了要转写的字时，加在提示词后面
-BOXED_NOTE = """
-有的特写上用红框框出了要转写的字（图前面的说明里会写）：只转写红框里的字。
-红框外露出来的别的字（片名、台标、旁边别处的字幕或招牌…）都不是这一处的字，不要写进来，也不要据此判断 kind。"""
-
-_COLORS = [(48, 59, 255), (89, 199, 52), (255, 132, 10), (0, 204, 255), (212, 45, 255), (255, 229, 0)]  # BGR
+MATCH = 0.3        # 两个框重叠部分占小的那个的比例，到这么多算同一处字
+SMALL_LINE = 0.035  # 每行字高不到画面高的这么多（720p 约 25 像素）：整帧画面上看不清，截特写再问
+TINY_MISS = 0.04   # 本地漏掉的字，框的长边不到画面的这么多（车牌、远处的小标签）：不补
+CROP_MAX_W = 1600  # 特写太宽就缩到这么宽（再宽只是多花 token）
 
 
 def truncated(vlm, local):
@@ -62,25 +73,12 @@ def truncated(vlm, local):
     return len(_CJK.findall(missing)) >= 3  # “一”被认成“―”这种一两个字的差别不算
 
 
-def _ask_once(llm, group, paths, frames=None, boxed=None):
-    """frames：[(框好的整帧画面, 画面上框出的是这一批里的第几处)]。boxed：各张特写上有没有用红框框出要转写的字。"""
-    boxed = boxed or [False] * len(paths)
-    note = BOXED_NOTE if any(boxed) else ""
-    red = lambda j: "，红框里是要转写的字" if boxed[j] else ""
-    unit = "处" if frames else "张"
-    hint = "\n".join(f"第{j + 1}{unit}（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
+def _ask_once(llm, group, paths):
+    hint = "\n".join(f"第{j + 1}张（本地 OCR 参考）：{e['text_local' if 'text_local' in e else 'text'].replace(chr(10), ' / ')}"
                      for j, e in enumerate(group))
     # 每张图前面标上编号：只靠顺序时模型容易把相邻两张图的字搞混
-    if frames:
-        where = {j: chr(65 + k) for k, (_, idx) in enumerate(frames) for j in idx}
-        images = [{"path": f, "label": f"画面 {chr(65 + k)}（框出了编号 {'、'.join(str(j + 1) for j in idx)}）"}
-                  for k, (f, idx) in enumerate(frames)]
-        images += [{"path": p, "label": f"第 {j + 1} 张（编号 {j + 1} 的特写" + (f"，在画面 {where[j]} 上" if j in where else "")
-                    + red(j) + "）"} for j, p in enumerate(paths)]
-        res = llm.chat_json(VLM_CTX_SYSTEM + note, f"共 {len(group)} 处文字。\n{hint}", images=images)
-    else:
-        images = [{"path": p, "label": f"第 {j + 1} 张" + (f"（{red(j)[1:]}）" if boxed[j] else "")} for j, p in enumerate(paths)]
-        res = llm.chat_json(VLM_SYSTEM + note, f"共 {len(group)} 张图。\n{hint}", images=images)
+    images = [{"path": p, "label": f"第 {j + 1} 张"} for j, p in enumerate(paths)]
+    res = llm.chat_json(VLM_SYSTEM, f"共 {len(group)} 张图。\n{hint}", images=images)
     got = res.get("items")
     if got is None:
         got = [{"text": t} for t in res.get("texts", [])]
@@ -93,16 +91,13 @@ def _ask_once(llm, group, paths, frames=None, boxed=None):
     return got
 
 
-def _ask(llm, group, paths, frames_for=None, boxed=None):
-    """frames_for(这一批里第几处的列表) -> 给这几处的整帧画面（见 _ask_once）；不带画面时为 None。"""
-    boxed = boxed or [False] * len(paths)
-    got = _ask_once(llm, group, paths, frames_for(list(range(len(group)))) if frames_for else None, boxed)
+def _ask(llm, group, paths):
+    got = _ask_once(llm, group, paths)
     for j in borrowed(group, got):
         # 像是串图了：这一张单独再问一次。只有一张图就不可能串，单独问的结果直接用
         # （也可能根本没串：几张图拍的是同一段字、本地识别又认错了，比如片名动画的几帧）
         try:
-            again = _ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None,
-                              [boxed[j]])[0] if len(group) > 1 else {}
+            again = _ask_once(llm, [group[j]], [paths[j]])[0] if len(group) > 1 else {}
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception:
@@ -117,13 +112,12 @@ def _ask(llm, group, paths, frames_for=None, boxed=None):
     return got
 
 
-def _ask_each(llm, group, paths, frames_for=None, boxed=None):
+def _ask_each(llm, group, paths):
     """一批复核失败（返回条数不对、不是 JSON…）时逐条单独问；单独问也失败的那条保留本地结果。"""
-    boxed = boxed or [False] * len(paths)
     out = []
     for j in range(len(group)):
         try:
-            out.append(_ask_once(llm, [group[j]], [paths[j]], frames_for([j]) if frames_for else None, [boxed[j]])[0])
+            out.append(_ask_once(llm, [group[j]], [paths[j]])[0])
         except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
             raise
         except Exception as ex:
@@ -178,191 +172,396 @@ def box_at(e, t):
     return e["rect"]
 
 
-def recrop(frame, e, t, out_dir):
-    """从画面时刻那一帧重新截这处字的特写，用红框框出要转写的字。
-    原来的特写是整段移动范围加一圈边（镜头摇移时会把片名、别处的字截进来，模型就转写了那些字）；
-    这里只截字在那一刻的位置。旧项目没记下那一刻位置、字又挪过的，框不准，返回 None（用原来的特写）。"""
-    import cv2
+# ---------------- 整帧复核 ----------------
 
-    from ..sources.ocr import _imread, _imwrite
 
-    r = box_at(e, t)
-    if r is None or (not e.get("snap_rect") and _moved(e)):
+def plan_moments(todo):
+    """给每处字定一个画面时刻：按截图时刻排，前面已有的时刻里它也在画面上（框对得上）就共用那一帧，否则用自己的截图时刻。
+    返回 {时刻: [在这一刻复核的字]}。"""
+    moments = {}
+    for e in sorted(todo, key=lambda e: (_snap_t(e), e["start"])):
+        t = next((m for m in moments if box_at(e, m) is not None), None)
+        if t is None:
+            t = _snap_t(e)
+            moments[t] = []
+        moments[t].append(e)
+    return moments
+
+
+def _box(b):
+    """模型给的 0~1000 的框换成 0~1；不像框的返回 None。"""
+    try:
+        x0, y0, x1, y1 = (min(1.0, max(0.0, float(v) / 1000)) for v in b)
+    except (TypeError, ValueError):
         return None
-    path = os.path.join(out_dir, f"{e['id']}_{round(t * 1000)}.jpg")
-    if os.path.exists(path):
-        return path
-    img = _imread(frame)
-    if img is None:
+    if x1 - x0 < 0.003 or y1 - y0 < 0.003:
         return None
-    H, W = img.shape[:2]
-    x0, y0, x1, y1 = round(r[0] * W), round(r[1] * H), round(r[2] * W), round(r[3] * H)
-    lh = (x1 - x0 if e.get("vertical") else y1 - y0) / max(1, e.get("lines", 1))
-    pad = max(16, int(lh * 0.8))
-    X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
-    if X1 - X0 < 4 or Y1 - Y0 < 4:
-        return None
-    crop = img[Y0:Y1, X0:X1].copy()
-    g = 4  # 框和字之间留几个像素，不压到字
-    cv2.rectangle(crop, (max(0, x0 - X0 - g), max(0, y0 - Y0 - g)),
-                  (min(X1 - X0 - 1, x1 - X0 + g), min(Y1 - Y0 - 1, y1 - Y0 + g)), (0, 0, 255), 2)
-    os.makedirs(out_dir, exist_ok=True)
-    return path if _imwrite(path, crop) else None
+    return [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
 
 
-def plan_groups(todo, batch, context=False):
-    """分批：每 batch 处一批。带整帧画面时按截图时刻排，再给每处定一个画面时刻（同一批里同一时刻都在画面上的共用一张画面）。
-    返回 [(这一批, 各处的画面时刻 或 None)]。"""
-    if context:
-        todo = sorted(todo, key=lambda e: (_snap_t(e), e["start"]))
+def _area(r):
+    return max(1e-9, (r[2] - r[0]) * (r[3] - r[1]))
+
+
+def overlap(a, b):
+    """两个框重叠部分占小的那个的比例。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix * iy / min(_area(a), _area(b))
+
+
+def _covered(a, b):
+    """框 b 有多少被框 a 盖住。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix * iy / _area(b)
+
+
+def _union(rs):
+    return [min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs)]
+
+
+def _together(a, b):
+    """两条字在时间上大半重叠（同一个标题被切成几块，几块一起出现、一起消失）。"""
+    inter = min(a["end"], b["end"]) - max(a["start"], b["start"])
+    return inter >= 0.5 * min(a["end"] - a["start"], b["end"] - b["start"])
+
+
+def read_items(raw, regions):
+    """模型读出的字：框换成 0~1，去掉中心落在排除区（台标、角标）里的、空的。"""
     out = []
-    for i in range(0, len(todo), batch):
-        group = todo[i:i + batch]
-        if not context:
-            out.append((group, None))
+    for x in raw.get("items") or []:
+        if not isinstance(x, dict):
             continue
-        moments, at = [], []
-        for e in group:
-            t = next((m for m in moments if box_at(e, m) is not None), None)
-            if t is None:
-                t = _snap_t(e)  # 自己的截图时刻：框一定准
-                moments.append(t)
-            at.append(t)
-        out.append((group, at))
+        b, text = _box(x.get("bbox")), (x.get("text") or "").strip()
+        if not b or not norm(text):
+            continue
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        if any(g.get("exclude") and g["rect"][0] <= cx <= g["rect"][2] and g["rect"][1] <= cy <= g["rect"][3]
+               for g in regions):
+            continue
+        out.append({"text": text.replace(" / ", "\n"), "kind": x.get("kind"), "box": b})
     return out
 
 
-def mark_frame(frame, items, nos, t, out_dir, width=640):
-    """整帧画面上框出这几处字、标上编号 nos（编号在框外，不挡字），缩到 width 宽存起来。
-    640 宽一张约 300 token：认字靠特写，整帧画面只用来看字在什么东西上，够了。"""
-    import cv2
-    import numpy as np
-
-    from ..sources.ocr import _imread, _imwrite
-
-    name = hashlib.sha1(f"{frame}|{t}|{[e['id'] for e in items]}|{nos}|{width}".encode()).hexdigest()[:12]
-    path = os.path.join(out_dir, f"{name}.jpg")
-    if os.path.exists(path):
-        return path
-    img = _imread(frame)
-    if img is None:
-        return None
-    H, W = img.shape[:2]
-    if W > width:
-        img = cv2.resize(img, (width, round(H * width / W)), interpolation=cv2.INTER_AREA)
-        H, W = img.shape[:2]
-    th = 2
-    scale = max(0.55, H / 720 * 0.9)
-    for e, no in zip(items, nos):
-        r = box_at(e, t)
-        if r is None:
+def match_moment(items, visible, mine):
+    """一帧上模型读出的字和本地的字按位置对上。
+    visible：[(这一刻在画面上的本地字, 它这一刻的框)]（包括不在这一刻复核的，免得当成漏检）；mine：这一刻复核的字的 id。
+    返回 (groups, misses)：groups = [(合成一条的本地字（第一条留下）, 对上的模型字)]（没对上模型字的组，模型字为空），
+    misses = 和本地哪条都对不上的模型字。
+    每块模型字归重叠最多的那条本地字；几条一起出现的本地字都是和同一块模型字重叠最多（被切开的标题），合成一条。
+    标题的大框顺带盖住下面的字幕不算：字幕和它自己那块模型字重叠得更多。"""
+    hits = [[(overlap(it["box"], b), e) for e, b in visible] for it in items]
+    hits = [[(o, e) for o, e in h if o >= MATCH] for h in hits]
+    best = {}  # 本地字 id → 和它重叠最多的模型字序号
+    for k, h in enumerate(hits):
+        for o, e in h:
+            if e["id"] not in best or o > best[e["id"]][0]:
+                best[e["id"]] = (o, k)
+    by_id = {e["id"]: e for e, _ in visible}
+    groups = []  # [[本地字...], [模型字序号...]]
+    where = {}
+    for i in (i for i in by_id if i in mine):
+        e = by_id[i]
+        k = best.get(i, (0, None))[1]
+        g = next((g for g in groups if k is not None and k in g[2] and all(_together(e, x) for x in g[0])), None)
+        if g is None:
+            g = [[], [], set() if k is None else {k}]
+            groups.append(g)
+        g[0].append(e)
+        where[i] = g
+    misses = []
+    for k, (it, h) in enumerate(zip(items, hits)):
+        if not h:
+            misses.append(it)
             continue
-        c = _COLORS[no % len(_COLORS)]
-        p = th + 2
-        x0, y0 = max(0, round(r[0] * W) - p), max(0, round(r[1] * H) - p)
-        x1, y1 = min(W - 1, round(r[2] * W) + p), min(H - 1, round(r[3] * H) + p)
-        cv2.rectangle(img, (x0, y0), (x1, y1), c, th)
-        lab = str(no + 1)
-        (tw, lh), base = cv2.getTextSize(lab, cv2.FONT_HERSHEY_SIMPLEX, scale, th)
-        bw, bh = tw + 6, lh + base + 4
-        # 标签放框外：上面放不下放下面，再不行放左边
-        if y0 - bh >= 0:
-            lx, ly = min(max(0, x0), W - bw), y0 - bh
-        elif y1 + bh < H:
-            lx, ly = min(max(0, x0), W - bw), y1 + 1
-        else:
-            lx, ly = max(0, x0 - bw), y0
-        cv2.rectangle(img, (lx, ly), (lx + bw, ly + bh), c, -1)
-        cv2.putText(img, lab, (lx + 3, ly + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th, cv2.LINE_AA)
-    os.makedirs(out_dir, exist_ok=True)
-    return path if _imwrite(path, np.ascontiguousarray(img)) else None
+        o, e = max(h, key=lambda x: x[0])
+        if e["id"] in where:
+            where[e["id"]][1].append(it)
+    return [(sorted(evs, key=lambda e: (e["start"], e["rect"][1])), its) for evs, its, _ in groups], misses
 
 
-def _grab(video, groups, out_dir, width=1920):
-    """各处画面时刻的整帧画面。返回 {时刻: 路径}。
-    截 1920 宽：重新截的特写比识别时（720 高）清楚一些，小字也看得清；发给模型的整帧画面另外缩小。"""
-    import time
-
-    from ..sources import media
-
-    times = sorted({t for _, at in groups for t in at or []})
-    t0 = time.time()
-    got = media.grab_frames(str(video), times, out_dir, width=width, exact=True,
-                            on_progress=lambda n, total: progress(n, total, "截取画面"))
-    log(f"  截取画面 {len(got)} 张（用时 {time.time() - t0:.0f}s）")
-    return {t: got.get(round(t, 3)) for t in times}
+def _reading_order(items, vertical):
+    if vertical:
+        return sorted(items, key=lambda it: -it["box"][2])
+    return sorted(items, key=lambda it: ((it["box"][1] + it["box"][3]) / 2, it["box"][0]))
 
 
-def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=False, frame_width=640, boxed=False):
-    """context：每处字附上它所在时刻的整帧画面（框出位置、标上编号），判断是叠加字幕还是实物上的字准得多。
-    boxed：特写从截图那一帧重新截（只截字那一刻的位置），并用红框框出要转写的字。
-    batch：几处一批问。一批越多越省，但模型偶尔会把同一批另一张图上的字写过来（串图）；1 = 每处单独问。"""
-    batch = max(1, int(batch))
+def _line_px(rect, text, vertical, aspect):
+    """每行（竖排是每列）字的大小，按画面高的比例算。"""
+    n = max(1, len([ln for ln in text.split("\n") if ln.strip()]))
+    return ((rect[2] - rect[0]) * aspect if vertical else rect[3] - rect[1]) / n
+
+
+def _differs(model, local):
+    """模型读的和本地读的差很多（本地认出的字够多、又不在模型的结果里）。"""
+    a, b = norm(model), norm(local)
+    return len(b) >= 3 and b not in a and sim(model, local) < 50
+
+
+class _Frame:
+    """一个画面时刻：从原视频按原分辨率截的整帧，缩小给模型看，按需截特写。"""
+
+    def __init__(self, path, out_dir, width):
+        from ..sources.ocr import _imread
+
+        self.img = _imread(str(path)) if path else None
+        self.path, self.dir, self.width = path, out_dir, width
+
+    def scaled(self, name):
+        import cv2
+
+        from ..sources.ocr import _imwrite
+
+        H, W = self.img.shape[:2]
+        img = self.img if W <= self.width else cv2.resize(self.img, (self.width, round(H * self.width / W)),
+                                                          interpolation=cv2.INTER_AREA)
+        p = os.path.join(self.dir, f"{name}.jpg")
+        return p if _imwrite(p, img) else None
+
+    def crop(self, r, name):
+        """这一块字的特写：原分辨率，四周多留一圈（左右留字宽的 15%，上下留字高的 30%），太宽的缩到 CROP_MAX_W。"""
+        import cv2
+
+        from ..sources.ocr import _imwrite
+
+        H, W = self.img.shape[:2]
+        mx, my = (r[2] - r[0]) * 0.15 + 0.01, (r[3] - r[1]) * 0.3 + 0.01
+        X0, Y0 = max(0, int((r[0] - mx) * W)), max(0, int((r[1] - my) * H))
+        X1, Y1 = min(W, int((r[2] + mx) * W)), min(H, int((r[3] + my) * H))
+        if X1 - X0 < 4 or Y1 - Y0 < 4:
+            return None
+        c = self.img[Y0:Y1, X0:X1]
+        if c.shape[1] > CROP_MAX_W:
+            c = cv2.resize(c, (CROP_MAX_W, round(c.shape[0] * CROP_MAX_W / c.shape[1])), interpolation=cv2.INTER_AREA)
+        p = os.path.join(self.dir, f"{name}.jpg")
+        return p if _imwrite(p, c) else None
+
+
+def _recheck(llm, frame, r, cands, name):
+    """截特写再问一次。返回 {"text", "kind"}（问不出来返回 {}）。"""
+    p = frame.crop(r, name) if frame.img is not None else None
+    if not p:
+        return {}
+    cand = "\n".join(f"候选 {i + 1}：{c.replace(chr(10), ' / ')}" for i, c in enumerate(dict.fromkeys(c for c in cands if c)))
+    from .client import FatalLLMError
+
+    try:
+        g = llm.chat_json(RECHECK_SYSTEM, cand or "（没有候选）", images=[{"path": p, "label": "特写", "detail": "high"}])
+    except (Cancelled, FatalLLMError):
+        raise
+    except Exception as ex:
+        log(f"  特写再问失败：{ex}")
+        return {}
+    return {"text": (g.get("text") or "").strip().replace(" / ", "\n"),
+            **({"kind": g["kind"]} if g.get("kind") in ("caption", "scene") else {})}
+
+
+def _merge_into(keep, others):
+    """被切开的几块合成一条：时间取并集，每块字的框和文字都留着。"""
+    keep["start"] = round(min(e["start"] for e in [keep, *others]), 3)
+    keep["end"] = round(max(e["end"] for e in [keep, *others]), 3)
+    keep["pieces"] = [p for e in [keep, *others] for p in e.get("pieces") or []]
+    keep["merged"] = [*keep.get("merged", []), *[e["id"] for e in others]]
+
+
+def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4):
+    """size：原视频的 (宽, 高)，特写按这个分辨率截。没有原视频时退回只看识别时截的特写（一批 batch 张）。"""
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir)
-    todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
+    todo = [e for e in events if e.get("crop") and "text_local" not in e]
+    frames = bool(video and os.path.exists(str(video)) and size)
+    # 台标、振假名不用复核。按画面复核时，判成杂讯的（很短、一闪而过）也看：本地常常只认出花字标题的一小块
+    # （「森のなかのふたり」只认出「たり」、只闪了半秒），模型看整帧能读出整个标题；看不出字的照旧当杂讯，不再追问
+    todo = [e for e in todo if not e.get("prefiltered") or (frames and e.get("dropped") == "junk")]
     log(f"视觉大模型复核画面字：{len(todo)} 条")
-    has_video = bool(todo and video and os.path.exists(str(video)))
-    context, boxed = context and has_video, boxed and has_video
-    groups = plan_groups(todo, batch, context or boxed)
-    frames = _grab(video, groups, os.path.join(workdir, "crops", "frames")) if context or boxed else {}
-    if context:
-        log("  复核时附上整帧画面，看字是在实物上还是叠加的字幕")
-    marked_dir = os.path.join(workdir, "crops", "marked")
-    recrop_dir = os.path.join(workdir, "crops", "recrop")
-    n_boxed = 0
-    short = []  # 复核结果只有半截的：换一帧重新截图再问
-    n_done = 0
-    for gi, (group, at) in enumerate(groups):
+    if not todo:
+        return events
+    try:
+        if frames:
+            return _refine_frames(llm, events, todo, cfg, workdir, video, size)
+        return _refine_crops(llm, events, todo, workdir, batch)
+    except FatalLLMError as ex:
+        _fatal(ex)
+        return events
+    finally:
+        for d in ("frames", "read"):
+            shutil.rmtree(os.path.join(workdir, "crops", d), ignore_errors=True)
+
+
+def _fatal(ex):
+    log(f"  {ex}")
+    log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
+
+
+def _refine_frames(llm, events, todo, cfg, workdir, video, size):
+    from .client import FatalLLMError
+
+    W, H = size
+    aspect = W / max(1, H)
+    width = cfg.ocr.refine_frame_width if cfg.ocr.refine_frame_width >= 1024 else 1280
+    regions = [g.model_dump() for g in cfg.ocr.regions]
+    moments = plan_moments(todo)
+    times = sorted(moments)
+    log(f"  按画面复核：{len(times)} 个画面时刻，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截")
+    frame_dir = os.path.join(workdir, "crops", "frames")
+    read_dir = os.path.join(workdir, "crops", "read")
+    os.makedirs(read_dir, exist_ok=True)
+    gone, added, short = set(), [], []
+    n = {"read": 0, "matched": 0, "merged": 0, "missed": 0, "recheck": 0, "unseen": 0, "retimed": 0}
+    chunk = 12  # 原分辨率的整帧一张几 MB：一次截一小批，用完就删
+    try:
+        _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
+                     gone, added, short, n, workdir)
+    except FatalLLMError as ex:  # 已经复核的留着结果（合并、补出的照样生效），没复核的保持本地结果
+        _fatal(ex)
+        short = []
+    progress(len(times), len(times), "复核")
+    n["missed"] = len(added)
+    log(f"  模型读到 {n['read']} 块字：对上本地 {n['matched']} 条（其中 {n['retimed']} 条本地只认出一小块、重新找了时间），"
+        f"合并本地切开的 {n['merged']} 块，补出本地漏掉的 {n['missed']} 处；模型没读到的 {n['unseen']} 条；截特写再问 {n['recheck']} 次")
+    if short:
+        _retry_short(llm, short, workdir, video, 4, float(cfg.ocr.fps))
+    events[:] = sorted([e for e in events if e["id"] not in gone] + added, key=lambda e: (e["start"], e["rect"][1]))
+    return events
+
+
+def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
+                 gone, added, short, n, workdir):
+    from ..sources import media
+    from ..sources.ocr import _zone, track_region
+    from .client import FatalLLMError
+
+    for ci in range(0, len(times), chunk):
+        part = times[ci:ci + chunk]
+        got = media.grab_frames(str(video), part, frame_dir, width=W, exact=True, quality=2)
+        for ti, t in enumerate(part):
+            check_cancel()
+            progress(ci + ti, len(times), "复核")
+            mine_events = [e for e in moments[t] if e["id"] not in gone]
+            frame = _Frame(got.get(round(t, 3)), read_dir, width)
+            key = f"{round(t * 1000):09d}"
+            if frame.img is None:  # 截不出画面：这几条保持本地结果
+                for e in mine_events:
+                    e["text_local"] = e["text"]
+                continue
+            try:
+                raw = llm.chat_json(READ_SYSTEM, "这是画面。", images=[{"path": frame.scaled(key), "label": "画面", "detail": "high"}])
+                items = read_items(raw, regions)
+            except (Cancelled, FatalLLMError):
+                raise
+            except Exception as ex:
+                log(f"  {t:.1f}s 这一帧复核失败（{ex}），逐条截特写复核")
+                items = None
+            visible = [(e, b) for e in events if e["id"] not in gone and (b := box_at(e, t)) is not None]
+            mine = {e["id"] for e in mine_events}
+            if items is None:
+                groups, misses = [([e], []) for e in mine_events], []
+            else:
+                n["read"] += len(items)
+                groups, misses = match_moment(items, visible, mine)
+            boxes = dict((e["id"], b) for e, b in visible)
+            for evs, its in groups:
+                keep = evs[0]
+                local = "\n".join(e["text"] for e in evs)
+                keep["text_local"] = local
+                if len(evs) > 1:
+                    _merge_into(keep, evs[1:])
+                    gone.update(e["id"] for e in evs[1:])
+                    n["merged"] += len(evs) - 1
+                    log(f"  {keep['id']}：和 {'、'.join(e['id'] for e in evs[1:])} 是同一块字（本地切开了），合成一条")
+                if not its and keep.get("dropped") == "junk":
+                    continue  # 判成杂讯的、模型也没读到：照旧当杂讯
+                if not its:  # 模型没读到这处字：截特写再问；还是读不出就保持本地结果
+                    n["unseen"] += 1
+                    g = _recheck(llm, frame, boxes[keep["id"]], [local], f"{key}_{keep['id']}")
+                    n["recheck"] += bool(g)
+                    if truncated(g.get("text") or "", local):
+                        short.append(keep)
+                        g = {"kind": g["kind"]} if g.get("kind") else {}
+                    _apply(keep, g)
+                    continue
+                n["matched"] += 1
+                its = _reading_order(its, keep.get("vertical"))
+                text = "\n".join(it["text"] for it in its)
+                kind = max(its, key=lambda it: _area(it["box"]))["kind"]
+                box = _union([it["box"] for it in its])
+                if _differs(text, local) or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
+                    g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
+                    n["recheck"] += bool(g)
+                    if g.get("text"):
+                        text = g["text"]
+                    kind = g.get("kind", kind)
+                if truncated(text, local):  # 这一帧字还没出全（逐字出现的字幕）：换一帧再问
+                    short.append(keep)
+                    if kind in ("caption", "scene"):
+                        keep["kind"] = kind
+                    continue
+                _apply(keep, {"text": text, "kind": kind})
+                keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
+                if not keep.get("moving"):  # 位置用模型框的（本地框常常不全）；滚动的字只有那一刻的框，不动
+                    mine_box = _union([boxes[e["id"]] for e in evs])
+                    if _covered(mine_box, box) < 0.6:
+                        # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
+                        # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
+                        start, end = track_region(str(video), t, box, aspect)
+                        keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
+                        n["retimed"] += 1
+                    keep["rect_local"] = keep["rect"]
+                    keep["rect"] = keep["snap_rect"] = box
+                    keep["zone"] = _zone(box, keep.get("vertical"))
+            for it in misses:
+                b = it["box"]
+                if max(b[2] - b[0], b[3] - b[1]) < TINY_MISS:
+                    continue
+                if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
+                    continue  # 前面的画面时刻已经补过这块字
+                if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH
+                       for e in events if e["id"] not in gone):
+                    continue  # 本地有（滚动的字这一刻的框对不上，按整段范围算）
+                vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
+                text, kind = it["text"], it["kind"]
+                if _line_px(b, text, vertical, aspect) < SMALL_LINE:
+                    g = _recheck(llm, frame, b, [text], f"{key}_m{len(added)}")
+                    n["recheck"] += bool(g)
+                    text, kind = g.get("text") or text, g.get("kind", kind)
+                start, end = track_region(str(video), t, b, aspect)
+                ev = {"id": f"v{len(added) + 1}", "start": start, "end": end, "text": text, "text_local": "",
+                      "rect": b, "vertical": vertical, "lines": len([ln for ln in text.split("\n") if ln.strip()]) or 1,
+                      "zone": _zone(b, vertical), "score": 1.0, "crop_rect": b, "snap_t": round(t, 3), "snap_rect": b,
+                      "pieces": [[*b, text]], "found_by": "vlm",
+                      **({"kind": kind} if kind in ("caption", "scene") else {})}
+                p = frame.crop(b, f"{key}_v{len(added) + 1}")
+                if p:
+                    dst = os.path.join(workdir, "crops", f"{ev['id']}.jpg")
+                    shutil.copyfile(p, dst)
+                    ev["crop"] = os.path.relpath(dst, workdir).replace("\\", "/")
+                added.append(ev)
+                log(f"  补出本地漏掉的字（{start:.1f}–{end:.1f}s）：{text.replace(chr(10), ' / ')}")
+        shutil.rmtree(frame_dir, ignore_errors=True)
+
+
+def _refine_crops(llm, events, todo, workdir, batch):
+    """没有原视频：一批几张识别时截的特写，附本地 OCR 参考。"""
+    from .client import FatalLLMError
+
+    batch = max(1, int(batch))
+    for i in range(0, len(todo), batch):
         check_cancel()
-        progress(n_done, len(todo), "复核", every=0)
-        n_done += len(group)
-
-        def frames_for(idx, group=group, at=at):
-            """这几处（这一批里的序号）的整帧画面：同一时刻的共用一张，编号按 idx 里的先后。"""
-            out = []
-            for t in dict.fromkeys(at[j] for j in idx):
-                mine = [k for k, j in enumerate(idx) if at[j] == t]
-                f = frames.get(t) and mark_frame(frames[t], [group[idx[k]] for k in mine], mine, t, marked_dir,
-                                                 width=frame_width)
-                if f:
-                    out.append((f, mine))
-            return out
-
-        paths, box = [], []
-        for j, e in enumerate(group):
-            p = recrop(frames[at[j]], e, at[j], recrop_dir) if boxed and frames.get(at[j]) else None
-            paths.append(p or os.path.join(workdir, e["crop"]))
-            box.append(bool(p))
-        n_boxed += sum(box)
+        progress(i, len(todo), "复核", every=0)
+        group = todo[i:i + batch]
+        paths = [os.path.join(workdir, e["crop"]) for e in group]
         try:
-            got = _ask(llm, group, paths, frames_for if context else None, box)
-        except FatalLLMError as ex:
-            log(f"  {ex}")
-            log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
-            return events
-        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            got = _ask(llm, group, paths)
+        except (Cancelled, FatalLLMError):
             raise
         except Exception as ex:
-            log(f"  第 {gi + 1} 批复核失败（{ex}），逐条单独复核")
-            got = _ask_each(llm, group, paths, frames_for if context else None, box)
+            log(f"  第 {i // batch + 1} 批复核失败（{ex}），逐条单独复核")
+            got = _ask_each(llm, group, paths)
         for e, g in zip(group, got):
             e["text_local"] = e["text"]
-            if truncated(g.get("text") or "", e["text"]):
-                short.append(e)
-                if g.get("kind") in ("caption", "scene"):
-                    e["kind"] = g["kind"]
-                continue
             _apply(e, g)
-    if boxed:
-        log(f"  {n_boxed} 条用截图那一帧重新截了特写、框出了要转写的字"
-            + (f"（另外 {len(todo) - n_boxed} 条是旧的识别结果、字又挪过，用原来的特写）" if n_boxed < len(todo) else ""))
-    if short:
-        _retry_short(llm, short, workdir, video, batch, float(cfg.ocr.fps))
-    # 整帧画面一批一张、占地方，复核完删掉（中途停止的留着，下次接着用；重新截出来的一样，请求缓存照样命中）
-    for d in ("frames", "marked", "recrop"):
-        shutil.rmtree(os.path.join(workdir, "crops", d), ignore_errors=True)
     return events
 
 
