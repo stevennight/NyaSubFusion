@@ -20,6 +20,9 @@ import type { Candidate, Cue, FusedItem } from "../types";
 import { useStore } from "../store";
 import { fmt, fmtHms } from "../util";
 
+const ROW_H = 22;  // 参考轨分行时每多一行加的高度
+const MAX_ROWS = 3;
+
 type Span = [number, number];
 /** 「译文」条的新时间：和审校面板里改时间同一个接口（editCue 的 start / end / parts） */
 export type CueTimes = { start: number; end: number; parts?: Span[] };
@@ -327,6 +330,19 @@ export function Timeline(p: Props) {
     ));
   };
   const blk = (x: { start: number; end: number }) => ({ left: x.start * p.pps, width: Math.max(6, (x.end - x.start) * p.pps - 2) });
+  // 参考轨上时间重叠的块分行放，不互相盖住（同一处字本地切成几块、画面上同时有几处字）；最多 MAX_ROWS 行，再多的叠在最后一行
+  const rowsOf = (items: Candidate[]) => {
+    const ends: number[] = [], row: Record<string, number> = {};
+    for (const c of [...items].sort((a, b) => a.start - b.start)) {
+      let r = ends.findIndex((e) => e <= c.start + 0.01);
+      if (r < 0) r = ends.length < MAX_ROWS ? ends.length : MAX_ROWS - 1;
+      ends[r] = Math.max(ends[r] ?? 0, c.end);
+      row[c.id] = r;
+    }
+    return { row, n: Math.max(1, ends.length) };
+  };
+  const rows = { sc: rowsOf(p.subs), so: rowsOf(p.ocr), sa: rowsOf(p.asr) };
+  const laneH = (n: number) => ({ height: 26 + (n - 1) * ROW_H });
   const sel = (srcId: string) => (cueOf.current[srcId] === p.selected ? "sel" : "");
   const clickCand = (c: Candidate) => {
     if (dragged()) return;
@@ -334,10 +350,11 @@ export function Timeline(p: Props) {
     if (cid) p.onSelect(cid);
     else p.onDropped(c);
   };
-  const lane = (cls: string, items: Candidate[], kind: string) => (
-    <div className="lane" style={{ width: W }}>
+  const lane = (cls: "sc" | "so" | "sa", items: Candidate[], kind: string) => (
+    <div className="lane" style={{ width: W, ...laneH(rows[cls].n) }}>
       {items.map((c) => (
-        <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""}`} style={blk(c)}
+        <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""}`}
+             style={{ ...blk(c), top: 3 + rows[cls].row[c.id] * ROW_H }}
              title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.ruby_of ? `（${c.ruby_of} 的注音）` : ""}${c.dup_of ? " · 与字幕重复" : ""}`}
              onClick={() => clickCand(c)}
              onContextMenu={(e) => {
@@ -393,9 +410,9 @@ export function Timeline(p: Props) {
         </div>
         <div className="wv"><i style={{ background: "#666" }} />波形</div>
         {showRef && <>
-          <div><i style={{ background: "var(--c-sub)" }} />字幕</div>
-          <div><i style={{ background: "var(--c-ocr)" }} />画面字</div>
-          <div><i style={{ background: "var(--c-asr)" }} />语音</div>
+          <div style={laneH(rows.sc.n)}><i style={{ background: "var(--c-sub)" }} />字幕</div>
+          <div style={laneH(rows.so.n)}><i style={{ background: "var(--c-ocr)" }} />画面字</div>
+          <div style={laneH(rows.sa.n)}><i style={{ background: "var(--c-asr)" }} />语音</div>
           <div><i style={{ background: "var(--c-fuse)" }} />原文</div>
         </>}
         <div><i style={{ background: "var(--c-tr)" }} />译文</div>

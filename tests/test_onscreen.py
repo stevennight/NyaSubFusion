@@ -657,3 +657,19 @@ def test_track_region_follows_overlay_on_busy_background(tmp_path):
     out.release()
     start, end = track_region(path, 3.5, [0.17, 0.68, 0.83, 0.86], aspect=16 / 9, window=8)
     assert abs(start - 2.0) <= 0.4 and abs(end - 5.0) <= 0.4
+
+
+def test_refine_folds_duplicate_pieces_of_same_text():
+    """本地切出的一小块单独复核成了整块字、或者只剩标题的一个字：并进认全的那条；不相干的、杂讯里的不并。"""
+    from nyasub.llm.refine import fold_dups
+
+    full = {"id": "o146", "start": 1199.07, "end": 1207.77, "text": "森のなかのふたり", "rect": [0.458, 0.731, 0.956, 0.862]}
+    dup = {"id": "o147", "start": 1198.92, "end": 1207.72, "text": "森のなかのふたり", "rect": [0.459, 0.733, 0.952, 0.863]}
+    one = {"id": "o148", "start": 1203.17, "end": 1207.37, "text": "森", "rect": [0.459, 0.732, 0.538, 0.806]}
+    other = {"id": "o149", "start": 1200.0, "end": 1206.0, "text": "二人", "rect": [0.5, 0.75, 0.6, 0.8]}
+    junk = {"id": "o200", "start": 1380.4, "end": 1384.2, "text": "シ\n16\n1\nルネサ", "rect": [0.308, 0.588, 0.359, 0.999], "dropped": "junk"}
+    good = {"id": "v10", "start": 1380.4, "end": 1384.2, "text": "シ\n16\n1", "rect": [0.31, 0.584, 0.343, 0.774]}
+    ev = [full, dup, one, other, junk, good]
+    assert fold_dups(ev) == 2
+    assert [e["id"] for e in ev] == ["o146", "o149", "o200", "v10"]
+    assert full["start"] == 1198.92 and set(full["merged"]) == {"o147", "o148"}

@@ -367,6 +367,27 @@ def _merge_into(keep, others):
     keep["merged"] = [*keep.get("merged", []), *[e["id"] for e in others]]
 
 
+def fold_dups(events):
+    """复核完同一块字还剩几条的，并成一条：本地切出的一小块在另一个画面时刻单独复核，模型读出整块、按整块重新找了时间，
+    就和本地认全的那条重复了；或者模型那一刻只读出标题的一个字。条件：框大半落在另一条里、时间大半重叠、字是它的一部分。
+    返回被并掉的条数。"""
+    keep, gone = sorted(events, key=lambda e: -_area(e["rect"])), set()
+    for i, big in enumerate(keep):
+        if big["id"] in gone:
+            continue
+        for small in keep[i + 1:]:
+            if (small["id"] in gone or big.get("moving") or small.get("moving") or not norm(small["text"])
+                    or (big.get("dropped") and not small.get("dropped"))  # 不把有用的并进杂讯里
+                    or _covered(big["rect"], small["rect"]) < 0.8 or not _together(big, small)
+                    or norm(small["text"]) not in norm(big["text"])):
+                continue
+            _merge_into(big, [small])
+            gone.add(small["id"])
+            log(f"  {big['id']}：{small['id']}（{small['text'].replace(chr(10), ' / ')}）是同一块字，合成一条")
+    events[:] = [e for e in events if e["id"] not in gone]
+    return len(gone)
+
+
 def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, unread=None):
     """size：原视频的 (宽, 高)，特写按这个分辨率截。没有原视频时退回只看识别时截的特写（一批 batch 张）。
     unread：本地找到位置但认不出字的地方（sources/ocr.scan），有原视频时也去看。"""
@@ -443,6 +464,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     if short:
         _retry_short(llm, short, workdir, video, 4, float(cfg.ocr.fps))
     events[:] = sorted([e for e in events if e["id"] not in gone] + added, key=lambda e: (e["start"], e["rect"][1]))
+    fold_dups(events)
     return events
 
 
