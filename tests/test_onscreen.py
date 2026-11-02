@@ -673,3 +673,16 @@ def test_refine_folds_duplicate_pieces_of_same_text():
     assert fold_dups(ev) == 2
     assert [e["id"] for e in ev] == ["o146", "o149", "o200", "v10"]
     assert full["start"] == 1198.92 and set(full["merged"]) == {"o147", "o148"}
+
+
+def test_music_mark_subtitle_does_not_stretch_cue():
+    """「♬〜」字幕一挂十几秒，和片名并成一条时时间按片名的；只有它自己时照旧。"""
+    from nyasub.llm.translate import make_cue
+
+    music = {"id": "c133", "src": "subs", "start": 1193.334, "end": 1209.134, "text": "♬〜"}
+    title = {"id": "o146", "src": "info", "start": 1199.065, "end": 1207.765, "text": "森のなかのふたり",
+             "rect": [0.458, 0.731, 0.956, 0.862], "ocr_score": 0.985}
+    c = make_cue([music, title], "森のなかのふたり", "森林中的两人", "zh-Hans", "info", "ja")
+    assert (c["start"], c["end"]) == (1199.065, 1207.765) and c["sources"] == ["c133", "o146"]
+    c = make_cue([music], "♬〜", "♬～", "zh-Hans", "song", "ja")
+    assert (c["start"], c["end"]) == (1193.334, 1209.134)

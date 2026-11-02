@@ -37,9 +37,19 @@ def fix_type(typ, srcs):
     return typ
 
 
+def _timing(srcs):
+    """定时间用的来源：没说话的字幕（♬〜、（笑い声））常常一挂十几秒，和别的来源并在一起时不算，免得把整条拉长
+    （「♬〜」和片名并成一条，片名没出来译文就先出来了）。"""
+    from ..fusion.fuse import spoken
+
+    said = [s for s in srcs if s["src"] not in SPEECH or spoken(s["text"])]
+    return said or srcs
+
+
 def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
     typ = fix_type(typ, srcs)
-    cue = {"start": min(s["start"] for s in srcs), "end": max(s["end"] for s in srcs),
+    ts = _timing(srcs)
+    cue = {"start": min(s["start"] for s in ts), "end": max(s["end"] for s in ts),
            "type": typ or "dialogue", "sources": [s["id"] for s in srcs],
            "onscreen": any(s["src"] in ("telop", "info") for s in srcs),
            "orig": {"lang": src_lang, "text": orig}, "tr": {tgt: {"text": tr}} if tr else {}}
@@ -47,7 +57,7 @@ def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
         geo = info_geometry(srcs)
         if geo:
             cue["rect"] = geo["rect"]
-            if all(s["src"] in SCREEN for s in srcs):  # 只有画面字时，时间也只看主要的那几条
+            if all(s["src"] in SCREEN for s in ts):  # 只有画面字时，时间也只看主要的那几条
                 cue["start"], cue["end"] = geo["start"], geo["end"]
     flags = []
     if all(s["src"] == "asr" for s in srcs):
