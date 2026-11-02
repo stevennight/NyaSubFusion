@@ -686,3 +686,45 @@ def test_music_mark_subtitle_does_not_stretch_cue():
     assert (c["start"], c["end"]) == (1199.065, 1207.765) and c["sources"] == ["c133", "o146"]
     c = make_cue([music], "♬〜", "♬～", "zh-Hans", "song", "ja")
     assert (c["start"], c["end"]) == (1193.334, 1209.134)
+
+
+def test_refine_miss_found_by_local_a_moment_later_not_added(tmp_path, monkeypatch):
+    """模型在某一刻读到的字，本地隔一下（0.25 秒后）才认出来：不另补一条（找不到时间时按前后各 1 秒，译文会提前出来），
+    本地那条的开始放宽到这一刻；同一位置换了一句的照样补。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (round(t - 1, 3), round(t + 1, 3)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    bottle = {"id": "o619", "start": 2367.565, "end": 2368.165, "snap_t": 2367.715, "rect": [0.2852, 0.7722, 0.325, 0.8042],
+              "text": "BACARDI", "vertical": False, "lines": 1, "crop": "crops/o619.jpg", "pieces": []}
+    line = {"id": "o620", "start": 2367.965, "end": 2371.765, "snap_t": 2368.115, "rect": [0.364, 0.844, 0.631, 0.978],
+            "text": "ここがないと多分\nだめになると思う", "vertical": False, "lines": 2, "pieces": [], "text_local": "x"}
+    said = "ここがないと多分 / だめになると思う"
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": "BACARDI", "kind": "scene", "bbox": [285, 772, 325, 804]},
+                                  {"text": said, "kind": "caption", "bbox": [363, 844, 635, 975]}]}
+            return {"text": "BACARDI", "kind": "scene"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr([bottle, line], Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    assert not [e for e in out if e.get("found_by") == "vlm"]
+    assert line["start"] == 2367.715 and line["end"] == 2371.765
+
+    other = dict(line, id="o621", text="居場所がないと思う", start=2367.965)
+    bottle.pop("text_local", None)
+    out = refine.refine_ocr([dict(bottle), other], Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    assert [e["text"] for e in out if e.get("found_by") == "vlm"] == ["ここがないと多分\nだめになると思う"]

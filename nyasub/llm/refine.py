@@ -60,6 +60,7 @@ VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张�
 MATCH = 0.3        # 两个框重叠部分占小的那个的比例，到这么多算同一处字
 SMALL_LINE = 0.035  # 每行字高不到画面高的这么多（720p 约 25 像素）：整帧画面上看不清，截特写再问
 TINY_MISS = 0.04   # 本地漏掉的字，框的长边不到画面的这么多（车牌、远处的小标签）：不补
+NEAR_T = 1.0       # 模型在某一刻读到、本地这块字前后这么多秒内才有的：是同一块字（本地晚一点 / 早一点认出来）
 CROP_MAX_W = 1600  # 特写太宽就缩到这么宽（再宽只是多花 token）
 
 
@@ -564,6 +565,13 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH
                        for e in events if e["id"] not in gone):
                     continue  # 本地有（滚动的字这一刻的框对不上，按整段范围算）
+                late = next((e for e in events if e["id"] not in gone and e["start"] - NEAR_T <= t <= e["end"] + NEAR_T
+                             and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH and sim(it["text"], e["text"]) >= 80), None)
+                if late:
+                    # 本地也有这块字，只是隔一下才认出来（刚淡入、本地按间隔取帧）：不另补一条（另补的那条找不到时间时
+                    # 按前后各 1 秒算，字没出来译文就先出来了），本地那条的时间放宽到这一刻
+                    late["start"], late["end"] = round(min(late["start"], t), 3), round(max(late["end"], t), 3)
+                    continue
                 vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
                 text, kind = it["text"], it["kind"]
                 if _line_px(b, text, vertical, aspect) < SMALL_LINE:
