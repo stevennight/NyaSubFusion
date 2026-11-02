@@ -288,8 +288,9 @@ HLS_DIR = "preview"   # media/preview/index.m3u8 + seg_00000.ts …：边转边�
 HLS_SECONDS = 4
 
 
-def hls_state(out_dir):
-    """预览分段的情况：{"segments": 已转好的段数, "seconds": 已转好的时长, "complete": 是否转完}。"""
+def hls_state(out_dir, duration=0.0):
+    """预览分段的情况：{"segments": 已转好的段数, "seconds": 已转好的时长, "complete": 是否转完}。
+    duration：视频时长。ffmpeg 半路出错也会写上结束标记，转出来的比视频短很多的不算转完（旧版留下的这种要重转）。"""
     from pathlib import Path
 
     pl = Path(out_dir) / "index.m3u8"
@@ -297,7 +298,8 @@ def hls_state(out_dir):
         return {"segments": 0, "seconds": 0.0, "complete": False}
     text = pl.read_text(encoding="utf-8", errors="replace")
     secs = [float(x.split(":", 1)[1].rstrip(",")) for x in text.splitlines() if x.startswith("#EXTINF:")]
-    return {"segments": len(secs), "seconds": round(sum(secs), 1), "complete": "#EXT-X-ENDLIST" in text}
+    done = "#EXT-X-ENDLIST" in text and not (duration and sum(secs) < duration - 30)
+    return {"segments": len(secs), "seconds": round(sum(secs), 1), "complete": done}
 
 
 def make_hls(path, out_dir, vinfo, duration=0.0, on_progress=None, cancel=None, log=None):
@@ -325,10 +327,12 @@ def make_hls(path, out_dir, vinfo, duration=0.0, on_progress=None, cancel=None, 
         rc, tail, done = run_ffmpeg(cmd, duration, on_progress, cancel, cwd=str(out_dir))
         if rc == 0:
             return name
-        if done >= 1 or i + 1 == len(attempts):  # 做到一半才失败：不是编码器的问题，换做法也没用
+        # 做到一半才失败一般不是编码器的问题，换做法也没用；显卡解码除外：有的片源转了几秒显卡解码就不行了，换 CPU 解码
+        if (done >= 1 and not pre) or i + 1 == len(attempts):
             break
         if log:
             log(f"{name} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
+    shutil.rmtree(out_dir, ignore_errors=True)  # 失败留下的播放列表也带结束标记，不清掉下次会当成转好了
     raise RuntimeError(f"生成预览视频失败：{tail[-300:]}")
 
 

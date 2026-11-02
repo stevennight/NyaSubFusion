@@ -250,7 +250,7 @@ def create_app(token: str | None = None) -> FastAPI:
             "broadcast_check": bc_check,
             "queued": queue.waiting(pid),  # 还在任务队列里排队：{"item", "kind", "ahead"}
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
-                                                or media.hls_state(proj.media(media.HLS_DIR))["complete"]
+                                                or media.hls_state(proj.media(media.HLS_DIR), float(meta.get("duration") or 0))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),
         }
 
@@ -1542,8 +1542,8 @@ def create_app(token: str | None = None) -> FastAPI:
         if not info.get("video"):
             return {"kind": "none", "status": "failed", "error": "没有视频画面"}
         out = proj.media(media.HLS_DIR)
-        st = media.hls_state(out)
         total = float(info.get("duration") or 0)
+        st = media.hls_state(out, total)
         if st["complete"]:
             return {"kind": "hls", "status": "ready", **st, "done": total, "total": total}
         job = proxy_jobs.get(pid)

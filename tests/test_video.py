@@ -193,6 +193,39 @@ def test_proxy_chains_are_8bit_and_halve_high_fps(monkeypatch):
     assert names[0].startswith("显卡") and "x264" in names[-1]
 
 
+def test_hls_gpu_decode_failing_midway_falls_back_to_cpu(monkeypatch, tmp_path):
+    """有的片源显卡解码转了几秒就出错：换 CPU 解码重转；都失败时不留带结束标记的半截播放列表。"""
+    from nyasub.sources import media
+
+    monkeypatch.setattr(media, "_need", lambda *a: None)
+    monkeypatch.setattr(media, "stream_fps", lambda path, index: (29.97, "30000/1001"))
+    v = {"index": 0, "width": 3840, "height": 2160, "aspect": 16 / 9}
+    out, tried = tmp_path / "preview", []
+
+    def run(cmd, duration, prog, cancel, cwd):
+        tried.append("cuda" in cmd)
+        (tmp_path / "preview" / "index.m3u8").write_text("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n#EXT-X-ENDLIST\n")
+        return (0, "", 3600.0) if len(tried) == 2 else (1, "Error reinitializing filters!", 2.0)
+
+    monkeypatch.setattr(media, "run_ffmpeg", run)
+    assert media.make_hls("x.ts", out, v, 3600.0) == "CPU 解码 + NVENC" and tried == [True, False]
+
+    monkeypatch.setattr(media, "run_ffmpeg", lambda cmd, d, p, c, cwd: (1, "boom", 2.0))
+    with pytest.raises(RuntimeError):
+        media.make_hls("x.ts", out, v, 3600.0)
+    assert not out.exists()
+
+
+def test_hls_short_finished_playlist_not_complete(tmp_path):
+    """旧版半路出错留下的：有结束标记但只有几秒，不算转好（打开时会重转）。"""
+    from nyasub.sources import media
+
+    (tmp_path / "index.m3u8").write_text("#EXTM3U\n#EXTINF:2.068733,\nseg_00000.ts\n#EXT-X-ENDLIST\n")
+    assert media.hls_state(tmp_path)["complete"]
+    assert not media.hls_state(tmp_path, 3541.1)["complete"]
+    assert media.hls_state(tmp_path, 20.0)["complete"]
+
+
 def test_server_builds_hls_preview(monkeypatch, sample):
     """浏览器不能直接放的格式：转成 HLS 分段，转出第一段就能播；转完播放列表写上结束标记。"""
     import time
