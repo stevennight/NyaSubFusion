@@ -114,7 +114,7 @@ function summary(id: StepId, val: (p: string) => unknown, langs: { code: string;
     case "subs": return val("subs.path") ? `指定：${String(val("subs.path")).split(/[\\/]/).pop()}` : "自动找同名 / 内封字幕";
     case "asr": return val("asr.backend") === "api" ? `云端 · ${String(val("asr.api_model") || "默认模型")}` : `本机 · ${String(val("asr.model"))} · 人声分离${SEP_LBL[String(val("asr.separate") ?? "auto")]}`;
     case "ocr": return `${String(val("ocr.fps"))} 帧/秒 · ${((val("ocr.regions") as unknown[]) ?? []).length} 个区域`;
-    case "ocr_refine": return val("ocr.refine") === "vlm" ? "视觉大模型逐处确认" : "关 · 用视觉大模型逐处确认";
+    case "ocr_refine": return val("ocr.refine") === "vlm" ? (val("ocr.refine_mode") === "crop" ? "看本地截图逐处确认" : "看整帧画面逐处确认") : "关 · 用视觉大模型逐处确认";
     case "align": return "按语音校准字幕时间";
     case "fuse": return "几路结果合成一份";
     case "translate": return `${LLM_MODE[String(val("llm.mode") ?? "auto")]}${val("llm.frames") ? " · 附画面" : ""}`;
@@ -355,15 +355,35 @@ function OcrStep({ ctx }: { ctx: StepCtx }) {
 function RefineStep({ ctx }: { ctx: StepCtx }) {
   const { val, set } = ctx;
   const on = val("ocr.refine") === "vlm";
+  const crop = val("ocr.refine_mode") === "crop";
   return (
     <div className="card">
-      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型看画面字出现时的整帧画面，自己找出画面上的字、框出位置、转写，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）；时间按本地识别的结果。本地切开的标题会合成一条，本地漏掉的花字、手写字会补上；字很小或两边读得不一样的，按原视频分辨率截特写再问一次。用「设置 › 用途」里的“画面字复核”接口，接口要支持图片。</div>
+      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型重新看画面字，纠正错字，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。用「设置 › 用途」里的“画面字复核”接口，接口要支持图片。</div>
       <div className="kv" style={on ? undefined : { opacity: 0.45, pointerEvents: "none" }}>
-        <Lbl ctx={ctx} k="ocr.refine_frame_width">整帧画面</Lbl>
-        <div className="row"><select className="inp" value={Number(val("ocr.refine_frame_width") ?? 1280) >= 1024 ? Number(val("ocr.refine_frame_width") ?? 1280) : 1280}
-          onChange={(e) => set("ocr.refine_frame_width", Number(e.target.value))}>
-          <option value={1024}>1024 宽（省）</option><option value={1280}>1280 宽（默认）</option></select>
-          <Tip text="给模型读的整帧画面缩到多宽。每张的输入用量：1024 约 700 token，1280 约 1300。1024 时细字体、小字容易读错；再宽也不会更准（手写字反而乱读）。" /></div>
+        <Lbl ctx={ctx} k="ocr.refine_mode">复核方式</Lbl>
+        <div className="row"><select className="inp" value={crop ? "crop" : "frame"} onChange={(e) => set("ocr.refine_mode", e.target.value)}>
+          <option value="frame">整帧画面（默认）</option><option value="crop">本地截图（省）</option></select>
+          <Tip text={"整帧画面：模型看画面字出现时的整帧画面，自己找字、框位置、转写，时间按本地识别的。本地切开的标题会合成一条，本地漏掉的花字、手写字、书法片名会补上；字很小或两边读得不一样的，按原视频分辨率截特写再问一次。\n本地截图：把本地识别时截的每处字的特写连同本地认出的字几处一批发给模型改错。省，但本地切碎的标题合不起来、漏掉的字补不出来，位置用本地的框，本地读错时模型容易顺着错。"} /></div>
+        {crop ? <>
+          <Lbl ctx={ctx} k="ocr.refine_boxed">特写</Lbl>
+          <label className="row"><input type="checkbox" checked={!!val("ocr.refine_boxed")} onChange={(e) => set("ocr.refine_boxed", e.target.checked)} />框出要转写的字
+            <Tip text="用截图那一刻的画面重新截每处字的特写，并用红框框出要转写的字（镜头移动时，原来的特写会把片名、别处的字截进来）。" /></label>
+          <Lbl ctx={ctx} k="ocr.refine_batch">每批几处</Lbl>
+          <div className="row"><select className="inp" value={Number(val("ocr.refine_batch") ?? 4)} onChange={(e) => set("ocr.refine_batch", Number(e.target.value))}>
+            <option value={1}>1（每处单独问，不会串图）</option><option value={2}>2</option><option value={4}>4（默认）</option><option value={6}>6（最省）</option></select>
+            <Tip text="几处字放在一次请求里问。越多越省；模型偶尔会把同一批另一张图上的字写过来（串图）。" /></div>
+          <Lbl ctx={ctx} k={["ocr.refine_context", "ocr.refine_context_width"]}>整帧画面</Lbl>
+          <div className="row"><select className="inp" value={val("ocr.refine_context") ? Number(val("ocr.refine_context_width") ?? 640) : 0}
+            onChange={(e) => { const w = Number(e.target.value); set("ocr.refine_context", !!w); if (w) set("ocr.refine_context_width", w); }}>
+            <option value={0}>不附</option><option value={640}>640 宽（省）</option><option value={1024}>1024 宽</option><option value={1280}>1280 宽（最清楚）</option></select>
+            <Tip text="每处字附上它所在时刻的整帧画面，大模型能看到字是印在东西上，还是叠加在画面上的字幕。每张的输入用量：640 约 300 token，1024 约 700，1280 约 1300。" /></div>
+        </> : <>
+          <Lbl ctx={ctx} k="ocr.refine_frame_width">整帧画面</Lbl>
+          <div className="row"><select className="inp" value={Number(val("ocr.refine_frame_width") ?? 1280) >= 1024 ? Number(val("ocr.refine_frame_width") ?? 1280) : 1280}
+            onChange={(e) => set("ocr.refine_frame_width", Number(e.target.value))}>
+            <option value={1024}>1024 宽（省）</option><option value={1280}>1280 宽（默认）</option></select>
+            <Tip text="给模型读的整帧画面缩到多宽。每张的输入用量：1024 约 700 token，1280 约 1300。1024 时细字体、小字容易读错；再宽也不会更准（手写字反而乱读）。" /></div>
+        </>}
       </div>
     </div>
   );

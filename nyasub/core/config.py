@@ -19,7 +19,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .. import env
 
@@ -83,15 +83,14 @@ class OcrCfg(_M):
     skip_static: bool = True
     keep_frames: bool = False
     refine: Literal["none", "vlm"] = "none"  # vlm：视觉大模型复核
-    refine_frame_width: int = 1280           # 给模型读的整帧画面缩到多宽：1280 一张约 1300 token；1024 约 700，小字容易读错（小于 1024 按 1280）
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_old(cls, d):
-        """0.3 以前的复核选项（附不附整帧画面、特写上画不画框、几处一批）：现在的做法用不上，读到就丢掉。"""
-        if isinstance(d, dict):
-            d = {k: v for k, v in d.items() if k not in ("refine_context", "refine_boxed", "refine_batch")}
-        return d
+    # 复核方式：frame = 整帧画面（模型自己读整帧，再和本地按位置对上，能合并切开的标题、补出漏掉的字）；
+    # crop = 本地截图（本地截的特写连同认出的字几处一批问，省，但只能改错字、判断类型）
+    refine_mode: Literal["frame", "crop"] = "frame"
+    refine_frame_width: int = 1280           # 整帧画面方式：给模型读的整帧画面缩到多宽：1280 一张约 1300 token；1024 约 700，小字容易读错（小于 1024 按 1280）
+    refine_context: bool = True              # 本地截图方式：附上框了编号的整帧画面（同一时刻的几处共用一张），判断是叠加字幕还是实物上的字准得多
+    refine_context_width: int = 640          # 本地截图方式：附的整帧画面缩到多宽：640 一张约 300 token，看清字在什么东西上够了；1024 / 1280 更清楚，约 2 / 4 倍
+    refine_boxed: bool = True                # 本地截图方式：用截图那一帧重新截特写、框出要转写的字（镜头移动时原来的特写会带进片名等别处的字）
+    refine_batch: int = 4                    # 本地截图方式：几处一批问：越多越省；1 = 每处单独问，不会把别的图上的字写过来（串图）
 
 
 class FusionCfg(_M):

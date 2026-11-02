@@ -57,7 +57,7 @@ DEFS = {
     "ocr": StageDef(["probe"], ["ocr.enabled", "ocr.fps", "ocr.height", "ocr.det_model", "ocr.rec_model",
                                 "ocr.min_score", "ocr.min_duration", "ocr.max_gap", "ocr.persistent_seconds",
                                 "ocr.regions", "ocr.skip_static"]),
-    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方
+    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
@@ -156,11 +156,17 @@ class Run:
                  **({"default": True} if t.get("default") and i else {})}
                 for i, t in enumerate(self._video_tracks(name, self._video_profiles))]}
         if name == "ocr_refine":
+            o = self.cfg.ocr
+            model = self.cfg.endpoint("vision")["model"] if o.refine == "vlm" else None
+            if self._refine_on() and o.refine_mode == "crop":  # 本地截图方式：选项和 0.3 以前一样记进指纹
+                return {"model": model, "mode": "crop", **({"context": True} if o.refine_context else {}),
+                        **({"frame_width": o.refine_context_width} if o.refine_context and o.refine_context_width != 640 else {}),
+                        **({"boxed": True} if o.refine_boxed else {}), **({"batch": o.refine_batch} if o.refine_batch != 4 else {})}
             unread = load_json(self.proj.stage("ocr_unread.json"), [])  # 本地认不出字的地方变了也要重新复核
-            return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None,
+            return {"model": model,
                     **({"unread": digest(unread)} if unread and self._refine_on() else {}),
-                    **({"frame_width": self.cfg.ocr.refine_frame_width}
-                       if self._refine_on() and self.cfg.ocr.refine_frame_width != 1280 else {})}
+                    **({"frame_width": o.refine_frame_width}
+                       if self._refine_on() and o.refine_frame_width != 1280 else {})}
         if name == "translate":
             mode = self._llm_mode()
             jobs = None
@@ -734,13 +740,22 @@ class Run:
         if self.cfg.ocr.refine != "vlm" or not events:
             return events
         from ..fusion.fuse import prefilter
-        from ..llm.refine import refine_ocr
 
         prefilter(events, self.results["probe"]["duration"], lang.get(self.src))
         ruby = {e["id"] for e in self._ruby_fixed(events) if e.get("ruby_of")}
         for e in events:  # 振假名不用送去复核（会并到下面那条上）
             if e["id"] in ruby:
                 e["prefiltered"] = True
+        o = self.cfg.ocr
+        if o.refine_mode == "crop":
+            from ..llm import refine_crop
+
+            on = self._refine_on()
+            return refine_crop.refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
+                                          context=on and o.refine_context, frame_width=o.refine_context_width,
+                                          boxed=on and o.refine_boxed, batch=o.refine_batch)
+        from ..llm.refine import refine_ocr
+
         v = self.results["probe"].get("video") or {}
         return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
                           size=(v["width"], v["height"]) if v.get("width") else None,
