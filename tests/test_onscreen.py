@@ -280,6 +280,70 @@ def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     assert not (tmp_path / "crops" / "read").exists()
 
 
+def test_unread_boxes_tracked_into_hints():
+    """书法片名：本地只认出「新」，下面那块找到了位置但没认出字。停留够久、没被别的字盖住的才交给复核。"""
+    import numpy as np
+
+    from nyasub.sources import ocr
+
+    box = lambda x0, y0, x1, y1: np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
+    raw = [(box(1009, 387, 1182, 472), "新", 1.0), (box(990, 480, 1230, 715), "", 0.0),
+           (box(400, 300, 410, 309), "", 0.0)]  # 太小的（树叶）不算
+    dets = [{"rect": (1009.0, 387.0, 1182.0, 472.0), "text": "新"}]
+    assert ocr._unread(raw, dets, 1280, 720) == [(990.0, 480.0, 1230.0, 715.0)]
+
+    regions = []
+    for i in range(16):  # 1.5 秒，后面的帧框得更全
+        t = 16.0 + i * 0.1
+        ocr._track_unread(regions, [(990.0, 480.0, 1230.0, 715.0 + (5 if i > 8 else 0))], t, 0.75)
+    ocr._track_unread(regions, [(100.0, 100.0, 300.0, 200.0)], 16.0, 0.75)  # 一闪而过
+    hints = ocr._unread_hints(regions, [], 1280, 720, 1.0)
+    assert len(hints) == 1 and hints[0]["start"] == 16.0 and hints[0]["t"] == 16.9
+    # 本地已经有字盖住这块（会照常复核）：不另看
+    ev = {"start": 15.0, "end": 20.0, "rect": [0.77, 0.66, 0.97, 1.0]}
+    assert ocr._unread_hints(regions, [ev], 1280, 720, 1.0) == []
+
+
+def test_refine_reads_unread_spot_only_there(tmp_path, monkeypatch):
+    """本地认不出字的地方单独看一帧：只补那块地方读到的字；附近已有复核时刻的不另看。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    grabbed = []
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: grabbed.extend(times) or {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (round(t - 0.7, 3), round(t + 5.1, 3)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o1", "start": 1.0, "end": 4.0, "snap_t": 2.0, "rect": [0.79, 0.9, 0.98, 0.98], "text": "声 松たか子",
+               "vertical": False, "lines": 1, "crop": "crops/o1.jpg", "pieces": [[0.79, 0.9, 0.98, 0.98, "声 松たか子"]]}]
+    unread = [{"start": 16.0, "end": 21.5, "t": 16.9, "rect": [0.77, 0.66, 0.97, 1.0]},
+              {"start": 1.5, "end": 3.0, "t": 2.5, "rect": [0.1, 0.1, 0.3, 0.2]}]  # 2 秒那一帧本来就要读
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": "新日本風土記", "kind": "caption", "bbox": [780, 670, 960, 990]},
+                                  {"text": "声 松たか子", "kind": "caption", "bbox": [790, 900, 980, 980]},
+                                  {"text": "電力", "kind": "scene", "bbox": [300, 200, 400, 260]}]}  # 背景里别处的字
+            return {"text": "新日本風土記", "kind": "caption"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160), unread=unread)
+    assert sorted(grabbed) == [2.0, 16.9]
+    added = [e for e in out if e.get("found_by") == "vlm"]
+    # 2 秒那帧上的「新日本風土記」「電力」照常按漏检补；16.9 秒那帧只补认不出字那块的
+    late = [e for e in added if e["start"] >= 16]
+    assert [(e["text"], e["start"], e["end"]) for e in late] == [("新日本風土記", 16.2, 22.0)]
+
+
 def test_refine_keeps_kind_when_mixed_up_or_batch_fails(tmp_path):
     from nyasub.core.config import Config
     from nyasub.llm import refine

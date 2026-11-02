@@ -57,7 +57,33 @@ def make_engine(c, ocr_lang="japan"):
     }
     if c.get("use_cuda"):
         params["EngineConfig.onnxruntime.use_cuda"] = True
-    return RapidOCR(params=params)
+    eng = RapidOCR(params=params)
+    _keep_raw(eng)
+    return eng
+
+
+def _keep_raw(eng):
+    """rapidocr 把认不出字的检测框直接丢掉（书法片名常常只认出一个字，其余整块没了）。
+    在它整理结果之前把检测框和识别结果留一份（eng.raw），用来找“找到位置但认不出字”的地方。"""
+    try:
+        from rapidocr.utils.process_img import map_boxes_to_original
+    except ImportError:
+        return
+    orig = eng.build_final_output
+
+    def build(ori_img, det_res, cls_res, rec_res, cropped, op_record):
+        eng.raw = []
+        raw = None
+        if det_res.boxes is not None and rec_res.txts is not None and len(det_res.boxes) == len(rec_res.txts):
+            raw = (np.array(det_res.boxes, dtype=np.float32), list(rec_res.txts), list(rec_res.scores))
+        out = orig(ori_img, det_res, cls_res, rec_res, cropped, op_record)
+        if raw is not None:
+            h, w = ori_img.shape[:2]
+            eng.raw = list(zip(map_boxes_to_original(raw[0], op_record, h, w), raw[1], raw[2]))
+        return out
+
+    eng.raw = []
+    eng.build_final_output = build
 
 
 def _detect(eng, img, min_score):
@@ -80,6 +106,72 @@ def _detect(eng, img, min_score):
         if len(n) == 1 and score < 0.9:
             continue
         out.append({"rect": rect, "text": txt, "score": score, "vertical": h > w * 1.5 and len(txt) > 1})
+    eng.unread = _unread(getattr(eng, "raw", []), out, img.shape[1], img.shape[0])
+    return out
+
+
+UNREAD_MIN = 0.04  # 认不出字的框，长边不到画面的这么多不算（小块的多半是树叶、纹理）
+
+
+def _unread(raw, dets, W, H):
+    """找到位置、但没认出字（或认出的分数太低）的检测框。"""
+    out = []
+    for box, txt, score in raw:
+        xs, ys = box[:, 0], box[:, 1]
+        rect = (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max()))
+        if any(max(abs(a - b) for a, b in zip(rect, d["rect"])) < 1.5 for d in dets):
+            continue
+        w, h = rect[2] - rect[0], rect[3] - rect[1]
+        if w < 8 or h < 8 or max(w / W, h / H) < UNREAD_MIN:
+            continue
+        out.append(rect)
+    return out
+
+
+def _track_unread(regions, rects, t, max_gap):
+    """把每帧认不出字的框按位置连起来（同一处、中间断开不超过 max_gap 秒算一处）。"""
+    for r in rects:
+        hit = next((g for g in regions if t - g["last"] <= max_gap and _overlap(g["rect"], r) >= 0.5), None)
+        if hit is None:
+            regions.append({"rect": r, "start": t, "last": t, "best_t": t})
+            continue
+        hit["last"] = t
+        if _area(r) > _area(hit["rect"]):  # 用框得最全的一帧（字逐渐浮现的标题，后面的帧框得大）
+            hit["rect"], hit["best_t"] = r, t
+
+
+def _area(r):
+    return max(1e-9, (r[2] - r[0]) * (r[3] - r[1]))
+
+
+def _overlap(a, b):
+    """两个框重叠部分占小的那个的比例。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix * iy / min(_area(a), _area(b))
+
+
+def _unread_hints(regions, events, W, H, min_dur):
+    """停留够久、本地也没有别的字盖住的“认不出字”的地方，交给视觉复核看那一帧。"""
+    out = []
+    for g in regions:
+        if g["last"] - g["start"] < min_dur:
+            continue
+        r = g["rect"]
+        rect = [round(r[0] / W, 4), round(r[1] / H, 4), round(r[2] / W, 4), round(r[3] / H, 4)]
+        covered = False
+        for e in events:
+            if e["start"] > g["last"] or e["end"] < g["start"]:
+                continue
+            b = e.get("crop_rect") or e["rect"]
+            ix = max(0.0, min(b[2], rect[2]) - max(b[0], rect[0]))
+            iy = max(0.0, min(b[3], rect[3]) - max(b[1], rect[1]))
+            if ix * iy >= 0.6 * _area(rect):
+                covered = True
+                break
+        if not covered:
+            out.append({"start": round(g["start"], 3), "end": round(g["last"], 3), "t": round(g["best_t"], 3),
+                        "rect": rect})
     return out
 
 
@@ -213,8 +305,9 @@ def _in_regions(rect, W, H, include, exclude):
     return any(inside(r) for r in include) and not any(inside(r) for r in exclude)
 
 
-def scan(video, info, c, workdir, ocr_lang="japan"):
-    """c 是 OcrCfg 的 dict。返回画面字事件列表。"""
+def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
+    """c 是 OcrCfg 的 dict。返回画面字事件列表。
+    unread 给一个列表的话，往里放“找到位置但认不出字”、停留够久的地方（书法片名、花字），交给视觉复核去看。"""
     fps = float(c["fps"])
     vinfo = info["video"]
     W, H = media.frame_size(vinfo, c["height"])
@@ -235,7 +328,8 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
 
     active, closed = [], []
     next_id = 1
-    prev_thumb, prev_dets = None, []
+    prev_thumb, prev_dets, prev_blank = None, [], []
+    unread_regions = []
     n_frames = n_ocr = 0
     t0 = time.time()
     last_report = 0.0
@@ -249,17 +343,21 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         thumb = cv2.resize(gray, (192, 108), interpolation=cv2.INTER_AREA).astype(np.int16)
         if c["skip_static"] and prev_thumb is not None and np.percentile(np.abs(thumb - prev_thumb), 99.5) < 8:
-            dets = prev_dets
+            dets, blank = prev_dets, prev_blank
         else:
             dets = _detect(eng, np.ascontiguousarray(img), float(c["min_score"]))
+            blank = getattr(eng, "unread", [])
             if not full_roi:
                 for d in dets:
                     r = d["rect"]
                     d["rect"] = (r[0] + roi[0], r[1] + roi[1], r[2] + roi[0], r[3] + roi[1])
+                blank = [(r[0] + roi[0], r[1] + roi[1], r[2] + roi[0], r[3] + roi[1]) for r in blank]
             if filter_regions:
                 dets = [d for d in dets if _in_regions(d["rect"], W, H, include, exclude)]
-            prev_thumb, prev_dets = thumb, dets
+                blank = [r for r in blank if _in_regions(r, W, H, include, exclude)]
+            prev_thumb, prev_dets, prev_blank = thumb, dets, blank
             n_ocr += 1
+        _track_unread(unread_regions, blank, t, max_gap)
 
         snap_path = None
         for d, tr in _match(active, dets, t):
@@ -301,6 +399,8 @@ def scan(video, info, c, workdir, ocr_lang="japan"):
         path = os.path.join(crops_dir, f"{ev['id']}.jpg")
         save_crop(_imread(snap), ev, path)
         ev["crop"] = os.path.relpath(path, workdir).replace("\\", "/")
+    if unread is not None:
+        unread += _unread_hints(unread_regions, events, W, H, max(1.5, float(c["min_duration"])))  # 一秒上下的多是纹理、衣服褶子
     if not c.get("keep_frames"):
         shutil.rmtree(frames_dir, ignore_errors=True)
     return events

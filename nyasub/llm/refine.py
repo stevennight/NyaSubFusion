@@ -5,6 +5,8 @@
 - 本地把一个标题切成几块的：几块对到模型的同一块字上，合成一条。
 - 模型读到、本地完全没找到的（花字标题、手写招牌）：按模型的框补一条，回原视频前后找它什么时候出现、消失。
 - 两边读得差很多的、字很小的、模型没读到的：从原视频按原分辨率截这一块的特写，再问一次。
+- 本地找到了字的位置、但一个字也没认出来的地方（书法片名常这样）：附近没有别的要复核的画面时刻，就单独看那一帧，
+  只补在那块地方读到的字。
 不把本地结果给模型：给了它会顺着本地的框和错字走（框不全，补全时读错）。"""
 import os
 import re
@@ -365,8 +367,9 @@ def _merge_into(keep, others):
     keep["merged"] = [*keep.get("merged", []), *[e["id"] for e in others]]
 
 
-def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4):
-    """size：原视频的 (宽, 高)，特写按这个分辨率截。没有原视频时退回只看识别时截的特写（一批 batch 张）。"""
+def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, unread=None):
+    """size：原视频的 (宽, 高)，特写按这个分辨率截。没有原视频时退回只看识别时截的特写（一批 batch 张）。
+    unread：本地找到位置但认不出字的地方（sources/ocr.scan），有原视频时也去看。"""
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir)
@@ -375,12 +378,13 @@ def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4):
     # 台标、振假名不用复核。按画面复核时，判成杂讯的（很短、一闪而过）也看：本地常常只认出花字标题的一小块
     # （「森のなかのふたり」只认出「たり」、只闪了半秒），模型看整帧能读出整个标题；看不出字的照旧当杂讯，不再追问
     todo = [e for e in todo if not e.get("prefiltered") or (frames and e.get("dropped") == "junk")]
-    log(f"视觉大模型复核画面字：{len(todo)} 条")
-    if not todo:
+    unread = (unread or []) if frames else []
+    log(f"视觉大模型复核画面字：{len(todo)} 条" + (f"，另看本地认不出字的 {len(unread)} 处" if unread else ""))
+    if not todo and not unread:
         return events
     try:
         if frames:
-            return _refine_frames(llm, events, todo, cfg, workdir, video, size)
+            return _refine_frames(llm, events, todo, cfg, workdir, video, size, unread)
         return _refine_crops(llm, events, todo, workdir, batch)
     except FatalLLMError as ex:
         _fatal(ex)
@@ -395,7 +399,20 @@ def _fatal(ex):
     log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
 
 
-def _refine_frames(llm, events, todo, cfg, workdir, video, size):
+def plan_unread(moments, unread):
+    """本地认不出字的地方：它停留的时间里已经有要复核的画面时刻（那一帧整个都会读），就不另看；
+    否则在它框得最全的那一刻加一个画面时刻。返回 {新加的时刻: [那块地方的框]}。"""
+    hints = {}
+    for u in sorted(unread, key=lambda u: u["t"]):
+        if any(u["start"] - 0.01 <= m <= u["end"] + 0.01 for m in list(moments) + list(hints)):
+            continue
+        hints[u["t"]] = [u["rect"]]
+    for t in hints:
+        moments[t] = []
+    return hints
+
+
+def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     from .client import FatalLLMError
 
     W, H = size
@@ -403,8 +420,10 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size):
     width = cfg.ocr.refine_frame_width if cfg.ocr.refine_frame_width >= 1024 else 1280
     regions = [g.model_dump() for g in cfg.ocr.regions]
     moments = plan_moments(todo)
+    hints = plan_unread(moments, unread)
     times = sorted(moments)
-    log(f"  按画面复核：{len(times)} 个画面时刻，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截")
+    log(f"  按画面复核：{len(times)} 个画面时刻" + (f"（其中 {len(hints)} 个是专门看本地认不出字的地方）" if hints else "")
+        + f"，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截")
     frame_dir = os.path.join(workdir, "crops", "frames")
     read_dir = os.path.join(workdir, "crops", "read")
     os.makedirs(read_dir, exist_ok=True)
@@ -413,7 +432,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size):
     chunk = 12  # 原分辨率的整帧一张几 MB：一次截一小批，用完就删
     try:
         _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                     gone, added, short, n, workdir)
+                     gone, added, short, n, workdir, hints)
     except FatalLLMError as ex:  # 已经复核的留着结果（合并、补出的照样生效），没复核的保持本地结果
         _fatal(ex)
         short = []
@@ -428,7 +447,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size):
 
 
 def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                 gone, added, short, n, workdir):
+                 gone, added, short, n, workdir, hints=None):
     from ..sources import media
     from ..sources.ocr import _zone, track_region
     from .client import FatalLLMError
@@ -511,10 +530,13 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                     keep["rect_local"] = keep["rect"]
                     keep["rect"] = keep["snap_rect"] = box
                     keep["zone"] = _zone(box, keep.get("vertical"))
+            only = (hints or {}).get(t)
             for it in misses:
                 b = it["box"]
                 if max(b[2] - b[0], b[3] - b[1]) < TINY_MISS:
                     continue
+                if only and not any(overlap(b, r) >= MATCH for r in only):
+                    continue  # 专门看本地认不出字的那块地方：别处的字（背景里的招牌…）本地都没找到过，不补
                 if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
                     continue  # 前面的画面时刻已经补过这块字
                 if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH

@@ -57,7 +57,7 @@ DEFS = {
     "ocr": StageDef(["probe"], ["ocr.enabled", "ocr.fps", "ocr.height", "ocr.det_model", "ocr.rec_model",
                                 "ocr.min_score", "ocr.min_duration", "ocr.max_gap", "ocr.persistent_seconds",
                                 "ocr.regions", "ocr.skip_static"]),
-    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=3),  # v3：按整帧画面让模型自己读，再和本地对上
+    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=2),  # v2：标记“同时段字幕在说别的话”的画面字
@@ -156,7 +156,9 @@ class Run:
                  **({"default": True} if t.get("default") and i else {})}
                 for i, t in enumerate(self._video_tracks(name, self._video_profiles))]}
         if name == "ocr_refine":
+            unread = load_json(self.proj.stage("ocr_unread.json"), [])  # 本地认不出字的地方变了也要重新复核
             return {"model": self.cfg.endpoint("vision")["model"] if self.cfg.ocr.refine == "vlm" else None,
+                    **({"unread": digest(unread)} if unread and self._refine_on() else {}),
                     **({"frame_width": self.cfg.ocr.refine_frame_width}
                        if self._refine_on() and self.cfg.ocr.refine_frame_width != 1280 else {})}
         if name == "translate":
@@ -719,8 +721,12 @@ class Run:
         from ..sources import ocr
 
         t = time.time()
-        events = ocr.scan(str(self.proj.video), info, c.model_dump(), str(self.proj.root), lang.get(self.src).ocr_lang)
-        log(f"画面字识别完成：{len(events)} 条，用时 {time.time() - t:.0f}s")
+        unread = []
+        events = ocr.scan(str(self.proj.video), info, c.model_dump(), str(self.proj.root), lang.get(self.src).ocr_lang,
+                          unread=unread)
+        save_json(self.proj.stage("ocr_unread.json"), unread)  # 找到位置但认不出字的地方，复核时去看
+        log(f"画面字识别完成：{len(events)} 条，用时 {time.time() - t:.0f}s"
+            + (f"；另有 {len(unread)} 处找到了字的位置但认不出字" if unread else ""))
         return events
 
     def _refine(self, events):
@@ -737,7 +743,8 @@ class Run:
                 e["prefiltered"] = True
         v = self.results["probe"].get("video") or {}
         return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
-                          size=(v["width"], v["height"]) if v.get("width") else None)
+                          size=(v["width"], v["height"]) if v.get("width") else None,
+                          unread=load_json(self.proj.stage("ocr_unread.json"), []))
 
     def _refine_on(self):
         info = self.results.get("probe") or {}
