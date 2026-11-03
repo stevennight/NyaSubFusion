@@ -300,6 +300,25 @@ body.rowresize, body.rowresize * { cursor: row-resize !important; user-select: n
 .tl-labels .rl { padding: 0 2px }
 .tl-ref { font-size: 10.5px; color: var(--tx3); background: none; border: none; padding: 0 4px; cursor: pointer; white-space: nowrap }
 .tl-ref:hover { color: var(--tx) }
+/* 参考轨：收起时叠在一起的只显示一块，其余在底下一道细线；「+N」点开列表；展开时分行，太多就在轨里滚动 */
+.lbl-lane { position: relative }
+.tl-open { position: absolute; right: 2px; top: 4px; font-size: 10px; color: var(--tx3); background: none; border: none; padding: 0 3px; cursor: pointer }
+.tl-open:hover { color: var(--tx) }
+.lbl-lane.on { color: var(--tx); background: #b49cff1f }
+.tl-drawer { position: fixed; z-index: 40; background: var(--panel); border: 1px solid var(--line2); border-radius: var(--r); box-shadow: 0 -6px 24px #0008; overflow: hidden }
+.tl-drawer-h { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11.5px; color: var(--tx2); border-bottom: 1px solid #2a2a35 }
+.tl-drawer-b { overflow-y: auto; overflow-x: hidden; position: relative }
+.lane i.under { position: absolute; top: 22px; height: 3px; border-radius: 2px; pointer-events: none; opacity: .85 }
+.lane i.under.sc { background: #7cc4ff } .lane i.under.so { background: #ffb35c } .lane i.under.sa { background: #9be38a }
+.lane i.under.drop { background: #ff6b6b88 }
+.blk2.piled { height: 17px; line-height: 17px; z-index: 1 }
+.blk2 .pilen { display: inline-block; margin: 0 4px 0 -3px; padding: 0 4px; border-radius: 3px; background: #111c; color: #fff; font: 600 10px/14px var(--ui); cursor: pointer; text-decoration: none; vertical-align: 1px }
+.blk2 .pilen:hover { background: var(--acc2); color: #111 }
+.tl-pile { min-width: 300px; max-width: 420px; max-height: 60vh; overflow-y: auto }
+.tl-pile button { display: flex; flex-direction: column; gap: 1px }
+.tl-pile .pt { font-family: var(--ja); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px }
+.tl-pile .pm { font-size: 10.5px; color: var(--tx3) }
+.tl-pile button.dropped .pt { color: #ff9a9a; text-decoration: line-through }
 
 /* 审校页：画面上的字幕可以拖 */
 .subs .drag { pointer-events: auto; cursor: move }

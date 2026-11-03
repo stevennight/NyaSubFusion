@@ -20,8 +20,11 @@ import type { Candidate, Cue, FusedItem } from "../types";
 import { useStore } from "../store";
 import { fmt, fmtHms } from "../util";
 
-const ROW_H = 22;  // 参考轨分行时每多一行加的高度
-const MAX_ROWS = 3;
+const ROW_H = 22;      // 展开的参考轨每行的高度
+const OPEN_ROWS = 8;   // 展开的抽屉最多这么高，再多的在抽屉里上下滚动
+type RefLane = "sc" | "so" | "sa";
+const OPEN_KEY = "nyasub.tl.open";
+const DROP_LBL: Record<string, string> = { junk: "杂讯", logo: "台标", scene: "实物上的字", ruby: "振假名" };
 
 type Span = [number, number];
 /** 「译文」条的新时间：和审校面板里改时间同一个接口（editCue 的 start / end / parts） */
@@ -152,6 +155,38 @@ export function Timeline(p: Props) {
     }
     s.toast(`已复制「${text.replace(/\n/g, " ").slice(0, 16)}」`);
   };
+  // 收起的参考轨上叠在一起的那几块：点「+N」列出来
+  const [pile, setPile] = useState<{ x: number; y: number; kind: string; items: Candidate[] } | null>(null);
+  useEffect(() => {
+    if (!pile) return;
+    const close = () => setPile(null);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); };
+  }, [pile]);
+  // 展开的那条参考轨（叠在一起的分行全铺开）：在时间轴上方浮出一个抽屉，不挤占时间轴的高度（1080p 上视频、字幕列表已经占满）。
+  // 一次只开一条，记在本机
+  const [open, setOpen] = useState<RefLane | null>(() => {
+    try { const v = localStorage.getItem(OPEN_KEY); return v === "sc" || v === "so" || v === "sa" ? v : null; } catch { return null; }
+  });
+  const toggleOpen = (k: RefLane) => setOpen((o) => {
+    const n = o === k ? null : k;
+    try { if (n) localStorage.setItem(OPEN_KEY, n); else localStorage.removeItem(OPEN_KEY); } catch { /* 存不了就只在这次有效 */ }
+    return n;
+  });
+  const [drawerAt, setDrawerAt] = useState<{ left: number; width: number; bottom: number } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const upd = () => {
+      const sc = scroll.current?.getBoundingClientRect(), tl = root.current?.getBoundingClientRect();
+      if (sc && tl) setDrawerAt({ left: sc.left, width: sc.width, bottom: window.innerHeight - tl.top + 4 });
+    };
+    upd();
+    const ro = new ResizeObserver(upd);
+    if (root.current) ro.observe(root.current);
+    window.addEventListener("resize", upd);
+    return () => { ro.disconnect(); window.removeEventListener("resize", upd); };
+  }, [open]);
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -330,19 +365,58 @@ export function Timeline(p: Props) {
     ));
   };
   const blk = (x: { start: number; end: number }) => ({ left: x.start * p.pps, width: Math.max(6, (x.end - x.start) * p.pps - 2) });
-  // 参考轨上时间重叠的块分行放，不互相盖住（同一处字本地切成几块、画面上同时有几处字）；最多 MAX_ROWS 行，再多的叠在最后一行
-  const rowsOf = (items: Candidate[]) => {
+  // 展开时：时间重叠的块分行放，不互相盖住（不限行数）
+  const rowsOf = (items: { id: string; start: number; end: number }[]) => {
     const ends: number[] = [], row: Record<string, number> = {};
     for (const c of [...items].sort((a, b) => a.start - b.start)) {
       let r = ends.findIndex((e) => e <= c.start + 0.01);
-      if (r < 0) r = ends.length < MAX_ROWS ? ends.length : MAX_ROWS - 1;
+      if (r < 0) r = ends.length;
       ends[r] = Math.max(ends[r] ?? 0, c.end);
       row[c.id] = r;
     }
     return { row, n: Math.max(1, ends.length) };
   };
-  const rows = { sc: rowsOf(p.subs), so: rowsOf(p.ocr), sa: rowsOf(p.asr) };
-  const laneH = (n: number) => ({ height: 26 + (n - 1) * ROW_H });
+  // 时间连着重叠的一组块（a 和 b 重叠、b 和 c 重叠 → 一组）
+  const clustersOf = <T extends { start: number; end: number }>(items: T[]) => {
+    const out: T[][] = [];
+    let end = -1;
+    for (const c of [...items].sort((a, b) => a.start - b.start)) {
+      if (out.length && c.start < end - 0.01) out[out.length - 1].push(c);
+      else out.push([c]);
+      end = Math.max(out[out.length - 1].length === 1 ? c.end : end, c.end);
+    }
+    return out;
+  };
+  // 收起时：按“用进字幕的 > 没丢弃的 > 时间长的”挑出互不重叠的那些块整块显示（带文字），
+  // 其余每块归到和它重叠最多的那块下面（底下画细线、那块左边标「+N」）。返回 [[显示的块, ...它下面压着的]]
+  const piles = (items: Candidate[]) => {
+    const rank = (c: Candidate) => [cueOf.current[c.id] ? 0 : 1, c.dropped ? 1 : 0, -(c.end - c.start)];
+    const order = [...items].sort((a, b) => {
+      const x = rank(a), y = rank(b);
+      return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+    });
+    const ov = (a: Candidate, b: Candidate) => Math.min(a.end, b.end) - Math.max(a.start, b.start);
+    const groups: Candidate[][] = [], rest: Candidate[] = [];
+    for (const c of order) {
+      if (groups.some((g) => ov(g[0], c) > 0.01)) rest.push(c);
+      else groups.push([c]);
+    }
+    for (const c of rest) groups.reduce((m, g) => (ov(g[0], c) > ov(m[0], c) ? g : m)).push(c);
+    return groups;
+  };
+  const refRows = { sc: rowsOf(p.subs), so: rowsOf(p.ocr), sa: rowsOf(p.asr) };
+  // 原文 / 译文轨不变高：同时显示的几条（很少）在这一行里上下平分
+  const cueSlot: Record<string, { k: number; n: number }> = {};
+  for (const g of clustersOf(p.cues)) {
+    const r = rowsOf(g);
+    for (const c of g) cueSlot[c.id] = { k: r.row[c.id], n: r.n };
+  }
+  const cueBox = (id: string): React.CSSProperties => {
+    const sl = cueSlot[id];
+    if (!sl || sl.n === 1) return {};
+    const h = 19 / sl.n;
+    return { top: 3 + sl.k * h, height: h - 1, lineHeight: `${h - 1}px`, fontSize: sl.n === 2 ? 9 : 0 };
+  };
   const sel = (srcId: string) => (cueOf.current[srcId] === p.selected ? "sel" : "");
   const clickCand = (c: Candidate) => {
     if (dragged()) return;
@@ -350,21 +424,57 @@ export function Timeline(p: Props) {
     if (cid) p.onSelect(cid);
     else p.onDropped(c);
   };
-  const lane = (cls: "sc" | "so" | "sa", items: Candidate[], kind: string) => (
-    <div className="lane" style={{ width: W, ...laneH(rows[cls].n) }}>
-      {items.map((c) => (
-        <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""}`}
-             style={{ ...blk(c), top: 3 + rows[cls].row[c.id] * ROW_H }}
-             title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.ruby_of ? `（${c.ruby_of} 的注音）` : ""}${c.dup_of ? " · 与字幕重复" : ""}`}
-             onClick={() => clickCand(c)}
-             onContextMenu={(e) => {
-               if (!p.onSourceCue && !p.onSourceAttach) return;
-               e.preventDefault();
-               setMenu({ x: e.clientX, y: e.clientY, src: c, kind });
-             }}>{c.text.replace(/\n/g, " ")}</div>
-      ))}
+  const candDiv = (cls: RefLane, c: Candidate, kind: string, style: React.CSSProperties, extra = "", pileOf?: Candidate[]) => (
+    <div key={c.id} className={`blk2 ${cls} ${c.dropped ? "drop" : ""} ${sel(c.id)} ${menu?.src?.id === c.id ? "menuon" : ""} ${extra}`}
+         style={style}
+         title={`${c.id} · ${c.text}${c.dropped ? ` · 丢弃：${c.dropped}` : ""}${c.ruby_of ? `（${c.ruby_of} 的注音）` : ""}${c.dup_of ? " · 与字幕重复" : ""}`
+           + (pileOf ? `\n（这里还叠着 ${pileOf.length - 1} 块，点左边的 +${pileOf.length - 1} 看全部）` : "")}
+         onClick={() => clickCand(c)}
+         onContextMenu={(e) => {
+           if (!p.onSourceCue && !p.onSourceAttach) return;
+           e.preventDefault();
+           setMenu({ x: e.clientX, y: e.clientY, src: c, kind });
+         }}>
+      {pileOf && <b className="pilen" title={`这里叠着 ${pileOf.length} 块：点开看全部`}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); setPile({ x: e.clientX, y: e.clientY, kind, items: pileOf }); }}>+{pileOf.length - 1}</b>}
+      {c.text.replace(/\n/g, " ")}
     </div>
   );
+  const LANES: [RefLane, string, string, Candidate[]][] = [["sc", "字幕", "var(--c-sub)", p.subs], ["so", "画面字", "var(--c-ocr)", p.ocr], ["sa", "语音", "var(--c-asr)", p.asr]];
+  const drawer = () => {
+    const ln = open && drawerAt ? LANES.find(([k]) => k === open) : null;
+    if (!ln || !drawerAt) return null;
+    const [k, name, , items] = ln, r = refRows[k];
+    return (
+      <div className="tl-drawer" style={{ left: drawerAt.left, width: drawerAt.width, bottom: drawerAt.bottom }}>
+        <div className="tl-drawer-h">
+          <span>{name}：叠在一起的分行全铺开（最多叠了 {r.n} 层）</span><span className="sp" />
+          <button className="btn sm" onClick={() => toggleOpen(k)}>收起 ▾</button>
+        </div>
+        <div className="tl-drawer-b" style={{ height: Math.min(r.n, OPEN_ROWS) * ROW_H + 6 }}>
+          <div style={{ position: "relative", width: W, height: r.n * ROW_H + 6, transform: `translateX(${-view.left}px)` }}>
+            {items.map((c) => candDiv(k, c, name, { ...blk(c), top: 3 + r.row[c.id] * ROW_H }))}
+            <div className="playhead" style={{ left: p.time * p.pps }} />
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const lane = (cls: RefLane, items: Candidate[], kind: string) => {
+    // 收起：叠在一起的只显示一块（带完整文字），其余的在底下画一道细线标出时间，左边「+N」点开看全部
+    return (
+      <div className="lane" style={{ width: W }}>
+        {piles(items).flatMap(([top, ...under]) => {
+          if (!under.length) return [candDiv(cls, top, kind, blk(top))];
+          return [
+            ...under.map((c) => <i key={c.id} className={`under ${cls} ${c.dropped ? "drop" : ""}`} style={blk(c)} />),
+            candDiv(cls, top, kind, blk(top), "piled", [top, ...under]),
+          ];
+        })}
+      </div>
+    );
+  };
   const ticks = [];
   const step = p.pps > 20 ? 5 : p.pps > 6 ? 15 : 60;
   for (let s = 0; s <= p.duration; s += step) ticks.push(s);
@@ -395,6 +505,25 @@ export function Timeline(p: Props) {
           </div>
         );
       })()}
+      {drawer()}
+      {pile && (
+        <div className="tl-menu tl-pile" style={{ left: Math.min(pile.x, window.innerWidth - 440),
+                                                  ...(pile.y > window.innerHeight / 2 ? { bottom: window.innerHeight - pile.y + 6 } : { top: pile.y + 6 }) }}
+             onMouseDown={(e) => e.stopPropagation()}>
+          <div className="dim">{pile.kind}：这里叠着 {pile.items.length} 块（点一行选中，右键有更多操作）</div>
+          {[...pile.items].sort((a, b) => a.start - b.start).map((c) => {
+            const used = cueOf.current[c.id];
+            return (
+              <button key={c.id} className={c.dropped ? "dropped" : ""} title={c.text}
+                      onClick={() => { setPile(null); clickCand(c); }}
+                      onContextMenu={(e) => { e.preventDefault(); setPile(null); setMenu({ x: e.clientX, y: e.clientY, src: c, kind: pile.kind }); }}>
+                <span className="pt">{c.text.replace(/\n/g, " / ")}</span>
+                <span className="pm">{fmtHms(c.start)} · {c.id} · {used ? `用在 #${used}` : c.dropped ? `丢弃：${DROP_LBL[c.dropped] ?? c.dropped}` : "没有用到"}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {menu && !menu.src && (
         <div className="tl-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(e) => e.stopPropagation()}>
           <div className="dim">第 {menu.seg + 1} 段（共 {menu.n} 段）</div>
@@ -410,9 +539,14 @@ export function Timeline(p: Props) {
         </div>
         <div className="wv"><i style={{ background: "#666" }} />波形</div>
         {showRef && <>
-          <div style={laneH(rows.sc.n)}><i style={{ background: "var(--c-sub)" }} />字幕</div>
-          <div style={laneH(rows.so.n)}><i style={{ background: "var(--c-ocr)" }} />画面字</div>
-          <div style={laneH(rows.sa.n)}><i style={{ background: "var(--c-asr)" }} />语音</div>
+          {LANES.map(([k, name, color]) => (
+            <div key={k} className={`lbl-lane ${open === k ? "on" : ""}`}>
+              <i style={{ background: color }} />{name}
+              {refRows[k].n > 1 && <button className="tl-open" onClick={() => toggleOpen(k)}
+                                           title={open === k ? "收起" : `在上方展开：叠在一起的分行全铺开（最多叠了 ${refRows[k].n} 层），不占时间轴的高度`}>
+                {open === k ? "▴" : "▸"}</button>}
+            </div>
+          ))}
           <div><i style={{ background: "var(--c-fuse)" }} />原文</div>
         </>}
         <div><i style={{ background: "var(--c-tr)" }} />译文</div>
@@ -430,7 +564,7 @@ export function Timeline(p: Props) {
             {lane("so", p.ocr, "画面字")}
             {lane("sa", p.asr, "语音")}
             <div className="lane" style={{ width: W }}>
-              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : c.review === "flag" ? "marked" : ""}`} style={blk(c)} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
+              {p.cues.map((c) => <div key={c.id} className={`blk2 sf ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""} ${c.review === "todo" ? "flag" : c.review === "flag" ? "marked" : ""}`} style={{ ...blk(c), ...cueBox(c.id) }} onClick={() => { if (!dragged()) p.onSelect(c.id); }}>
                 {segsOf(c, partsOf(c), c.orig.text, c) ?? c.orig.text}
               </div>)}
             </div>
@@ -442,7 +576,7 @@ export function Timeline(p: Props) {
               const ps = lv ? lv.parts : partsOf(c);
               return (
                 <div key={c.id} className={`blk2 st ${editable ? "edit" : ""} ${lv ? "live" : ""} ${c.id === p.selected ? "sel" : ""} ${c.id === p.hint ? "hint" : ""}`}
-                     style={blk(x)}
+                     style={{ ...blk(x), ...cueBox(c.id) }}
                      title={editable ? "拖两端改开始 / 结束，拖中间整条平移，拖分界线改分段；双击拆成两条，Alt+双击分段（按住 Shift 不吸附）" : undefined}
                      onMouseDown={editable ? (e) => onCueDown(e, c) : undefined}
                      onMouseMove={editable ? (e) => { if (!busy.current) e.currentTarget.style.cursor = zoneAt(e, c).kind === "move" ? "grab" : "ew-resize"; } : undefined}
