@@ -97,6 +97,22 @@ def test_fuse_rules():
     assert out["stats"]["asr_total"] == 2
 
 
+def test_fuse_dup_needs_most_of_the_text():
+    """同时的字幕只说到画面字的一小段（“仮設。” 对 “おれ仮設におった”）：是另一句话，留着送去翻译；
+    字幕基本都说到了（写法不同的“1kg”“１キロ”只差两三个字）还是算重复。"""
+    ja = lang.get("ja")
+    subs = [{"id": "c1", "start": 1.0, "end": 3.0, "text": "仮設。"},
+            {"id": "c2", "start": 5.0, "end": 8.0, "text": "今年は１キロ８，０００円。"},
+            {"id": "c3", "start": 10.0, "end": 12.0, "text": "落ち着きます？"}]
+    ocr = [_ocr("o1", 1.0, 3.0, "おれ仮設におった"),
+           _ocr("o2", 5.0, 8.0, "1kg ＝ 8,000円", rect=(0.6, 0.3, 0.9, 0.4), zone="middle"),
+           _ocr("o3", 10.0, 12.0, "本が好きなので落ち着きます")]
+    out = fuse(subs, ocr, [], FUSION, ja, 30)
+    kept = {it["id"] for it in out["items"]}
+    assert "o1" in kept and "o3" in kept and not ocr[0].get("dup_of")
+    assert "o2" not in kept and ocr[1]["dup_of"] == ["c2"]
+
+
 def test_fuse_drops_music_only_subs():
     """只有「♬〜」的字幕不要（一挂十几秒，还会把并进来的片名拉长）；带歌词的留着；放音乐时语音认出的杂音照旧不单独成条。"""
     from nyasub.fusion.fuse import music_only

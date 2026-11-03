@@ -8,8 +8,9 @@
 产出的 items 交给大模型做最终的合并 / 纠错 / 翻译；cues 是不经过大模型的原文合并字幕。
 """
 import re
+from difflib import SequenceMatcher
 
-from ..textutil import full_sim, norm, overlap, sim
+from ..textutil import covered, full_sim, norm, overlap, sim
 
 # 字幕里不是“说话”的部分：（笑い声）（競りの声）这类括号说明、♪♬〜 音乐记号、➡ 接续符号
 _NOT_SPEECH = re.compile(r"[（(\[［【][^）)\]］】]*[）)\]］】]|[♪♬〜～➡→]")
@@ -147,6 +148,17 @@ def _caption_lines(ocr_events, asr, pack, asr_th):
     return n
 
 
+def _mostly_said(text, said):
+    """画面字的内容字幕基本都说到了：大部分（≥ 60%）出现在字幕里，或者没说到的不超过 3 个字（“1kg”和“１キロ”这种写法不同）。
+    只有一小段对得上（字幕只有“仮設。”，画面字是“おれ仮設におった”，是另一个人说的另一句话）不算重复。"""
+    if covered(text, said) >= 0.6:
+        return True
+    a, b = norm(text), norm(said)
+    hit = {i for x in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks() if x.size >= 2
+           for i in range(x.a, x.a + x.size)}
+    return sum(1 for i, ch in enumerate(a) if i not in hit and ch.isalnum()) <= 3  # “＝”这种符号不算
+
+
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     """m 是 FusionCfg 的 dict，pack 是源语言的语言包。"""
     dup_th, asr_th = m["dup_similarity"], m["asr_match_similarity"]
@@ -168,7 +180,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         # “失敗しない清志さんも…”）不算，否则“私 失敗しないので”会因为共用一个短语被当成重复去掉
         near = [c for c in hit if overlap(e["start"], e["end"], c["start"], c["end"]) >= 0.3]
         best = max((sim(e["text"], c["text"]) for c in near), default=0)
-        if near and (best >= dup_th or sim(e["text"], "\n".join(c["text"] for c in near)) >= dup_th):
+        said = "\n".join(c["text"] for c in near)
+        if near and (best >= dup_th or sim(e["text"], said) >= dup_th) and _mostly_said(e["text"], said):
             e["dup_of"] = [c["id"] for c in hit]
             continue
         a_hit, a_text = _concat(asr, e["start"], e["end"])
