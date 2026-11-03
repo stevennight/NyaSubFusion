@@ -728,3 +728,21 @@ def test_refine_miss_found_by_local_a_moment_later_not_added(tmp_path, monkeypat
     bottle.pop("text_local", None)
     out = refine.refine_ocr([dict(bottle), other], Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
     assert [e["text"] for e in out if e.get("found_by") == "vlm"] == ["ここがないと多分\nだめになると思う"]
+
+
+def test_dialogue_can_follow_its_screen_text():
+    """画面上打出来的台词默认在底部；选了跟着那块画面字，就贴在那块字旁边，和底部同时说的另一句各放各的。"""
+    cfg = config.Config()
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+
+    def cue(i, text, near=None):
+        return {"id": i, "start": 10.0, "end": 14.0, "type": "dialogue", "onscreen": True, "sources": [],
+                "orig": {"lang": "ja", "text": "あ"}, "tr": {"zh-Hans": {"text": text}}, **({"near": near} if near else {})}
+
+    left = [0.05, 0.2, 0.3, 0.3]  # 左边那个人的话
+    items = layout.build([cue("q1", "左边的人说的话", left), cue("q2", "底部的一句")], prof, cfg, "ja")
+    px, py, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [])
+    p = {x["item"]["cue"]: x for x in placed}
+    assert p["q1"]["x"] < 0.5 * px and 0.3 * py < p["q1"]["y"] < 0.5 * py  # 贴在左上那块字下面
+    assert p["q2"].get("x") is None and p["q2"]["item"]["end"] == 14.0     # 底部那句照常，时间不被截
+    assert layout.build([cue("q3", "x", [0.5, 0.5, 0.4, 0.6])], prof, cfg, "ja")[0]["near"] is None  # 不像框的不算

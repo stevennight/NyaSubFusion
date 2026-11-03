@@ -267,7 +267,8 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
         else:
             placed.append({"kind": "info", "item": it, "top": True})
 
-    for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: i["start"]):
+    # 跟着画面字的先放（位置定死在那块字旁边），底部的台词再按它们让开
+    for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: (not i.get("near"), i["start"])):
         rows = _rows(it, used)
         ruby = any(r["ruby"] for r in rows)
         if it.get("pos"):  # 手动拖过：不再自动避让硬字幕
@@ -276,6 +277,12 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
             continue
         w = max((r["width"] for r in rows), default=0) + 12
         h = sum(r["height"] for r in rows)
+        if it.get("near"):  # 跟着画面上的某块字（几个人同时说话、各自的字打在各自旁边）：和说明一样贴着那块字放
+            _, _, _, bx0, by0 = _info_spot(dict(it, rect=it["near"]), False, w, h, px, py, boxes)
+            x, y = round(bx0 + w / 2), round(by0 + h)
+            placed.append({"kind": "main", "item": it, "margin_v": py - y, "rows": rows, "ruby": ruby, "x": x, "y": y})
+            boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
+            continue
         mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
         if mv > margin_v:  # 要往上推：先看原高度左右挪一点能不能让开（挪得比推得少才挪）
             cx = slide_x(it, boxes, margin_v, w, h, px, py)

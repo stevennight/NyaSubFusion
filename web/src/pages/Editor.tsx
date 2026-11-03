@@ -629,6 +629,26 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
                 <option value="on">显示</option>
                 <option value="off">不显示</option>
               </select>
+              {(() => {
+                // 画面上打出来的台词 / 旁白：默认和普通字幕一样在底部；几个人同时说话时可以让译文跟着各自的那块画面字
+                const srcs = cue.sources.map((id) => items[id]).filter((it) => it?.rect && (it.src === "telop" || it.src === "info"));
+                if (!srcs.length && !cue.near) return null;
+                const same = (a?: number[] | null, b?: number[]) => JSON.stringify(a) === JSON.stringify(b);
+                const value = cue.near ? srcs.find((it) => same(cue.near, it.rect))?.id ?? "kept" : "bottom";
+                return (<>
+                  <span className="lbl">跟随</span>
+                  <select className="inp" value={value} disabled={!!cue.pos}
+                          title={cue.pos ? "已经在画面上手动放过位置，这一项不起作用（恢复自动后才按这里）" : "显示在画面上哪里：底部（和普通字幕一样），或者贴在这句的画面字旁边（几个人同时说话时分开放）"}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v !== "kept") patch({ near: v === "bottom" ? null : items[v].rect }, "位置已更改");
+                          }}>
+                    <option value="bottom">底部（默认）</option>
+                    {srcs.map((it) => <option key={it.id} value={it.id}>跟着 {it.id}：{it.text.replace(/\n/g, " ").slice(0, 16)}</option>)}
+                    {value === "kept" && <option value="kept">跟着画面字（来源已变）</option>}
+                  </select>
+                </>);
+              })()}
             </>);
           })()}
           {["info", "name", "title"].includes(cue.type) && (() => {

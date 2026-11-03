@@ -43,7 +43,7 @@ def _fields(cues, fields):
         if e.get("delete"):
             continue
         c = dict(c, tr={k: dict(v) for k, v in c.get("tr", {}).items()}, orig=dict(c["orig"]))
-        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig", "pos", "sources") + tuple(SEG_KEYS):
+        for k in ("start", "end", "type", "review", "parts", "rect", "show_orig", "pos", "near", "sources") + tuple(SEG_KEYS):
             if k in e:
                 c[k] = e[k]
         if "orig" in e:
@@ -283,7 +283,7 @@ def piece_isolate_ops(cue, seg):
 
 
 FIELD_LBL = {"orig": "原文", "tr": "译文", "start": "时间", "end": "时间", "parts": "分段时间", "type": "类型",
-             "review": "审校状态", "delete": "删除", "rect": "位置", "show_orig": "原文显示",
+             "review": "审校状态", "delete": "删除", "rect": "位置", "near": "位置", "show_orig": "原文显示",
              "parts_type": "分段类型", "parts_show": "分段原文显示", "sources": "关联的来源"}
 OP_LBL = {"split": "拆分", "merge": "合并", "insert": "插入"}
 SRC_LBL = {"o": "画面字", "c": "字幕轨", "a": "语音"}  # 来源 id 的开头

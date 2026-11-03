@@ -49,6 +49,7 @@ export interface Cue {
   parts_onscreen?: boolean[];
   pos?: [number, number] | null;   // 手动拖过的位置：字幕块底边中点（相对画面 0~1）  // 每段的原文是不是画面上已经有了（有就不再显示原文）
   show_orig?: "on" | "off" | null;  // 手动指定原文显示 / 不显示（null = 自动）
+  near?: [number, number, number, number] | null;  // 台词 / 旁白跟着画面上哪块字显示（那块字的框）；null = 底部
   parts_type?: (string | null)[] | null;        // 每段单独的类型（null = 跟随整条）
   parts_show?: ("on" | "off" | null)[] | null;  // 每段单独指定原文显示 / 不显示
 }

@@ -72,9 +72,9 @@ def build(cues, profile, cfg, src_code, tokens=None):
                     info.append(item)
             continue
         main += _expand(cue, layers, profile, cfg, (tokens or {}).get(cue.get("id"), {}), seen)
-    # 手动放过位置的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
-    fixed = [m for m in main if m.get("pos")]
-    main = _extend_short(_resolve_overlaps([m for m in main if not m.get("pos")], merge=profile.simultaneous == "merge"),
+    # 手动放过位置、跟着画面字的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
+    fixed = [m for m in main if m.get("pos") or m.get("near")]
+    main = _extend_short(_resolve_overlaps([m for m in main if not (m.get("pos") or m.get("near"))], merge=profile.simultaneous == "merge"),
                          profile.min_duration)
     return main + fixed + info
 
@@ -84,6 +84,14 @@ def _pos(cue):
     p = cue.get("pos")
     if isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, (int, float)) for v in p):
         return [min(max(float(p[0]), 0.0), 1.0), min(max(float(p[1]), 0.0), 1.0)]
+    return None
+
+
+def _near(cue):
+    """台词 / 旁白选了跟着画面上哪块字显示：那块字的框 [x0, y0, x1, y1]（0~1）；没选（显示在底部）返回 None。"""
+    r = cue.get("near")
+    if isinstance(r, (list, tuple)) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r) and r[0] < r[2] and r[1] < r[3]:
+        return [min(max(float(v), 0.0), 1.0) for v in r]
     return None
 
 
@@ -227,7 +235,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         lys = [x for x in lys if x[2]]
         if lys:
             typ = (seg_type[groups[gi][0]] if seg_type and n_seg else None) or cue.get("type")  # 这一段单独设了类型就用它
-            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ, "cue": cue.get("id"), "pos": _pos(cue),
+            out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ, "cue": cue.get("id"), "pos": _pos(cue), "near": _near(cue),
                         "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
         t0 += d
     return out
