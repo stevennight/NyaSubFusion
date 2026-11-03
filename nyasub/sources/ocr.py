@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 import cv2
 import numpy as np
 from rapidfuzz import fuzz
+from rapidfuzz.distance import Levenshtein
 
 from ..env import check_cancel, log, progress
 from ..textutil import norm
@@ -193,7 +194,7 @@ def _shift(a, b):
 
 class Track:
     __slots__ = ("id", "first", "last", "rects", "times", "obs", "vertical", "snapshot", "rect", "snap_len",
-                 "snap_rect", "snap_t", "v")
+                 "snap_rect", "snap_t", "v", "chg", "p_snap", "parent")
 
     def __init__(self, tid, t, d):
         self.id = tid
@@ -208,6 +209,11 @@ class Track:
         self.snap_rect = None  # 截图那一帧里文字的框（逐字出现的字幕，最完整时的框比中位数的框宽）
         self.snap_t = None
         self.v = (0.0, 0.0)  # 移动速度（像素/秒），滚动字幕用来预测下一帧的位置
+        # 同一处的字换成了另一句（见 _other_line）：从第几次识别起换的；还说不准是换了一句还是认错了几帧时
+        # 先记着，这期间截图记在 p_snap（(路径, 字数, 框, 时间)），换成另一句、稳定下来了再拆成两条（split）
+        self.chg = None
+        self.p_snap = None
+        self.parent = None  # 从哪条轨迹拆出来的（拆完两条最后认定的字一样，说明是认错了一阵，再并回去）
 
     def add(self, t, d):
         dt = t - self.last
@@ -220,6 +226,55 @@ class Track:
         self.times.append(t)
         self.rect = d["rect"]
         self.obs.append((d["text"], d["score"]))
+        self._watch_change()
+
+    def _watch_change(self):
+        txt = norm(self.obs[-1][0])
+        if self.chg is None:
+            if len(self.obs) >= 2 and _other_line(norm(self.obs[-2][0]), txt):
+                self.chg, self.p_snap = len(self.obs) - 1, None
+            return
+        if not _other_line(norm(self.obs[self.chg][0]), txt):
+            return  # 还是换上来的那一句
+        if not _other_line(norm(self.obs[self.chg - 1][0]), txt):
+            # 又回到原来那句：刚才是认错 / 闪了一下，不拆；那几帧里更完整的截图照样能用
+            if self.p_snap and self.p_snap[1] > self.snap_len:
+                self.snapshot, self.snap_len, self.snap_rect, self.snap_t = self.p_snap
+            self.chg, self.p_snap = None, None
+        else:  # 又换成了第三句：从这里重新算
+            self.chg, self.p_snap = len(self.obs) - 1, None
+
+    def wants_snapshot(self, n, score):
+        """这一帧要不要截图：用文字最完整的一帧（字幕常有逐字出现的渐入动画，最早的几帧只有半截）。
+        字可能换成了另一句时，截图先给换上来的那一句记着，不动原来那句的截图。"""
+        if self.chg is not None:
+            cur = self.p_snap[1] if self.p_snap else None
+        else:
+            cur = self.snap_len if self.snapshot else None
+        return cur is None or (n > cur and score >= 0.8)
+
+    def set_snapshot(self, path, n, rect, t):
+        if self.chg is not None:
+            self.p_snap = (path, n, rect, t)
+        else:
+            self.snapshot, self.snap_len, self.snap_rect, self.snap_t = path, n, rect, t
+
+    def split(self, need, tid):
+        """换上来的另一句已经稳定出现了 need 次：从换的地方拆成两条，返回新的那条（后一句）；还不到时返回 None。"""
+        if self.chg is None or len(self.obs) - self.chg < need:
+            return None
+        k = self.chg
+        new = Track(tid, self.times[k], {"rect": self.rects[k], "text": self.obs[k][0], "score": self.obs[k][1],
+                                          "vertical": self.vertical})
+        new.times, new.rects, new.obs = self.times[k:], self.rects[k:], self.obs[k:]
+        new.last, new.rect, new.v = new.times[-1], new.rects[-1], self.v
+        if self.p_snap:
+            new.snapshot, new.snap_len, new.snap_rect, new.snap_t = self.p_snap
+        new.parent = self
+        self.times, self.rects, self.obs = self.times[:k], self.rects[:k], self.obs[:k]
+        self.last, self.rect = self.times[-1], self.rects[-1]
+        self.chg, self.p_snap = None, None
+        return new
 
     def predict(self, t):
         dt = t - self.last
@@ -254,6 +309,14 @@ class Track:
 
     def score(self):
         return sum(s for _, s in self.obs) / len(self.obs)
+
+
+def _other_line(a, b):
+    """同一处前后两次认出的字是不是换成了另一句（a、b 已经 norm 过）：渐入时的半截（一方包含另一方）、
+    认错一两个字都不算；两句只是结尾一样（「即いいって言ってくれたんで」→「応援するって言ってくれたんで」）算。"""
+    if not a or not b or a in b or b in a:
+        return False
+    return Levenshtein.distance(a, b) >= 2 and fuzz.ratio(a, b) < 85
 
 
 def _near(a, b):
@@ -305,6 +368,47 @@ def _in_regions(rect, W, H, include, exclude):
     return any(inside(r) for r in include) and not any(inside(r) for r in exclude)
 
 
+CHANGE_SECONDS = 0.5   # 同一处的字换成另一句、稳定显示这么久才算真换了一句（短的多是认错 / 闪一下）
+
+
+def _rejoin(tracks):
+    """拆开的两条其实是同一句（动画标题认错了一阵、半秒以上都认成别的字）：并回一条。"""
+    out, kept = [], set()
+    for tr in sorted(tracks, key=lambda x: x.first):
+        p = tr.parent
+        while p is not None and id(p) not in kept:  # 父轨迹自己也可能已经并进了更早的那条
+            p = p.parent
+        # 拆出来以后原来那条又接着认出了原来的字（夹在中间的一段认错了）：也并回去
+        if p is not None and (p.last > tr.last or not _other_line(norm(p.best_text()), norm(tr.best_text()))):
+            p.absorb(tr)
+            continue
+        out.append(tr)
+        kept.add(id(tr))
+    return out
+
+
+def _step(active, dets, t, next_id, need, snap):
+    """一帧的识别结果接到已有的轨迹上（没接上的开新轨迹）；字换成了另一句、稳定下来了就拆成两条。
+    snap() 存这一帧的截图并返回路径。返回下一个轨迹编号。"""
+    for d, tr in _match(active, dets, t):
+        if tr is None:
+            tr = Track(next_id, t, d)
+            next_id += 1
+            active.append(tr)
+            continue
+        tr.add(t, d)
+        n = len(norm(d["text"]))
+        if tr.wants_snapshot(n, d["score"]):
+            tr.set_snapshot(snap(), n, d["rect"], t)
+        new = tr.split(need, next_id)
+        if new is not None:
+            next_id += 1
+            active.append(new)
+            if new.snapshot is None:  # 后一句一直没截到：用这一帧
+                new.snapshot, new.snap_len, new.snap_rect, new.snap_t = snap(), n, d["rect"], t
+    return next_id
+
+
 def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
     """c 是 OcrCfg 的 dict。返回画面字事件列表。
     unread 给一个列表的话，往里放“找到位置但认不出字”、停留够久的地方（书法片名、花字），交给视觉复核去看。"""
@@ -335,6 +439,7 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
     last_report = 0.0
     duration = info["duration"] or 1
     max_gap = float(c["max_gap"])
+    change_frames = max(2, math.ceil(CHANGE_SECONDS * fps))  # 同一处换成另一句、稳定这么多帧才拆开
 
     for t, frame in media.iter_frames(video, vinfo, fps, c["height"], info["start_time"], c.get("hwaccel", False)):
         check_cancel()
@@ -360,22 +465,14 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
         _track_unread(unread_regions, blank, t, max_gap)
 
         snap_path = None
-        for d, tr in _match(active, dets, t):
-            if tr is None:
-                tr = Track(next_id, t, d)
-                next_id += 1
-                active.append(tr)
-            else:
-                tr.add(t, d)
-                # 截图用文字最完整的一帧：字幕常有逐字出现的渐入动画，最早的几帧只有半截
-                n = len(norm(d["text"]))
-                if tr.snapshot is None or (n > tr.snap_len and d["score"] >= 0.8):
-                    tr.snap_len, tr.snap_rect, tr.snap_t = n, d["rect"], t
-                    tr.snapshot = None
-                    if snap_path is None:
-                        snap_path = os.path.join(frames_dir, f"f{n_frames:06d}.jpg")
-                        _imwrite(snap_path, frame)
-                    tr.snapshot = snap_path
+
+        def snap():  # 这一帧存一张截图（同一帧只存一次）
+            nonlocal snap_path
+            if snap_path is None:
+                snap_path = os.path.join(frames_dir, f"f{n_frames:06d}.jpg")
+                _imwrite(snap_path, frame)
+            return snap_path
+        next_id = _step(active, dets, t, next_id, change_frames, snap)
         still = []
         for tr in active:
             (still if t - tr.last <= max_gap else closed).append(tr)
@@ -386,7 +483,7 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
             last_report = t
             el = time.time() - t0
             log(f"  画面字扫描到 {t / 60:.0f} 分钟，已用 {el:.0f}s，预计还要 {el / max(t, 1) * (duration - t):.0f}s")
-    closed += active
+    closed = _rejoin(closed + active)
     log(f"  共 {n_frames} 帧，实际 OCR {n_ocr} 帧，跟踪到 {len(closed)} 条文字轨迹")
 
     events = _build_events(closed, c, fps, W, H, duration, roi)

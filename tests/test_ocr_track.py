@@ -134,3 +134,56 @@ def test_tight_rect_keeps_only_caption_lines():
     assert ocr.tight_rect(lines, "(1キロ)4,000円とか5,000円\n120万円くらいの儲け", "（１キロ）4,000円とか5,000円")[3] == 0.9931
     # 重新检测漏了真字幕的一行：凑不齐，不收紧
     assert ocr.tight_rect(pieces[2:3], text, "（ワニが）ほんと好き　お正月くらいしか食べられないから") is None
+
+
+# ---------------- 同一处换成另一句 ----------------
+# 两句结尾一样（「即いいって言ってくれたんで」→「応援するって言ってくれたんで」）也要拆成两条，各有自己的时间和截图；
+# 渐入时的半截、认错一两帧、一直认错一个字都不拆；拆开后发现其实是同一句（认错了一阵）再并回去。
+
+LINE_RECT = (500.0, 960.0, 1400.0, 1050.0)
+
+
+def _lines_run(texts, fps=3.0, need=2):
+    """按顺序每帧认出一句（None = 这一帧没认出字），返回轨迹。截图路径记成“帧号”，看截图取自哪一帧。"""
+    active, nid = [], 1
+    for i, txt in enumerate(texts):
+        dets = [] if txt is None else [{"rect": LINE_RECT, "text": txt, "score": 0.99, "vertical": False}]
+        nid = ocr._step(active, dets, i / fps, nid, need, lambda i=i: f"f{i}")
+    return ocr._rejoin(active)
+
+
+def _lines(tracks):
+    return [(t.best_text(), round(t.first, 2), round(t.last, 2)) for t in tracks]
+
+
+A = "即 いいって言ってくれたんで"
+B = "応援するって言ってくれたんで"
+
+
+def test_two_lines_same_place_are_split():
+    tracks = _lines_run([A] * 6 + [B] * 6)
+    assert _lines(tracks) == [(A, 0.0, 1.67), (B, 2.0, 3.67)]
+    a, b = tracks
+    assert int(a.snapshot[1:]) < 6 <= int(b.snapshot[1:])   # 各用自己那句的截图
+    assert a.snap_t < 2.0 <= b.snap_t
+
+
+def test_split_needs_the_new_line_to_stay():
+    # 换上来的另一句只出现一帧就没了（闪一下 / 认错）：不拆
+    assert _lines(_lines_run([A] * 5 + [B] + [A] * 5)) == [(A, 0.0, 3.33)]
+    # 每秒 10 帧时要稳定半秒（5 帧）才拆
+    assert len(_lines_run([A] * 10 + [B] * 4 + [A] * 3, fps=10, need=5)) == 1
+    assert len(_lines_run([A] * 10 + [B] * 6, fps=10, need=5)) == 2
+
+
+def test_fade_in_and_misreads_stay_one_line():
+    fade = ["応援", "応援する", "応援するって言", B, B, B, B]
+    assert _lines(_lines_run(fade)) == [(B, 0.0, 2.0)]
+    typo = B[:-1] + "て"   # 一直认错一个字
+    assert len(_lines_run([B, typo, typo, B, typo, typo, typo])) == 1
+
+
+def test_misread_for_a_while_is_joined_back():
+    """动画标题有半秒多都认成了别的字，后来又认对了：拆开的两条最后认定的字一样，并回一条。"""
+    title, wrong = "サヨナラまでの日々", "サヨナうまでのロ々"
+    assert _lines(_lines_run([title] * 4 + [wrong] * 3 + [title] * 6)) == [(title, 0.0, 4.0)]
