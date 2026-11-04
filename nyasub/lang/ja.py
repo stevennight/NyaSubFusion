@@ -118,11 +118,12 @@ class Japanese(LanguagePack):
     annotations = ("furigana",)
     translit_name = "罗马字"
 
-    def prompt_source_notes(self) -> str:
+    def prompt_source_notes(self, with_tr=True) -> str:
+        both, where = ("原文、译文都", "原文和译文里都") if with_tr else ("原文", "原文里")
         return ("日文字幕习惯：外挂字幕里的（　）通常是说话人或音效，≪≫ 表示画外音，♪ 表示歌曲；"
                 "方言台词按意思理解。\n"
-                "字幕行尾的“➡”表示这句话没说完、接着下一条字幕：把这几条合成一条 cue，原文、译文都按原来的字幕条用“｜”分段；"
-                "同一条字幕里的换行（“ / ”）只是排版，不要变成“｜”。原文和译文里都不要保留“➡”。")
+                f"字幕行尾的“➡”表示这句话没说完、接着下一条字幕：把这几条合成一条 cue，{both}按原来的字幕条用“｜”分段；"
+                f"同一条字幕里的换行（“ / ”）只是排版，不要变成“｜”。{where}不要保留“➡”。")
 
     def display(self, text, opts):
         lines = [re.sub(r"[。、\s　]+$", "", l.strip()) for l in (text or "").replace("\\N", "\n").split("\n")]

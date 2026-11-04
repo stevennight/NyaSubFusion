@@ -38,7 +38,7 @@ class LanguagePack:
     no_line_end = set("([{")              # 不放在行末的字（开括号、开引号）
 
     # ---------- 给大模型的说明 ----------
-    def prompt_source_notes(self) -> str:
+    def prompt_source_notes(self, with_tr=True) -> str:
         """作为源语言时，给大模型的额外说明（字幕习惯、方言等）。"""
         return ""
 

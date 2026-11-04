@@ -160,6 +160,107 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> 
     return "\n\n".join(parts)
 
 
+# ---------- 整理（只出原文）→ 翻译（只翻一次）。上面的 chunk_system / chunk_prompt 是两件事一起做的，导出任务模式还在用 ----------
+def organize_system(src, context: str) -> str:
+    notes = src.prompt_source_notes(with_tr=False)
+    return f"""你是资深{src.name}影视字幕编辑。节目信息：{context or "（未提供）"}
+你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
+- 字幕（subs）：视频自带的字幕，文字最可信。注意官方字幕常会省略画面上已经有字的台词。
+- 画面字：从画面 OCR 识别的硬字幕，可能有错字、漏字。后面标了位置和“像台词 / 像说明”，那只是粗略猜测，以内容为准：
+  说话内容（口语、带语气、是某人说的话）就是台词 dialogue，哪怕它在画面偏左偏右；地名、人名、说明、标题、资料来源才是 info。
+- 语音识别（asr）：只列出没有任何字幕覆盖的语音，文字不可靠（尤其方言）。
+  另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。
+{notes}
+你的任务：只整理{src.name}原文（不翻译），把这些条目整理成一条条字幕。输出 JSON：
+{{"cues": [{{"src": ["c12", "o5"], "type": "dialogue|narration|info|song|sfx", "orig": "整理后的{src.name}原文"}}],
+  "drop": ["a3", "o9"]}}
+
+规则：
+1. 每个输入 id 必须且只能出现一次：要么在某条 cue 的 src 里，要么在 drop 里。
+2. 同一句话被拆在字幕和画面字里（半句在这、半句在那），或者两边内容重复时，合并成一条 cue，src 列出全部来源 id；只合并时间上相邻（间隔不超过约 2 秒）的条目。
+   同一个来源里前后几条（原来就是分开的几屏）各自成一条 cue，就算连起来是一句话也不要合并（行尾有“➡”的除外）：要不要合成一条，翻译时按译文再定。
+   画面上先后出现的几块说明文字（演职员表一张张换、标签一个个出来）也各自成一条，不要用“｜”接成一条；
+   同一块字被识别成了几条（内容重复、两行被分开识别、同一张演职员表读了两遍）才合成一条，orig 里只写一遍。
+   标了“不同的人在同一时刻说的”的几条字幕是不同的人说的话（一问一答、两个人说同样的话），每条单独成一条 cue，互相不要合并，内容一样也都要保留。
+   画面上的标题、菜名、人名条、地名这类说明文字，如果没有人把它说出来（字幕和语音里都没有这几个字），
+   就算内容相关、时间重叠，也绝不能和字幕 / 语音的台词合成一条：它单独成一条 type 为 info 的 cue。
+3. cue 按时间顺序输出。不要自己编时间，时间由 src 决定。
+4. 字幕（subs）是官方文字：orig 里照抄字幕的字，人名等任何字都不要改（只能去掉换行）。OCR 错字结合上下文、语音参考和术语表纠正后写进 orig。
+   条目里的“ / ”表示原来的换行，orig 里不要写“ / ”或“／”（需要换行用换行符；合并了几条来源时，在来源和来源的交界处用“｜”分屏；同一条字幕里的“ / ”不是分屏，不要换成“｜”）。
+   “ ‖ ”表示这里换了一个人说话（同一条字幕里两个人各说一句）：orig 里两个人的话用换行符分开，不要接成一句，也不要写“‖”。
+5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。
+6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
+   画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
+   拿不准时宁可 drop。
+7. 人名、地名、专有名词的原文写法按术语表纠正 OCR / 语音识别的错字（字幕里的字照抄，不改）。"""
+
+
+def organize_prompt(chunk, gl_text, summary, context_cues) -> str:
+    parts = []
+    if summary:
+        parts.append(f"## 本集概要\n{summary}")
+    parts.append(f"## 术语表\n{gl_text}")
+    if context_cues:
+        parts.append("## 前文（已整理，仅供衔接参考，不要输出）\n" + "\n".join(
+            c["orig"]["text"].replace("\n", " / ") for c in context_cues))
+    parts.append("## 本段候选条目\n" + "\n".join(item_line(it) for it in chunk))
+    parts.append("请按规则输出 JSON。")
+    return "\n\n".join(parts)
+
+
+KIND = {"narration": "旁白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
+
+
+def translate_rules(tgt, tgt_opts: dict) -> str:
+    """翻译时的合并 / 分屏规则和输出格式（普通翻译和分组翻共用）。"""
+    return f"""输出 JSON：{{"items": [{{"ids": ["q12"], "tr": "译文"}}, {{"ids": ["q13", "q14"], "tr": "合成一条的译文"}}]}}，
+要翻的每个 id 都要出现且只出现一次；一般一条字幕一项（ids 里只有它自己）。
+- 合成一条：同一个人说的一句话被拆在相邻几条字幕里（原来是前后几屏），按原来的分法拆开，{tgt.name}就不通顺（语序要颠倒、半句话没法单独译）时，
+  可以把这几条（最多 4 条、连续、都是对话或都是旁白、间隔不超过 2 秒）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合。
+  合成的那条原文就是这几条按顺序用“｜”接起来：译文能按原来的几屏分开就用“｜”分成同样多段（语序可以在段之间微调），实在分不开就写成一段。
+- 原文里的“｜”是分屏标记：译文要分成同样多段，每段只译原文同一段里的内容。
+- 原文里的“ / ”是原来的换行：译文只在这些地方、或者一行放不下时才换行（JSON 里写作 \\n），不要另加换行；译文里不要写“ / ”。
+- 原文开头的说话人标签（「（さと子）」「（妻は）」这种括号）要保留，括号里的名字按术语表译；
+  「⚟」（画外的声音）、「♪」「➡」这些记号照原样保留在同样的位置。
+- 音效、画外音按{tgt.name}字幕习惯写在括号里，歌曲前加 ♪。
+- {tgt.prompt_target_rules(tgt_opts)}"""
+
+
+def translate_system(src, tgt, context: str, tgt_opts: dict) -> str:
+    return f"""你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{context or "（未提供）"}
+你会收到一段已经整理好的{src.name}字幕（按时间顺序，带类型），请逐条翻译成{tgt.name}。
+{translate_rules(tgt, tgt_opts)}
+- 人名、地名、专有名词、动植物和食物名称严格按术语表统一（同一个名字全集只用一种译法，不同的人不能混用名字）；
+  本段第一次出现、术语表里没有的人名 / 地名 / 专有名词，在 new_terms 里给出你采用的译名（{{"new_terms": [{{"src": "原文写法，不带敬称", "tr": "译名"}}]}}，和 items 写在同一个 JSON 里），后面各段会沿用；
+  术语表里没有的，用{tgt.name}观众最熟悉的常用叫法，常用叫法不明确时用学名 / 正式名，不要含糊地译成上位词。当地特有叫法第一次出现时可以在括号里简短注明，之后不再重复注释。"""
+
+
+def cue_line(c) -> str:
+    return f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])} {KIND.get(c.get('type'), c.get('type'))}：{c['orig']['text'].replace(chr(10), ' / ')}"
+
+
+def translate_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> str:
+    """chunk：整理好的字幕；context_cues：前面已经翻好的几条；memory：译文记忆（translate.recall）。"""
+    parts = []
+    if summary:
+        parts.append(f"## 本集概要\n{summary}")
+    parts.append(f"## 术语表\n{gl_text}")
+    if context_cues:
+        parts.append("## 前文（已翻译，仅供衔接参考，不要输出）\n" + "\n".join(
+            f"{c['orig']['text'].replace(chr(10), ' / ')} → {c.get('tr', {}).get(tgt_code, {}).get('text', '')}"
+            for c in context_cues))
+    if memory:
+        flat = lambda t: t.replace("\n", " / ")
+        parts.append("## 前面出现过的相同 / 相近原文（译文记忆，仅供参考，不要输出）\n"
+                     "意思和场景都相同（同一个标题、同一件事、前后呼应的同一句话）就沿用前面的译法，保持全集一致；"
+                     "场景变了、指的不是同一回事，按本段的意思译，不要硬套。看前后句判断。\n" + "\n".join(
+                         f"[{iid}] 前面 {fmt_time(t)}：{flat(o)} → {tr}　〔前一句：{flat(p) or '（无）'}　后一句：{flat(n) or '（无）'}〕"
+                         for iid, t, o, tr, p, n in memory))
+    parts.append("## 本段字幕\n" + "\n".join(cue_line(c) for c in chunk))
+    parts.append("请按要求输出 JSON。")
+    return "\n\n".join(parts)
+
+
 def missing_system(src, tgt, context: str, tgt_opts: dict) -> str:
     return f"""你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{context or "（未提供）"}
 你会收到几条还没有翻译的{src.name}文本（画面上打出的说明、标签、问题概括，或者漏翻的台词），每条附前后已经翻好的字幕作参考。

@@ -61,11 +61,13 @@ DEFS = {
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=3),  # v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
-    # 整理：几路来源合并成一条条字幕（合并、拆分、分类、丢杂字），顺带给出第一版译文（以前是“翻译”的一部分，翻译 v5 时拆出来）
+    # 整理：几路来源合并成一条条字幕（多来源合并、纠错字、分类、丢杂字），只出原文（以前是“翻译”的一部分，翻译 v5 时拆出来）
+    # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）
     "organize": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                    "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"]),
+                                    "llm.chunk_seconds", "llm.chunk_max_items"], version=2),
     "translate": StageDef(["organize"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                         "render.lang_options"], version=5),
+                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=6),
+    # v6：只翻一次（普通翻译或分组按顺序翻），翻的时候可以把相邻几条合成一条；补翻、重新分段、拆长句从整理挪过来；参考画面用在这里
     # v5：合并、拆分、分类、丢杂字拆成单独的“整理”一步；这一步只管译文（分组翻、统一术语和译法、其余目标语言）
     # v4：原文照抄字幕的字；人名全部进术语表、各段沿用新译名、最后统一一遍
     # v3：“｜”只用来分屏、➡ 合句；没用进台词的画面字单独成条并补翻；名称用目标语言的常用名 / 学名
@@ -175,19 +177,18 @@ class Run:
             mode = self._llm_mode()
             c = self.cfg.llm
             effort = c.reasoning_effort.strip() if mode == "api" else ""
-            if name == "translate":  # 只管译文：分组翻、思考程度（分组翻时用在这里）、作品术语表
+            if name == "translate":  # 翻译：分组翻、思考程度、参考画面（默认开着，关掉才记）、作品术语表
                 return {"src": self.src, "mode": mode, "series": self._series_terms_digest(),
                         "model": self.cfg.endpoint()["model"] if mode == "api" else None,
-                        **({} if self._use_frames(mode) or not c.grouped else {"frames": False}),
-                        **({"grouped": 1, **({"effort": effort} if effort else {})} if c.grouped and mode == "api" else {})}
+                        **({} if self._use_frames(mode) or mode != "api" else {"frames": False}),
+                        **({"grouped": 1} if c.grouped and mode == "api" else {}),
+                        **({"effort": effort} if effort else {})}
             jobs = None
-            if mode == "export":  # 外部助手改了结果文件，就重新导入
+            if mode == "export":  # 外部助手改了结果文件，就重新导入；导出任务时整理和翻译一起做，排版选项也算
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
-            # 参考画面默认开着：只有关掉时才记进指纹；思考程度同理，填了才记（不分组翻时用在这一步）
             return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
                     "model": self.cfg.endpoint()["model"] if mode == "api" else None,
-                    **({} if self._use_frames(mode) else {"frames": False}),
-                    **({"effort": effort} if effort and not c.grouped else {})}
+                    **({"lang_options": digest(self.cfg.render.lang_options)} if mode == "export" else {})}
         return None
 
     def input_fp(self, name):
@@ -864,15 +865,14 @@ class Run:
         return digest(self._series_terms())
 
     def _organize(self, fused, mode):
-        """整理：几路来源合并成一条条字幕（带第一版译文）。导出任务模式下，外部助手做的就是这一步（顺带翻好）。"""
+        """整理：几路来源合并成一条条字幕（只有原文）。导出任务模式下，外部助手做的就是这一步（顺带翻好）。"""
         from ..llm import jobs, translate
 
         items, known = fused["items"], self._series_terms()
         if not items:
             return {"cues": [], "glossary": {"summary": "", "terms": known, "new": 0}}
         if mode == "api":
-            frames = self._frames(items) if self._use_frames(mode) else None
-            cues, glossary = translate.organize_api(items, self.cfg, self.proj / "llm_cache", self.src, known, frames)
+            cues, glossary = translate.organize_api(items, self.cfg, self.proj / "llm_cache", self.src, known)
         else:
             job_dir = self.proj / "jobs"
             cues, missing, glossary = jobs.import_jobs(job_dir, self.cfg, self.src, known)
@@ -896,16 +896,16 @@ class Run:
         return {"cues": cues, "glossary": glossary}
 
     def _translate(self, organized, fused, mode):
-        """翻译：在整理好的字幕上定译文（分组翻、统一术语和译法、其余目标语言）。导出任务模式下整理时已经翻好，直接用。"""
+        """翻译：把整理好的字幕翻一次（普通翻译或分组翻）、分段、统一术语和译法、其余目标语言。导出任务模式下整理时已经翻好，直接用。"""
         import copy
 
         from ..llm import translate
 
         cues, glossary = copy.deepcopy(organized["cues"]), copy.deepcopy(organized["glossary"])  # 整理的结果另存着，不改它
         if mode == "api" and cues:
-            frames = self._frames(fused["items"]) if self.cfg.llm.grouped and self._use_frames(mode) else None
-            cues, glossary = translate.translate_api(cues, glossary, self.cfg, self.proj / "llm_cache", self.src,
-                                                     self._series_terms(), frames)
+            frames = self._frames(fused["items"]) if self._use_frames(mode) else None
+            cues, glossary = translate.translate_api(cues, glossary, fused["items"], self.cfg, self.proj / "llm_cache",
+                                                     self.src, self._series_terms(), frames)
         translate.add_quality_flags(cues)
         self._save_series_terms(glossary)
         todo = sum(1 for c in cues if c["review"] == "todo")

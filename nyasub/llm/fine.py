@@ -1,12 +1,9 @@
-"""分组按顺序翻（界面上的“精翻”= 分组翻 + 思考程度 high）：整理好的字幕只把译文重新翻一遍。
+"""分组按顺序翻（界面上的“精翻”= 分组翻 + 思考程度 high）：代替普通翻译，把整理好的字幕（只有原文）翻一遍。
 1. 人物表：读一遍整集原文，把同一个人 / 动物的各种叫法（全名、名字、昵称、呼唤时的音变）连成一条，各给译法；
 2. 分组：按“同一段对话 / 同一个话题”把连续的字幕分成几句一组；
 3. 从头到尾一组一组翻：带前文（前面已经翻好的译文）、后文、前面相同 / 相近原文的译法、这几句的画面，模型每次只管这几句。
 整段一次翻几十句时，靠上下文的句子（省略的主语、改口、调侃）模型顾不过来；分成小组、按顺序翻，配合高一些的思考程度，
 这些句子明显更准，前后译法也更一致（按顺序翻，后面能看到前面怎么译的）。"""
-import re
-
-from ..core import segments
 from ..env import Cancelled, log, progress
 from ..textutil import fmt_time
 
@@ -127,19 +124,14 @@ def _fallback_groups(cues):
 
 # ---------- 3. 一组一组翻 ----------
 def tr_system(src, tgt, context, opts):
+    from .prompts import translate_rules
+
     return f"""你是资深{src.name}译{tgt.name}纪录片字幕译者。节目信息：{context or "（未提供）"}
-每次给你一组连续的字幕（同一段对话或同一个话题），连同前后文和这几句出现时的画面截图，请把这一组的每一条翻译成{tgt.name}。只输出 JSON：
-{{"items": [{{"id": "q12", "tr": "译文"}}]}}，这一组的每个 id 都要有且只有一条；前文、后文只帮助理解，不要翻译。
-要求：
+每次给你一组连续的字幕（同一段对话或同一个话题），连同前后文和这几句出现时的画面截图，请把这一组的每一条翻译成{tgt.name}；前文、后文只帮助理解，不要翻译。
+{translate_rules(tgt, opts)}
 - 先把这一组当成一段完整的话读懂：谁在说、对谁说、省略的主语 / 宾语是谁（看画面和前后文）、语气（调侃、改口、反问、玩笑）、句和句怎么接（一个人连着说的几句要译得前后连贯）。
 - 只译原文有的意思：不要加原文没有的内容，也不要漏掉（程度、时间、转折、语气词表达的意思）。原文省略的主语看不出是谁时，译文也不要硬补人称。
-- 人名、地名、专有名词、动植物和食物名称按术语表统一；“本集人物”里同一行的叫法指同一个人 / 动物，原文用哪种叫法就用那种叫法后面的译名。
-- 原文里的“｜”是分屏标记：译文要分成同样多段，每段只译原文同一段里的内容。
-- 原文里的“ / ”是原来的换行：译文只在这些地方、或者一行放不下时才换行（JSON 里写作 \\n），不要另加换行。
-- 原文开头的说话人标签（「（さと子）」「（妻は）」这种括号）要保留，括号里的名字按人物表 / 术语表译；
-  「⚟」（画外的声音）、「♪」「➡」这些记号照原样保留在同样的位置。
-- 音效、画外音写在括号里，歌曲前加 ♪。
-- {tgt.prompt_target_rules(opts)}"""
+- 人名、地名、专有名词、动植物和食物名称按术语表统一；“本集人物”里同一行的叫法指同一个人 / 动物，原文用哪种叫法就用那种叫法后面的译名。"""
 
 
 def _glossary_for(text, terms, cast):
@@ -163,39 +155,39 @@ def _memory(group, done, tgt_code):
             + "\n".join(f"[{iid}] 前面 {_mmss(t)}：{_show(o)} → {_show(tr)}" for iid, t, o, tr, _, _ in mem) + "\n\n")
 
 
-def group_prompt(cues, a, b, topic, tgt_code, summary, terms, cast):
-    pre, grp, post = cues[max(0, a - 8):a], cues[a:b + 1], cues[b + 1:b + 7]
+def group_prompt(cues, a, b, topic, tgt_code, summary, terms, cast, done=None):
+    """done：前面已经翻好的字幕（翻译时可能合过几条，和 cues 对不上序号）；不给就用 cues[:a]。"""
+    done = cues[:a] if done is None else done
+    pre, grp, post = done[-8:], cues[a:b + 1], cues[b + 1:b + 7]
     seen = "\n".join(c["orig"]["text"] for c in pre + grp + post)
     tr = lambda c: c.get("tr", {}).get(tgt_code, {}).get("text", "")
     return (f"## 本集概要\n{summary or '（无）'}\n\n{_glossary_for(seen, terms, cast)}\n\n"
             + ("## 前文（只帮助理解）\n" + "\n".join(f"{_mmss(c['start'])} {_show(c['orig']['text'])} → {_show(tr(c))}" for c in pre)
                + "\n\n" if pre else "")
-            + _memory(grp, cues[:a], tgt_code)
+            + _memory(grp, done, tgt_code)
             + f"## 这一组{f'（{topic}）' if topic else ''}\n"
-            + "\n".join(f"[{c['id']}] {_mmss(c['start'])} {KIND.get(c.get('type'), c.get('type'))}：{_show(c['orig']['text'])}" for c in grp)
+            + "\n".join(f"[{c['id']}] {_mmss(c['start'])}-{_mmss(c['end'])} {KIND.get(c.get('type'), c.get('type'))}：{_show(c['orig']['text'])}"
+                        for c in grp)
             + ("\n\n## 后文（只帮助理解）\n" + "\n".join(f"{_mmss(c['start'])} {_show(c['orig']['text'])}" for c in post) if post else "")
             + "\n\n请按要求输出 JSON。")
 
 
-def run(cfg, cache_dir, cues, src, tgt, tgt_code, glossary, known_terms, frames=None):
-    """精翻：按组重新翻 cues 里 tgt_code 的译文（就地修改）。人物表的叫法并进 glossary["terms"]（作品术语表优先），
-    人物表存进 glossary["cast"]。frames：{来源条目 id: 截图路径}。返回改了几条。"""
-    from .client import LLM, FatalLLMError
+def run(deep, plain, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frames=None):
+    """分组按顺序翻整理好的字幕（只有原文），返回翻好的字幕（可能把相邻几条合成了一条；没翻到的留着空译文，之后补翻）。
+    deep：翻每一组用（带思考程度）；plain：人物表、分组用。人物表的叫法并进 glossary["terms"]（作品术语表优先），
+    人物表存进 glossary["cast"]。frames：{来源条目 id: 截图路径}。"""
     from . import prompts
-    from .translate import merge_terms
+    from .translate import Asker, apply_translation, merge_terms
 
     if not cues:
-        return 0
-    plain = LLM(cfg, cache_dir=cache_dir)
-    deep = LLM(cfg, cache_dir=cache_dir, effort=cfg.llm.reasoning_effort)
-
-    log("精翻：整理人物表（同一个人 / 动物的各种叫法）")
+        return []
+    log("分组翻：整理人物表（同一个人 / 动物的各种叫法）")
     try:
         cast = _clean_cast(plain.chat_json(cast_system(src, tgt), cast_input(cues, prompts.glossary_text(known_terms))))
     except Cancelled:
         raise
     except Exception as e:
-        log(f"  人物表没整理出来（{str(e)[:150]}），不带人物表精翻")
+        log(f"  人物表没整理出来（{str(e)[:150]}），不带人物表翻")
         cast = []
     if cast:
         log("  " + "；".join("、".join(f"{n['src']}→{n['tr']}" for n in ch["names"][:4]) for ch in cast[:12])
@@ -207,7 +199,7 @@ def run(cfg, cache_dir, cues, src, tgt, tgt_code, glossary, known_terms, frames=
         glossary["cast"] = cast
     terms = glossary.get("terms") or []
 
-    log("精翻：按话题分组")
+    log("分组翻：按话题分组")
     try:
         groups = make_groups(plain.chat_json(GROUP_SYSTEM, "\n".join(
             f"[{c['id']}] {_mmss(c['start'])} {KIND.get(c.get('type'), c.get('type'))}：{_show(c['orig']['text'])}" for c in cues)), cues)
@@ -220,41 +212,27 @@ def run(cfg, cache_dir, cues, src, tgt, tgt_code, glossary, known_terms, frames=
         + (f"；思考程度「{deep.effort}」" if deep.effort else ""))
 
     system = tr_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}))
-    use_frames = bool(frames)
-    changed = kept = 0
+    ask = Asker(deep, frames)
+    done, failed = [], 0
     for n, (a, b, topic) in enumerate(groups):
-        progress(n, len(groups), f"精翻 {n + 1}/{len(groups)} 组", every=0)
-        prompt = group_prompt(cues, a, b, topic, tgt_code, glossary.get("summary"), terms, cast)
-        imgs = []
-        if use_frames:
-            for c in cues[a:b + 1]:
-                p = next((frames[s] for s in c.get("sources") or [] if frames.get(s)), None)
-                if p and c.get("type") in ("dialogue", "narration"):
-                    imgs.append({"path": str(p), "label": f"图 · {c['id']}", "detail": "low"})
+        progress(n, len(groups), f"分组翻 {n + 1}/{len(groups)} 组", every=0)
+        grp = cues[a:b + 1]
+        prompt = group_prompt(cues, a, b, topic, tgt_code, glossary.get("summary"), terms, cast, done)
+        pics = [c for c in grp if c.get("type") in ("dialogue", "narration")]
         try:
-            try:
-                res = deep.chat_json(system, prompt, imgs[:12] or None)
-            except FatalLLMError as e:
-                if not imgs or e.status in (401, 403):
-                    raise
-                use_frames = False
-                res = deep.chat_json(system, prompt)
+            out, missing = apply_translation(grp, ask(system, prompt, pics, limit=12), tgt_code)
+            if missing:
+                retry = prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(c['id'] for c in missing)}。请重新完整输出这一组。"
+                out2, missing2 = apply_translation(grp, ask(system, retry, pics, limit=12), tgt_code)
+                if len(missing2) < len(missing):
+                    out, missing = out2, missing2
         except Cancelled:
             raise
         except Exception as e:
-            log(f"  第 {n + 1} 组（{fmt_time(cues[a]['start'])} 起）精翻失败，保留原来的译文：{str(e)[:150]}")
-            kept += b - a + 1
-            continue
-        got = {str(x.get("id")): (x.get("tr") or "").strip() for x in res.get("items") or [] if isinstance(x, dict)}
-        for c in cues[a:b + 1]:
-            new = re.sub(r" / ", "\n", got.get(c["id"], ""))
-            if not new or len(segments.pieces(new)) != len(segments.pieces(c["orig"]["text"])):
-                kept += 1  # 漏了、或者分屏段数对不上：保留原来的译文
-                continue
-            old = c["tr"].get(tgt_code, {}).get("text", "")
-            if new != old:
-                c["tr"][tgt_code] = {"text": new}
-                changed += 1
-    progress(len(groups), len(groups), "精翻", every=0)
-    log(f"精翻完成：{changed} 条译文有变化" + (f"，{kept} 条保留原来的译文（漏了或分屏对不上）" if kept else ""))
-    return changed
+            log(f"  第 {n + 1} 组（{fmt_time(grp[0]['start'])} 起）没翻成，之后逐条补翻：{str(e)[:150]}")
+            out, missing = [], grp
+        failed += len(missing)
+        done += sorted(out + [dict(c, flags=list(c.get("flags", []))) for c in missing], key=lambda c: (c["start"], c["end"]))
+    progress(len(groups), len(groups), "分组翻", every=0)
+    log(f"分组翻完成：{len(groups)} 组" + (f"，{failed} 条没翻到、之后逐条补翻" if failed else ""))
+    return done

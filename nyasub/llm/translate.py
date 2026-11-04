@@ -1,4 +1,5 @@
-"""大模型阶段：术语表 → 分段“合并 + 纠错 + 翻译” → 其余目标语言。
+"""大模型阶段：整理（术语表 → 分段把几路来源合并成一条条字幕，只出原文）→ 翻译（只翻一次，翻的时候可以把相邻几条合成一条）
+→ 分段、统一 → 其余目标语言。
 
 两种跑法：
 - api：直接调 OpenAI 兼容接口（见 client.py）。
@@ -116,7 +117,7 @@ def apply_result(chunk, result, tgt, src_lang):
         if c.get("type") == "drop":  # 模型有时把要丢掉的条目写成 type 为 drop 的字幕，而不是放进 drop 列表
             continue
         srcs = [by_id[s] for s in src]
-        orig = (c.get("orig") or c.get("ja") or "").strip() or "\n".join(s["text"] for s in srcs)
+        orig = (c.get("orig") or c.get("ja") or "").strip().replace(" / ", "\n") or "\n".join(s["text"] for s in srcs)  # “ / ”是提示词里的换行
         orig = keep_subs_wording(srcs, orig)
         tr = (c.get("tr") or c.get("zh") or "").strip()
         srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
@@ -145,7 +146,8 @@ def split_unspoken(srcs, orig, tr):
     said = "".join(s["text"] + s.get("asr_hint", "") for s in speech)
     # 只拆“同一时间字幕在说别的话”的画面字。半句字幕、半句画面字是同一句话：画面字出现时字幕通常不重复显示，不会有这个标记
     loose = [s for s in screen if s.get("over_speech") and sim(s["text"], said) < 80]
-    o_parts, t_parts = orig.split("｜"), tr.split("｜")
+    o_parts = orig.split("｜")
+    t_parts = tr.split("｜") if tr else [""] * len(o_parts)  # 整理只出原文：没有译文，只按原文拆
     if not loose or len(o_parts) < 2 or len(o_parts) != len(t_parts):
         return srcs, orig, tr, []
     split = []
@@ -167,12 +169,12 @@ def split_unspoken(srcs, orig, tr):
         if not span or best < 70:
             continue
         i, j = span
-        split.append((s, "｜".join(p.strip() for p in o_parts[i:j]), "｜".join(p.strip() for p in t_parts[i:j])))
+        split.append((s, "｜".join(p.strip() for p in o_parts[i:j]), "｜".join(p.strip() for p in t_parts[i:j]) if tr else ""))
         del o_parts[i:j], t_parts[i:j]
     if not split:
         return srcs, orig, tr, []
     gone = {id(s) for s, _, _ in split}
-    return [s for s in srcs if id(s) not in gone], "｜".join(o_parts), "｜".join(t_parts), split
+    return [s for s in srcs if id(s) not in gone], "｜".join(o_parts), "｜".join(t_parts) if tr else "", split
 
 
 def keep_subs_wording(srcs, orig):
@@ -301,25 +303,15 @@ def recall(chunk, done, tgt_code, per_item=2, limit=15):
     return out[:limit]
 
 
-def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
-    """整理 + 翻译一起做（流水线里是两步，见 organize_api / translate_api）。返回 (cues, glossary)。"""
-    cues, glossary = organize_api(items, cfg, cache_dir, src_code, known_terms, frames)
-    return translate_api(cues, glossary, cfg, cache_dir, src_code, known_terms, frames)
-
-
-def organize_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
-    """整理：术语表 / 概要 → 分段把几路来源合并成一条条字幕（合并、拆分、分类、丢杂字）→ 补翻漏掉的 → 按来源重新拆分、拆太长的。
-    分段请求里模型顺带给出第一版译文：不分组翻时就是最终译文，分组翻时作为分组翻失败的那几句的后备。
-    返回 (cues, glossary)。frames：{条目 id: 画面截图路径}，有的话每段都附上截图。"""
+def organize_api(items, cfg, cache_dir, src_code, known_terms):
+    """整理（只出原文，不翻译）：术语表 / 概要 → 分段把几路来源合并成一条条字幕（多来源合并、纠正错字、分类、丢杂字）。
+    要看译文才能定的合并、分屏放在翻译那一步。返回 (cues, glossary)。"""
     from .client import LLM
 
-    # 思考程度：不分组翻时用在这里的分段请求上（这里给出的就是最终译文）；分组翻时留给分组翻那一轮
     llm = LLM(cfg, cache_dir=cache_dir)
-    chunk_llm = llm if cfg.llm.grouped else LLM(cfg, cache_dir=cache_dir, effort=cfg.llm.reasoning_effort)
     src = lang.get(src_code)
     tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)
-    opts = cfg.render.lang_options
 
     log("生成术语表 / 本集概要")
     gl = llm.chat_json(prompts.glossary_system(src, tgt), prompts.glossary_input(items, known_terms))
@@ -327,75 +319,172 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     glossary = {"summary": gl.get("summary", ""), "terms": terms, "new": len(terms) - len(known_terms or [])}
     gl_text = prompts.glossary_text(terms)
 
-    system = prompts.chunk_system(src, tgt, cfg.project.context, opts.get(tgt_code, {}))
+    system = prompts.organize_system(src, cfg.project.context)
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
-    use_frames = bool(frames)
-
-    def ask(prompt, chunk):
-        """这一段请求：带截图问；接口不收图片（模型不支持看图）就这一集剩下的都不带图。"""
-        nonlocal use_frames
-        from .client import FatalLLMError
-
-        imgs = [it["id"] for it in chunk if (frames or {}).get(it["id"])] if use_frames else []
-        if imgs:
-            images = [{"path": str(frames[x]), "label": f"图 {n} · {x}", "detail": "low"} for n, x in enumerate(imgs, 1)]
-            try:
-                return chunk_llm.chat_json(system, prompt + prompts.FRAMES_NOTE, images)
-            except FatalLLMError as e:
-                if e.status in (401, 403):
-                    raise
-                use_frames = False
-                log(f"  翻译接口不接受图片（{str(e)[:120]}），这一集改为不带画面截图翻译")
-        return chunk_llm.chat_json(system, prompt)
-
     for i, chunk in enumerate(chunks, 1):
         progress(i - 1, len(chunks), f"整理 {i}/{len(chunks)} 段", every=0)
-        log(f"融合翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
-        prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code,
-                                      recall(chunk, all_cues, tgt_code))
-        res = ask(prompt, chunk)
-        cues, missing = apply_result(chunk, res, tgt_code, src.code)
-        # 这一段新定下的译名（术语表里没有的人名等）记下来，后面各段沿用，前后统一
-        learned = [dict(t, type=t.get("type") or "人名", note=t.get("note") or "翻译时补充")
-                   for t in res.get("new_terms") or [] if isinstance(t, dict) and t.get("src") and t.get("tr")]
-        if learned:
-            terms = merge_terms(terms, learned)
-            glossary["terms"] = terms
-            gl_text = prompts.glossary_text(terms)
+        log(f"整理第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
+        prompt = prompts.organize_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:])
+        cues, missing = apply_result(chunk, llm.chat_json(system, prompt), tgt_code, src.code)
         if missing:
             log(f"  模型漏了 {len(missing)} 条，补问一次")
-            retry = ask(prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(missing)}。请重新完整输出。", chunk)
+            retry = llm.chat_json(system, prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(missing)}。请重新完整输出。")
             cues2, missing2 = apply_result(chunk, retry, tgt_code, src.code)
             if len(missing2) < len(missing):
                 cues, missing = cues2, missing2
             cues += fallback(chunk, missing, tgt_code, src.code)
         all_cues += sorted(cues, key=lambda x: x["start"])
-    cues = finalize(all_cues)
-    translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
-    resegment(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
-    split_long(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
-    return cues, glossary
+    for c in all_cues:
+        c["tr"] = {}  # 整理不翻译：模型顺手写了译文也不要
+    return finalize(all_cues), glossary
 
 
-def translate_api(cues, glossary, cfg, cache_dir, src_code, known_terms, frames=None):
-    """翻译：整理好的字幕（cues 带着整理时的第一版译文，就地修改）→ 分组翻（开了的话）→ 统一术语、统一译法 → 其余目标语言。
-    返回 (cues, glossary)。frames：{来源条目 id: 画面截图路径}，分组翻时附上。"""
+MERGE_MAX, MERGE_GAP = 4, 2.0
+
+
+def can_merge(group):
+    """翻译时合成一条的几条：都是对话或都是旁白、相邻两条间隔不超过 MERGE_GAP 秒、最多 MERGE_MAX 条。"""
+    if len(group) > MERGE_MAX or len({c.get("type") for c in group}) != 1 or group[0].get("type") not in ("dialogue", "narration"):
+        return False
+    return all(b["start"] - a["end"] <= MERGE_GAP for a, b in zip(group, group[1:]))
+
+
+def merge_cues(group, tr, tgt_code):
+    """几条整理好的字幕合成一条：原文按顺序用“｜”接起来（每条原来是一屏），时间、来源合起来。"""
+    c = dict(group[0])
+    c["flags"] = list(c.get("flags", []))
+    if len(group) > 1:
+        srcs, flags = [], []
+        for g in group:
+            srcs += [s for s in g.get("sources", []) if s not in srcs]
+            flags += [f for f in g.get("flags", []) if f not in flags]
+        c.update(start=min(g["start"] for g in group), end=max(g["end"] for g in group), sources=srcs, flags=flags,
+                 onscreen=any(g.get("onscreen") for g in group),
+                 orig=dict(group[0]["orig"], text="｜".join(g["orig"]["text"] for g in group)))
+    c["tr"] = {**(c.get("tr") or {}), tgt_code: {"text": tr}}
+    return c
+
+
+def apply_translation(chunk, result, tgt_code):
+    """校验翻译结果：每项 ids 是一条或连续几条（合成一条，见 can_merge）。返回 (翻好的字幕, 没翻到的条目)。
+    合并不合规矩、译文是空的，这几条都当没翻到。"""
+    pos = {c["id"]: i for i, c in enumerate(chunk)}
+    seen, out = set(), []
+    for x in (result or {}).get("items") or []:
+        if not isinstance(x, dict):
+            continue
+        ids = x.get("ids") if isinstance(x.get("ids"), list) else ([x["id"]] if x.get("id") else [])
+        ids = [str(i) for i in ids]
+        if not ids or len(set(ids)) != len(ids) or any(i not in pos or i in seen for i in ids):
+            continue
+        ix = sorted(pos[i] for i in ids)
+        group = [chunk[i] for i in ix]
+        tr = (x.get("tr") or "").strip().replace(" / ", "\n")
+        if not tr or ix != list(range(ix[0], ix[-1] + 1)) or (len(group) > 1 and not can_merge(group)):
+            continue
+        seen.update(ids)
+        out.append(merge_cues(group, tr, tgt_code))
+    return out, [c for c in chunk if c["id"] not in seen]
+
+
+def chunk_images(chunk, frames):
+    """这几条字幕的画面：每条取第一张有截图的来源。"""
+    out = []
+    for c in chunk:
+        p = next((frames[s] for s in c.get("sources") or [] if frames.get(s)), None)
+        if p:
+            out.append({"path": str(p), "label": f"图 {len(out) + 1} · {c['id']}", "detail": "low"})
+    return out
+
+
+class Asker:
+    """带画面问；接口不收图片（模型不支持看图）就这一集剩下的都不带图。"""
+
+    def __init__(self, llm, frames):
+        self.llm, self.frames, self.use = llm, frames or {}, bool(frames)
+
+    def __call__(self, system, prompt, chunk, limit=None):
+        from .client import FatalLLMError
+
+        imgs = chunk_images(chunk, self.frames)[:limit] if self.use else []
+        if imgs:
+            try:
+                return self.llm.chat_json(system, prompt + prompts.FRAMES_NOTE, imgs)
+            except FatalLLMError as e:
+                if e.status in (401, 403):
+                    raise
+                self.use = False
+                log(f"  翻译接口不接受图片（{str(e)[:120]}），这一集改为不带画面截图翻译")
+        return self.llm.chat_json(system, prompt)
+
+
+def learn_terms(glossary, res):
+    """这一段新定下的译名（术语表里没有的人名等）记下来，后面各段沿用，前后统一。"""
+    learned = [dict(t, type=t.get("type") or "人名", note=t.get("note") or "翻译时补充")
+               for t in (res or {}).get("new_terms") or [] if isinstance(t, dict) and t.get("src") and t.get("tr")]
+    if learned:
+        glossary["terms"] = merge_terms(glossary["terms"], learned)
+
+
+def translate_chunks(llm, cues, glossary, cfg, src, tgt, tgt_code, frames=None):
+    """普通翻译：整理好的字幕按时间分段，一段一段翻（带前文译文、译文记忆、画面），可以把相邻几条合成一条翻。
+    这一集新定下的译名记进 glossary["terms"]。返回翻好的字幕（没翻到的留着空译文，之后补翻）。"""
+    system = prompts.translate_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}))
+    ask = Asker(llm, frames)
+    chunks = chunk_items(cues, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
+    done = []
+    for i, chunk in enumerate(chunks, 1):
+        progress(i - 1, len(chunks), f"翻译 {i}/{len(chunks)} 段", every=0)
+        log(f"翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
+        gl_text = prompts.glossary_text(glossary["terms"])
+        memory = recall([{"id": c["id"], "text": c["orig"]["text"]} for c in chunk], done, tgt_code)
+        prompt = prompts.translate_prompt(chunk, gl_text, glossary.get("summary"), done[-6:], tgt_code, memory)
+        res = ask(system, prompt, chunk)
+        out, missing = apply_translation(chunk, res, tgt_code)
+        if missing:
+            log(f"  模型漏了 {len(missing)} 条，补问一次")
+            res2 = ask(system, prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(c['id'] for c in missing)}。请重新完整输出。", chunk)
+            out2, missing2 = apply_translation(chunk, res2, tgt_code)
+            if len(missing2) < len(missing):
+                res, out, missing = res2, out2, missing2
+        learn_terms(glossary, res)
+        done += sorted(out + [dict(c, flags=list(c.get("flags", []))) for c in missing], key=lambda c: (c["start"], c["end"]))
+    return done
+
+
+def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, frames=None):
+    """翻译（只翻一次，思考程度用在这一次）：整理好的字幕 → 普通翻译或分组按顺序翻（都可以把相邻几条合成一条翻）
+    → 补翻漏掉的 → 按来源重新分段、拆太长的 → 统一术语、统一译法 → 其余目标语言。
+    items：融合后的来源条目（分段时看来源的时间）；frames：{来源条目 id: 画面截图路径}。返回 (cues, glossary)。"""
     from .client import LLM
     from .consistency import unify
 
     llm = LLM(cfg, cache_dir=cache_dir)
+    deep = LLM(cfg, cache_dir=cache_dir, effort=cfg.llm.reasoning_effort)
     src = lang.get(src_code)
     targets = [lang.canonical(t) for t in cfg.project.targets]
     tgt_code = targets[0]
     tgt = lang.get(tgt_code)
+    n_before = len(cues)
     if cfg.llm.grouped:
         from . import fine
 
-        fine.run(cfg, cache_dir, cues, src, tgt, tgt_code, glossary, known_terms, frames)
-        glossary["new"] = len(glossary["terms"]) - len(known_terms or [])
+        cues = fine.run(deep, llm, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frames)
+    else:
+        if deep.effort:
+            log(f"翻译：思考程度「{deep.effort}」")
+        cues = translate_chunks(deep, cues, glossary, cfg, src, tgt, tgt_code, frames)
+    if len(cues) < n_before:
+        log(f"翻译时合并了 {n_before - len(cues)} 处（一句话被拆在几屏里、按原来的分法拆开译不通顺）")
+    cues = finalize(cues)
+    glossary["new"] = len(glossary["terms"]) - len(known_terms or [])
     terms = glossary["terms"]
     gl_text = prompts.glossary_text(terms)
+    translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
+    by_id = {it["id"]: it for it in items}
+    resegment(llm, cues, by_id, src, tgt_code, cfg)
+    split_long(llm, cues, by_id, src, tgt_code, cfg)
     enforce_terms(llm, cues, terms, src, tgt_code, cfg)
     unify(llm, cues, src, tgt, tgt_code)
 
