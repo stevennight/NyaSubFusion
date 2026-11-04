@@ -11,7 +11,8 @@ const LBL: Record<string, string> = {
   "ocr.refine": "画面字复核 › 开关", "ocr.refine_mode": "画面字复核 › 复核方式", "ocr.refine_frame_width": "画面字复核 › 整帧画面宽度",
   "ocr.refine_boxed": "画面字复核 › 框出要转写的字", "ocr.refine_batch": "画面字复核 › 每批几处",
   "ocr.refine_context": "画面字复核 › 附整帧画面", "ocr.refine_context_width": "画面字复核 › 附的整帧画面宽度",
-  "llm.mode": "整理与翻译 › 方式", "llm.translate": "整理与翻译 › 接口", "llm.frames": "整理与翻译 › 参考画面",
+  "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.frames": "整理 › 参考画面",
+  "llm.grouped": "翻译 › 分组按顺序翻", "llm.reasoning_effort": "翻译 › 思考程度",
   "render.profiles": "输出 › 字幕文件（整份）", "render.strip_marks": "输出 › 文字清理", "render.fallback_style": "输出 › 兜底样式",
   "render.broadcast": "输出 › 广播字幕原样", "render.broadcast_font": "输出 › 广播字幕原样的字体",
   "render.video.mode": "输出 › 运行完自动生成视频", "render.video.profiles": "封装 MKV › 放进哪些字幕", "render.video.default": "封装 MKV › 默认轨",
@@ -23,7 +24,7 @@ const STYLE_FIELD: Record<string, string> = {
   font: "字体", size: "字号", color: "文字颜色", outline_color: "描边颜色", outline: "描边", shadow: "阴影", bold: "粗体", italic: "斜体",
   spacing: "字间距", box: "底色框", box_color: "底色框颜色", box_opacity: "底色框不透明度", base: "来自",
 };
-const SECTION: Record<string, string> = { subs: "读取字幕", asr: "语音识别", ocr: "画面字识别", fusion: "合并来源", llm: "整理与翻译", render: "输出", project: "语言" };
+const SECTION: Record<string, string> = { subs: "读取字幕", asr: "语音识别", ocr: "画面字识别", fusion: "合并来源", llm: "翻译", render: "输出", project: "语言" };
 
 export function settingLabel(keys: string[]): string {
   const path = keys.join(".");
@@ -40,7 +41,7 @@ export function stepOf(keys: string[]): string {
   if (a === "asr") return "asr";
   if (a === "ocr") return b?.startsWith("refine") ? "ocr_refine" : "ocr";
   if (a === "fusion") return "fuse";
-  if (a === "llm") return "translate";
+  if (a === "llm") return b === "frames" ? "organize" : "translate";
   return "output";
 }
 

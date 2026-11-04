@@ -22,11 +22,11 @@ const ASR_API_KINDS = {
 };
 const LLM_MODE: Record<string, string> = { auto: "自动", api: "调接口", export: "导出任务文件", off: "不翻译" };
 
-type StepId = "basic" | "subs" | "asr" | "ocr" | "ocr_refine" | "align" | "fuse" | "translate" | "annotate" | "render" | "video";
+type StepId = "basic" | "subs" | "asr" | "ocr" | "ocr_refine" | "align" | "fuse" | "organize" | "translate" | "annotate" | "render" | "video";
 const GROUPS: { title: string; sub?: string; steps: StepId[] }[] = [
   { title: "开始", steps: ["basic"] },
   { title: "来源", sub: "识别出原文", steps: ["subs", "asr", "ocr", "ocr_refine"] },
-  { title: "合成", sub: "合成一份字幕", steps: ["align", "fuse", "translate"] },
+  { title: "合成", sub: "合成一份字幕", steps: ["align", "fuse", "organize", "translate"] },
   { title: "输出", sub: "设置在「输出」页", steps: ["annotate", "render", "video"] },
 ];
 const STEP_NAME: Record<StepId, string> = { ...STAGE_LBL, basic: "语言与作品", video: "生成视频" } as Record<StepId, string>;
@@ -117,7 +117,12 @@ function summary(id: StepId, val: (p: string) => unknown, langs: { code: string;
     case "ocr_refine": return val("ocr.refine") === "vlm" ? (val("ocr.refine_mode") === "crop" ? "看本地截图逐处确认" : "看整帧画面逐处确认") : "关 · 用视觉大模型逐处确认";
     case "align": return "按语音校准字幕时间";
     case "fuse": return "几路结果合成一份";
-    case "translate": return `${LLM_MODE[String(val("llm.mode") ?? "auto")]}${val("llm.frames") ? " · 附画面" : ""}`;
+    case "organize": return `合并、拆分、分类${val("llm.frames") ? " · 附画面" : ""}`;
+    case "translate": {
+      const effort = String(val("llm.reasoning_effort") ?? "");
+      const how = isFine(val) ? " · 精翻" : `${val("llm.grouped") ? " · 分组翻" : ""}${effort ? ` · 思考 ${effort}` : ""}`;
+      return `${LLM_MODE[String(val("llm.mode") ?? "auto")]}${how}`;
+    }
     case "annotate": {
       const n = ((val("render.profiles") as { layers: { annotate?: { kind: string } }[] }[]) ?? []).flatMap((p) => p.layers).filter((l) => l.annotate && l.annotate.kind !== "none").length;
       return n ? `${n} 个图层有注音` : "没有图层加注音";
@@ -155,7 +160,7 @@ function StepDetail({ id, ctx }: { id: StepId; ctx: StepCtx }) {
     basic: () => <BasicStep ctx={ctx} />, subs: () => <SubsStep ctx={ctx} />, asr: () => <AsrStep ctx={ctx} />, ocr: () => <OcrStep ctx={ctx} />,
     ocr_refine: () => <RefineStep ctx={ctx} />, align: () => <Plain text="按语音识别的时间校准自带字幕的时间（广播字幕常整体偏移 1~2 秒）。没有可调的设置。" />,
     fuse: () => <><Plain text="把字幕、语音、画面字三路结果按时间合成一份：去重、分出台词和说明、补上字幕漏掉的话。没有可调的设置。" />{ctx.episode && <FuseStats />}</>,
-    translate: () => <TranslateStep ctx={ctx} />, annotate: () => <JumpStep ctx={ctx} text="注音是按图层设的：在「输出」里选一个字幕文件，点开图层就能设注音（振假名、拼音……）。读音不对的写进「资料」里的读音词典。" />,
+    organize: () => <OrganizeStep ctx={ctx} />, translate: () => <TranslateStep ctx={ctx} />, annotate: () => <JumpStep ctx={ctx} text="注音是按图层设的：在「输出」里选一个字幕文件，点开图层就能设注音（振假名、拼音……）。读音不对的写进「资料」里的读音词典。" />,
     render: () => <JumpStep ctx={ctx} text="输出哪些字幕文件、每个文件里有哪些图层、用什么样式，都在「输出」里。" />,
     video: () => <JumpStep ctx={ctx} text="封装 MKV、压制硬字幕，以及运行完要不要自动做，都在「输出」里。" />,
   };
@@ -396,6 +401,7 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
   const mode = String(val("llm.mode") ?? "auto");
   const context = String(val("project.context") ?? "");
   const terms = s.data?.glossary?.terms.length ?? 0;
+  const fine = isFine(val);
   return (
     <div className="card">
       <div className="kv">
@@ -405,10 +411,18 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
         <Lbl ctx={ctx} k="llm.translate">接口</Lbl>
         <div className="row"><select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
           <option value="">跟随设置</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}</select>
-          <span className="hint">接口在「设置」里管理</span></div>
-        <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
-        <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
-          <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网）。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
+          <span className="hint">接口在「设置」里管理；「整理」也用这个接口</span></div>
+        <Lbl ctx={ctx} k={["llm.grouped", "llm.reasoning_effort"]}>精翻</Lbl>
+        <label className="row"><input type="checkbox" checked={fine} onChange={(e) => { set("llm.grouped", e.target.checked); set("llm.reasoning_effort", e.target.checked ? "high" : ""); }} />分组按顺序翻 + 思考程度 high
+          <Tip text="快捷开关：勾上 = 下面两项设成“分组按顺序翻”和思考程度 high（测试里效果最好的组合），去掉 = 两项都关。也可以在下面分别设。" /></label>
+        <Lbl ctx={ctx} k="llm.grouped">分组按顺序翻</Lbl>
+        <label className="row"><input type="checkbox" checked={!!val("llm.grouped")} onChange={(e) => set("llm.grouped", e.target.checked)} />整理好的字幕按话题几句一组，从头到尾重翻一遍
+          <Tip text="先整理一份人物表（同一个人 / 动物的各种叫法对到同一个译名），再按话题把字幕分成几句一组，从头到尾一组一组重新翻：每次带上前后文、前面已经翻好的译法和这几句的画面。省略主语、改口、调侃这类要看上下文的句子更准，名字和前后译法更统一。配合较高的思考程度效果才明显。一集多花半小时左右，输入用量约两倍、输出两三倍；某一组失败时，那几句保留整理时的译文。" /></label>
+        <Lbl ctx={ctx} k="llm.reasoning_effort">思考程度</Lbl>
+        <div className="row"><input className="inp" list="llm-efforts" style={{ maxWidth: 160 }} placeholder="不设（接口默认）" value={String(val("llm.reasoning_effort") ?? "")}
+            onChange={(e) => set("llm.reasoning_effort", e.target.value.trim())} />
+          <datalist id="llm-efforts">{["low", "medium", "high", "xhigh"].map((x) => <option key={x} value={x} />)}</datalist>
+          <Tip text="请求里的 reasoning_effort，只对会思考的模型有用。各模型支持的档不一样（常见 low / medium / high，有的还有 xhigh、minimal），接口查不到列表，按模型说明填；填了接口不认会自动改成不设。越高想得越久、越慢，思考部分按输出计费。分组翻时只用在分组翻那一轮；不分组时用在「整理」那一步（整理时给出的译文就是最终译文，测试里调高没看出效果）。" /></div>
         {ctx.episode && (<>
           <span className="lbl">背景资料</span>
           <div className="col" style={{ gap: 4 }}>
@@ -420,6 +434,25 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
       </div>
     </div>
   );
+}
+
+/** 精翻 = 分组按顺序翻 + 思考程度 high（快捷开关，看的是这两项） */
+function isFine(val: (p: string) => unknown) {
+  return !!val("llm.grouped") && String(val("llm.reasoning_effort") ?? "") === "high";
+}
+
+function OrganizeStep({ ctx }: { ctx: StepCtx }) {
+  const { val, set } = ctx;
+  return (<>
+    <Plain text="用大模型把合成后的字幕整理成一条条字幕：几路来源说的同一句话合成一条，分出台词、旁白、说明，丢掉画面上的杂字，太长的拆开。整理时顺带给出第一版译文：不分组翻时就是最终译文。接口和方式在「翻译」里设。" />
+    <div className="card">
+      <div className="kv">
+        <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
+        <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
+          <Tip text="整理时每条字幕附一张它出现时的画面小图，让大模型看到场景再判断、再翻（比如「揚げる」是炸还是收网）；分组翻时也附这几句的画面。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
+      </div>
+    </div>
+  </>);
 }
 
 function FuseStats() {

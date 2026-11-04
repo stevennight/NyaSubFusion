@@ -302,13 +302,22 @@ def recall(chunk, done, tgt_code, per_item=2, limit=15):
 
 
 def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
-    """返回 (cues, glossary)。frames：{条目 id: 画面截图路径}，有的话每段翻译都附上截图。"""
+    """整理 + 翻译一起做（流水线里是两步，见 organize_api / translate_api）。返回 (cues, glossary)。"""
+    cues, glossary = organize_api(items, cfg, cache_dir, src_code, known_terms, frames)
+    return translate_api(cues, glossary, cfg, cache_dir, src_code, known_terms, frames)
+
+
+def organize_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
+    """整理：术语表 / 概要 → 分段把几路来源合并成一条条字幕（合并、拆分、分类、丢杂字）→ 补翻漏掉的 → 按来源重新拆分、拆太长的。
+    分段请求里模型顺带给出第一版译文：不分组翻时就是最终译文，分组翻时作为分组翻失败的那几句的后备。
+    返回 (cues, glossary)。frames：{条目 id: 画面截图路径}，有的话每段都附上截图。"""
     from .client import LLM
 
+    # 思考程度：不分组翻时用在这里的分段请求上（这里给出的就是最终译文）；分组翻时留给分组翻那一轮
     llm = LLM(cfg, cache_dir=cache_dir)
+    chunk_llm = llm if cfg.llm.grouped else LLM(cfg, cache_dir=cache_dir, effort=cfg.llm.reasoning_effort)
     src = lang.get(src_code)
-    targets = [lang.canonical(t) for t in cfg.project.targets]
-    tgt_code = targets[0]
+    tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)
     opts = cfg.render.lang_options
 
@@ -324,7 +333,7 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     use_frames = bool(frames)
 
     def ask(prompt, chunk):
-        """这一段翻译请求：带截图问；接口不收图片（模型不支持看图）就这一集剩下的都不带图。"""
+        """这一段请求：带截图问；接口不收图片（模型不支持看图）就这一集剩下的都不带图。"""
         nonlocal use_frames
         from .client import FatalLLMError
 
@@ -332,16 +341,16 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
         if imgs:
             images = [{"path": str(frames[x]), "label": f"图 {n} · {x}", "detail": "low"} for n, x in enumerate(imgs, 1)]
             try:
-                return llm.chat_json(system, prompt + prompts.FRAMES_NOTE, images)
+                return chunk_llm.chat_json(system, prompt + prompts.FRAMES_NOTE, images)
             except FatalLLMError as e:
                 if e.status in (401, 403):
                     raise
                 use_frames = False
                 log(f"  翻译接口不接受图片（{str(e)[:120]}），这一集改为不带画面截图翻译")
-        return llm.chat_json(system, prompt)
+        return chunk_llm.chat_json(system, prompt)
 
     for i, chunk in enumerate(chunks, 1):
-        progress(i - 1, len(chunks), f"翻译 {i}/{len(chunks)} 段", every=0)
+        progress(i - 1, len(chunks), f"整理 {i}/{len(chunks)} 段", every=0)
         log(f"融合翻译第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
         prompt = prompts.chunk_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], tgt_code,
                                       recall(chunk, all_cues, tgt_code))
@@ -366,9 +375,28 @@ def run_api(items, cfg, cache_dir, src_code, known_terms, frames=None):
     translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
     resegment(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
     split_long(llm, cues, {it["id"]: it for it in items}, src, tgt_code, cfg)
-    enforce_terms(llm, cues, terms, src, tgt_code, cfg)
+    return cues, glossary
+
+
+def translate_api(cues, glossary, cfg, cache_dir, src_code, known_terms, frames=None):
+    """翻译：整理好的字幕（cues 带着整理时的第一版译文，就地修改）→ 分组翻（开了的话）→ 统一术语、统一译法 → 其余目标语言。
+    返回 (cues, glossary)。frames：{来源条目 id: 画面截图路径}，分组翻时附上。"""
+    from .client import LLM
     from .consistency import unify
 
+    llm = LLM(cfg, cache_dir=cache_dir)
+    src = lang.get(src_code)
+    targets = [lang.canonical(t) for t in cfg.project.targets]
+    tgt_code = targets[0]
+    tgt = lang.get(tgt_code)
+    if cfg.llm.grouped:
+        from . import fine
+
+        fine.run(cfg, cache_dir, cues, src, tgt, tgt_code, glossary, known_terms, frames)
+        glossary["new"] = len(glossary["terms"]) - len(known_terms or [])
+    terms = glossary["terms"]
+    gl_text = prompts.glossary_text(terms)
+    enforce_terms(llm, cues, terms, src, tgt_code, cfg)
     unify(llm, cues, src, tgt, tgt_code)
 
     for extra in targets[1:]:

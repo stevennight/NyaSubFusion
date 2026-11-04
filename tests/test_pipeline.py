@@ -261,9 +261,9 @@ def test_redo_request_survives_stop_and_can_pick_steps(sample, api_config, fake)
     plan = {p["stage"]: p["status"] for p in pipeline.Run(sample, cfg, pipeline.Options()).plan()}
     assert plan["translate"] == "done" and plan["fuse"] == "done"
 
-    # 只重做翻译、不用缓存：只有翻译重新请求，前面的步骤复用
+    # 只重做整理、不用缓存：整理重新请求（翻译跟着重做），前面的步骤复用
     before = fp(sample, "fuse")
-    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "translate,no_cache") == 0
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config, "--redo", "organize,no_cache") == 0
     assert len(fake.CALLS) > calls
     assert fp(sample, "fuse") == before
     assert not pipeline.Run(sample, cfg, pipeline.Options())._pending()

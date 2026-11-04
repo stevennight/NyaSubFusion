@@ -19,11 +19,13 @@ class FatalLLMError(RuntimeError):
 
 
 class LLM:
-    def __init__(self, cfg, vision=False, cache_dir=None):
+    def __init__(self, cfg, vision=False, cache_dir=None, effort=""):
+        """effort：思考程度（请求里的 reasoning_effort，比如 low / medium / high），空 = 不设、用接口默认。"""
         from openai import OpenAI
 
         c = cfg.llm
         self.c = c
+        self.effort = (effort or "").strip()
         ep = cfg.endpoint("vision" if vision else "translate")
         self.model = ep["model"]
         if not ep["key"] or not self.model:
@@ -36,7 +38,8 @@ class LLM:
         img_hashes = [hashlib.sha1(Path(p).read_bytes()).hexdigest() if not isinstance(p, dict)
                       else [p.get("label"), hashlib.sha1(Path(p["path"]).read_bytes()).hexdigest(), p.get("detail")]
                       for p in images or []]
-        key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes})
+        key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes,
+                      **({"effort": self.effort} if self.effort else {})})  # 不设思考程度时和以前的缓存一样
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
         if cache and cache.exists() and not fresh():
             return load_json(cache)
@@ -65,6 +68,8 @@ class LLM:
                 kw = {"model": self.model, "messages": messages, "temperature": self.c.temperature}
                 if json_mode:
                     kw["response_format"] = {"type": "json_object"}
+                if self.effort:
+                    kw["reasoning_effort"] = self.effort
                 resp = self.client.chat.completions.create(**kw)
                 return parse_json(resp.choices[0].message.content or "")
             except Exception as e:
@@ -72,6 +77,10 @@ class LLM:
                 msg = str(e)
                 if json_mode and ("response_format" in msg or "json_object" in msg):
                     json_mode = False  # 有些中转不支持 JSON 模式
+                    continue
+                if self.effort and "reasoning" in msg.lower() and getattr(e, "status_code", None) in (400, 422):
+                    log(f"  接口不接受思考程度「{self.effort}」（{msg[:150]}），改为不设")
+                    self.effort = ""  # 这个模型不支持，或者没有这一档：后面的请求也不设
                     continue
                 status = getattr(e, "status_code", None)
                 if status in (400, 401, 403, 404, 415, 422):

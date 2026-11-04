@@ -4,8 +4,8 @@ import { useUnsaved } from "../doc";
 import { RUN_DEFAULT, useStore } from "../store";
 import { STAGE_LBL } from "../util";
 
-export const REDO_STAGES = ["subs", "asr", "ocr", "ocr_refine", "align", "fuse", "translate", "annotate"];
-const UNTIL = ["subs", "asr", "ocr", "fuse", "translate", "annotate", "render"];
+export const REDO_STAGES = ["subs", "asr", "ocr", "ocr_refine", "align", "fuse", "organize", "translate", "annotate"];
+const UNTIL = ["subs", "asr", "ocr", "fuse", "organize", "translate", "annotate", "render"];
 export const KIND_LBL: Record<string, string> = { run: "运行", mux: "封装 MKV", burn: "压制硬字幕", broadcast: "导出广播字幕原样" };
 
 export function RunBar() {
