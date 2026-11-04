@@ -57,3 +57,17 @@ def test_unify_applies_only_groups_judged_same():
     assert by["q6"]["tr"]["zh-Hans"]["text"] == "（鸟鸣声）" and not by["q6"]["flags"]  # 判断不统一：不动
     assert "前一句" in llm.prompts[0]
     assert sum(len(r["changed"]) for r in report) == 3
+
+
+def test_group_order_same_in_every_process():
+    """分组顺序不随进程变（集合的顺序跟着 PYTHONHASHSEED 变）：顺序一变，请求就和缓存对不上。"""
+    import subprocess
+    import sys
+
+    code = ("from tests.test_consistency import _c; from nyasub.llm.consistency import similar_groups; "
+            "cues = [_c(i * 2 + k, i * 100 + k * 10, w, w + str(k)) "
+            "for i, w in enumerate(['（鳴き声）', '（笑い声）', '（拍手）ー', '（波の音）', '（風の音）', '（鈴の音）']) for k in (0, 1)]; "
+            "print(similar_groups(cues, 'zh-Hans'))")
+    outs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                           env={**__import__("os").environ, "PYTHONHASHSEED": str(seed)}).stdout for seed in (1, 2, 3, 4)}
+    assert len(outs) == 1

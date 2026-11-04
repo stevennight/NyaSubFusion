@@ -50,10 +50,11 @@ def similar_groups(cues, tgt_code):
         for j in range(len(u) - 2):
             index[u[j:j + 3]].add(k)
     groups, seen = [], set()
-    for key in sorted({u for _, u, _ in units}, key=len):
+    # 顺序要固定（集合的顺序每个进程不一样）：分组顺序一变，请求就和缓存对不上，重跑的结果也会略有出入
+    for key in sorted({u for _, u, _ in units}, key=lambda u: (len(u), u)):
         cands = set().union(*(index[key[j:j + 3]] for j in range(len(key) - 2)))
         members = {}
-        for k in cands:
+        for k in sorted(cands):
             i, u, tr = units[k]
             if _covers(u, key):
                 exact = u == key or full_sim(u, key) >= 90
