@@ -191,12 +191,12 @@ def test_subs_wording_kept_and_names_checked():
             {"orig": {"text": "蚕のさなぎに イナゴ"}, "tr": {"zh-Hans": {"text": "蚕蛹和蚱蜢"}}}]
     terms = [{"src": "キミイさん", "tr": "纪美", "type": "人名"}, {"src": "イナ", "tr": "伊那", "type": "地名"}]
     assert term_misses(cues, terms, "zh-Hans") == [(0, [("キミイ", "纪美")])]
-    # 店名（场所）也要统一；“其他”类的普通事物（食物等）译法可以有变化，不查
+    # 店名、食物等术语表里的每一条都要统一；用了术语表译法的不算
     cues = [{"orig": {"text": "今夜 どろぶねで"}, "tr": {"zh-Hans": {"text": "今夜 在泥舟"}}},
-            {"orig": {"text": "ナマコを干す"}, "tr": {"zh-Hans": {"text": "晒干海参"}}}]
-    terms = [{"src": "どろぶね", "tr": "泥船", "type": "场所"}, {"src": "ナマコ", "tr": "海参", "type": "其他"},
-             {"src": "干す", "tr": "晾晒", "type": "其他"}]
-    assert term_misses(cues, terms, "zh-Hans") == [(0, [("どろぶね", "泥船")])]
+            {"orig": {"text": "ナマコを干す"}, "tr": {"zh-Hans": {"text": "晒干海参"}}},
+            {"orig": {"text": "ナマコの酢の物"}, "tr": {"zh-Hans": {"text": "醋拌海鼠"}}}]
+    terms = [{"src": "どろぶね", "tr": "泥船", "type": "场所"}, {"src": "ナマコ", "tr": "海参", "type": "其他"}]
+    assert term_misses(cues, terms, "zh-Hans") == [(0, [("どろぶね", "泥船")]), (2, [("ナマコ", "海参")])]
 
 
 def test_refine_moments_shared_when_on_screen():
@@ -549,6 +549,20 @@ def test_caption_line_merged_with_scene_text_is_kept():
     assert box["caption"]["from"].startswith("岳南電車") and out["stats"]["ocr_caption"] == 1
 
 
+def test_caption_line_from_scene_box_waits_for_other_caption():
+    """旗子上的字和下面的硬字幕「決めたくないとか」连成一框（整框出现的时间更早）：同一位置先出的是另一条硬字幕
+    「自分の性別がわからないとか」，救回来的那一行时间让开它，排在它后面。"""
+    box = dict(_ocr("o644", 2427.3, 2431.0, "DONYOKU\n決めたくないとか", (0.3375, 0.5736, 0.6672, 0.9986)), kind="scene",
+               pieces=[[0.5453, 0.5736, 0.6672, 0.7972, "DONYOKU"], [0.3375, 0.825, 0.6602, 0.9986, "決めたくないとか"]])
+    first = dict(_ocr("o645", 2427.4, 2429.4, "自分の性別がわからないとか", (0.264, 0.906, 0.737, 0.974)), kind="caption")
+    asr = [{"id": "a1", "start": 2413.3, "end": 2441.0,
+            "text": "自分の性別がわからないとか、決めたくないとか、決めつけられたくないっていう人が"}]
+    out = fuse([], [box, first], asr, FUSION, lang.get("ja"), 3600)
+    items = sorted(out["items"], key=lambda it: it["start"])
+    assert [it["id"] for it in items[:2]] == ["o645", "o644"]
+    assert items[1]["start"] == 2429.4 and items[1]["text"] == "決めたくないとか"
+
+
 def test_info_translation_beside_box_when_above_and_below_blocked():
     """标题卡第二行“鮭とば”：上面是第一行，下面到画面边了，译文放在右边，不跑到画面顶部。"""
     cfg = config.Config()
@@ -752,3 +766,31 @@ def test_dialogue_can_follow_its_screen_text():
     assert p["q1"]["x"] < 0.5 * px and 0.3 * py < p["q1"]["y"] < 0.5 * py  # 贴在左上那块字下面
     assert p["q2"].get("x") is None and p["q2"]["item"]["end"] == 14.0     # 底部那句照常，时间不被截
     assert layout.build([cue("q3", "x", [0.5, 0.5, 0.4, 0.6])], prof, cfg, "ja")[0]["near"] is None  # 不像框的不算
+
+
+def test_vlm_duplicate_of_local_caption_dropped():
+    """视觉复核补出的字和本地认出的同一句（框不对、时间早了 1.4 秒）：丢掉补出的，以本地为准；别的补出来的照旧留着。"""
+    local = dict(_ocr("o839", 3254.0, 3258.7, "命日にお経さ読んで\n参っとったんやけど", (0.3336, 0.8347, 0.6648, 0.9819)), kind="caption")
+    dup = dict(_ocr("v207", 3252.6, 3254.4, "命日にお経さ読んで\n参っとったんやけど", (0.337, 0.605, 0.851, 0.707)),
+               kind="caption", found_by="vlm")
+    new = dict(_ocr("v208", 3260.0, 3262.0, "仏壇も変になっとる", (0.3, 0.85, 0.7, 0.97)), kind="caption", found_by="vlm")
+    out = fuse([], [local, dup, new], [], FUSION, lang.get("ja"), 3600)
+    assert [it["id"] for it in out["items"]] == ["o839", "v208"] and dup["dropped"] == "dup_vlm"
+
+
+def test_glossary_enforced_for_every_type_and_short_names():
+    from nyasub.llm.translate import restore_labels, term_misses
+
+    terms = [{"src": "ミーちゃん", "tr": "牛奶", "type": "人名"}, {"src": "みーちゃん", "tr": "牛奶", "type": "人名"},
+             {"src": "さしみこんにゃく", "tr": "刺身魔芋", "type": "物品"}, {"src": "中村", "tr": "中村", "type": "人名"}]
+    cues = [{"orig": {"text": "ミーちゃん！"}, "tr": {"zh-Hans": {"text": "咪酱！"}}},
+            {"orig": {"text": "もちろん　出来たて　さしみこんにゃく！"}, "tr": {"zh-Hans": {"text": "当然是刚做好的生鱼片魔芋！"}}},
+            {"orig": {"text": "まーみー 豚肉ちょうだい"}, "tr": {"zh-Hans": {"text": "真美子 给我猪肉"}}},   # “みー”只是半截
+            {"orig": {"text": "ばーちゃんと みーちゃんの家"}, "tr": {"zh-Hans": {"text": "奶奶和牛奶的家"}}},
+            {"orig": {"text": "（中村）これがね…"}, "tr": {"zh-Hans": {"text": "这个啊……"}}},
+            {"orig": {"text": "（妻は）図書館で働いてた"}, "tr": {"zh-Hans": {"text": "原本在图书馆工作"}}}]
+    assert term_misses(cues, terms, "zh-Hans") == [(0, [("ミー", "牛奶")]), (1, [("さしみこんにゃく", "刺身魔芋")]),
+                                                   (4, [("中村", "中村")])]
+    restore_labels(cues, terms, "zh-Hans")
+    assert cues[4]["tr"]["zh-Hans"]["text"] == "（中村）这个啊……"
+    assert cues[5]["tr"]["zh-Hans"]["text"] == "原本在图书馆工作"   # 不是名字的标签不补

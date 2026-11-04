@@ -187,3 +187,13 @@ def test_misread_for_a_while_is_joined_back():
     """动画标题有半秒多都认成了别的字，后来又认对了：拆开的两条最后认定的字一样，并回一条。"""
     title, wrong = "サヨナラまでの日々", "サヨナうまでのロ々"
     assert _lines(_lines_run([title] * 4 + [wrong] * 3 + [title] * 6)) == [(title, 0.0, 4.0)]
+
+
+def test_words_added_in_front_after_a_while_is_another_line():
+    """「寒いです」显示了一阵，接着同一处换成「めちゃめちゃ寒いです」（又说了一句）：拆成两条。
+    开头几个字只有一两帧没认出来（「ちゃ寒いです」）的不拆。"""
+    short, full = "寒いです", "めちゃめちゃ寒いです"
+    assert _lines(_lines_run([short] * 6 + [full] * 6, fps=10, need=5)) == [(short, 0.0, 0.5), (full, 0.6, 1.1)]
+    assert len(_lines_run(["ちゃ寒いです"] * 2 + [full] * 8, fps=10, need=5)) == 1
+    # 从前往后逐字出现（半截是开头）照旧是一条，哪怕半截停了一阵
+    assert len(_lines_run(["めちゃめちゃ"] * 6 + [full] * 6, fps=10, need=5)) == 1

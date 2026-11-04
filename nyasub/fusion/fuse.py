@@ -144,8 +144,29 @@ def _caption_lines(ocr_events, asr, pack, asr_th):
                  start=round(max(e["start"], min(a["start"] for a in said) - 0.3), 3),
                  end=round(min(e["end"], max(a["end"] for a in said) + 0.5), 3))
         e.pop("dropped")
+        _make_room(e, ocr_events)
         n += 1
     return n
+
+
+def _make_room(e, ocr_events):
+    """救回来的字幕行时间是整框（背景上的字）出现的时间、只按语音收了一下，常比这一行真正出现得早 / 晚：
+    同一位置同时还有另一条硬字幕（「自分の性別がわからないとか」之后才是框里的「決めたくないとか」）时，
+    这一行不可能同时在那儿，时间让开那一条，免得排到它前面。让开后剩不到 0.5 秒的不动。"""
+    r = e["rect"]
+    for o in ocr_events:
+        if o is e or o.get("dropped") or o.get("vertical"):
+            continue
+        q = o["rect"]
+        if min(r[2], q[2]) - max(r[0], q[0]) <= 0 or min(r[3], q[3]) - max(r[1], q[1]) <= 0:
+            continue
+        if overlap(e["start"], e["end"], o["start"], o["end"]) <= 0:
+            continue
+        if o["start"] <= e["start"] + 0.3:
+            if e["end"] - o["end"] >= 0.5:
+                e["start"] = round(o["end"], 3)
+        elif o["start"] - e["start"] >= 0.5:
+            e["end"] = round(o["start"], 3)
 
 
 def _mostly_said(text, said):
@@ -159,6 +180,19 @@ def _mostly_said(text, said):
     return sum(1 for i, ch in enumerate(a) if i not in hit and ch.isalnum()) <= 3  # “＝”这种符号不算
 
 
+def _drop_vlm_dups(ocr_events, gap=1.0):
+    """视觉复核“补出本地漏掉的字”时，模型给的框偶尔不对（框到了旁边没字的地方），本地明明认出了同一句，
+    却当成漏掉的补了一条：位置不对，时间按那个框找也早了（「命日にお経さ読んで…」早出来 1.4 秒，盖住前一句）。
+    和本地认出的某条字一样、时间重叠或相隔不到 1 秒的，丢掉补出来的这条，以本地的时间和位置为准。"""
+    local = [e for e in ocr_events if e.get("found_by") != "vlm" and not e.get("dropped")]
+    for e in ocr_events:
+        t = norm(e["text"])
+        if e.get("found_by") != "vlm" or e.get("dropped") or len(t) < 4:
+            continue
+        if any(full_sim(o["text"], e["text"]) >= 90 and o["start"] - gap <= e["end"] and e["start"] <= o["end"] + gap for o in local):
+            e["dropped"] = "dup_vlm"
+
+
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     """m 是 FusionCfg 的 dict，pack 是源语言的语言包。"""
     dup_th, asr_th = m["dup_similarity"], m["asr_match_similarity"]
@@ -166,6 +200,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     prefilter(ocr_events, duration, pack)
     n_caption = _caption_lines(ocr_events, asr, pack, asr_th)
     ocr_all = ocr_events
+    _drop_vlm_dups(ocr_events)
     ocr_events = [e for e in ocr_events if not e.get("dropped")]
 
     asr = [a for a in asr if not any(h in a["text"] for h in pack.hallucinations)

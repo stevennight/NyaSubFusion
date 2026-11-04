@@ -231,18 +231,29 @@ class Track:
     def _watch_change(self):
         txt = norm(self.obs[-1][0])
         if self.chg is None:
-            if len(self.obs) >= 2 and _other_line(norm(self.obs[-2][0]), txt):
-                self.chg, self.p_snap = len(self.obs) - 1, None
+            if len(self.obs) >= 2:
+                prev = norm(self.obs[-2][0])
+                # 前面多出了字（「寒いです」→「めちゃめちゃ寒いです」）：原来那句已经稳定显示了一阵才算换了一句，
+                # 只认了一两帧的多半是开头几个字没认出来
+                if _other_line(prev, txt) or (_grew_in_front(prev, txt) and self._held(len(self.obs) - 2) >= CHANGE_SECONDS):
+                    self.chg, self.p_snap = len(self.obs) - 1, None
             return
-        if not _other_line(norm(self.obs[self.chg][0]), txt):
+        if not _changed(norm(self.obs[self.chg][0]), txt):
             return  # 还是换上来的那一句
-        if not _other_line(norm(self.obs[self.chg - 1][0]), txt):
+        if not _changed(norm(self.obs[self.chg - 1][0]), txt):
             # 又回到原来那句：刚才是认错 / 闪了一下，不拆；那几帧里更完整的截图照样能用
             if self.p_snap and self.p_snap[1] > self.snap_len:
                 self.snapshot, self.snap_len, self.snap_rect, self.snap_t = self.p_snap
             self.chg, self.p_snap = None, None
         else:  # 又换成了第三句：从这里重新算
             self.chg, self.p_snap = len(self.obs) - 1, None
+
+    def _held(self, i):
+        """第 i 次认出的那句（认错一个字的也算）已经连着显示了多久。"""
+        a, j = norm(self.obs[i][0]), i
+        while j > 0 and Levenshtein.distance(norm(self.obs[j - 1][0]), a) <= 1:
+            j -= 1
+        return self.times[i] - self.times[j]
 
     def wants_snapshot(self, n, score):
         """这一帧要不要截图：用文字最完整的一帧（字幕常有逐字出现的渐入动画，最早的几帧只有半截）。
@@ -319,6 +330,17 @@ def _other_line(a, b):
     return Levenshtein.distance(a, b) >= 2 and fuzz.ratio(a, b) < 85
 
 
+def _grew_in_front(a, b):
+    """b 是在 a 的前面多出了字（「寒いです」→「めちゃめちゃ寒いです」）。逐字淡入是从前往后出字，半截总是开头那部分，
+    前面多出字的不是淡入；但开头几个字偶尔没认出来时也是这样，所以要配合“原来那句稳定显示了一阵”一起用。"""
+    return len(a) >= 2 and a in b and not b.startswith(a)
+
+
+def _changed(a, b):
+    """已经认定换了一句以后，判断某次认出的字属于哪一句：换成了另一句，或者前面多出了字，都算不同的两句。"""
+    return _other_line(a, b) or _grew_in_front(a, b) or _grew_in_front(b, a)
+
+
 def _near(a, b):
     """两个框在同一行（或同一列）上，相隔不到三个字。"""
     h = min(a[3] - a[1], b[3] - b[1])
@@ -379,7 +401,7 @@ def _rejoin(tracks):
         while p is not None and id(p) not in kept:  # 父轨迹自己也可能已经并进了更早的那条
             p = p.parent
         # 拆出来以后原来那条又接着认出了原来的字（夹在中间的一段认错了）：也并回去
-        if p is not None and (p.last > tr.last or not _other_line(norm(p.best_text()), norm(tr.best_text()))):
+        if p is not None and (p.last > tr.last or not _changed(norm(p.best_text()), norm(tr.best_text()))):
             p.absorb(tr)
             continue
         out.append(tr)

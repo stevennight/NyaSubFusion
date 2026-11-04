@@ -60,13 +60,14 @@ DEFS = {
     "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
-    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=3),  # v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
+    "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=4),  # v4：画面字只对上同时字幕的一小段（字幕“仮設。”、画面字“おれ仮設におった”）不再当重复丢掉；从背景框里救回的字幕行时间让开同一位置的另一条；v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
     # 整理：几路来源合并成一条条字幕（多来源合并、纠错字、分类、丢杂字），只出原文（以前是“翻译”的一部分，翻译 v5 时拆出来）
-    # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）
+    # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）；v3：同样的话前后说了两遍（时间错开）各成一条
     "organize": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                    "llm.chunk_seconds", "llm.chunk_max_items"], version=2),
+                                    "llm.chunk_seconds", "llm.chunk_max_items"], version=3),
     "translate": StageDef(["organize"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=6),
+                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=7),
+    # v7：不擅自补主语（旁白写成“我”、讲妻子的事写成“我”）
     # v6：只翻一次（普通翻译或分组按顺序翻），翻的时候可以把相邻几条合成一条；补翻、重新分段、拆长句从整理挪过来；参考画面用在这里
     # v5：合并、拆分、分类、丢杂字拆成单独的“整理”一步；这一步只管译文（分组翻、统一术语和译法、其余目标语言）
     # v4：原文照抄字幕的字；人名全部进术语表、各段沿用新译名、最后统一一遍

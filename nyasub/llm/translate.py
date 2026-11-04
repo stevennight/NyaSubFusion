@@ -485,6 +485,7 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     by_id = {it["id"]: it for it in items}
     resegment(llm, cues, by_id, src, tgt_code, cfg)
     split_long(llm, cues, by_id, src, tgt_code, cfg)
+    restore_labels(cues, terms, tgt_code)
     enforce_terms(llm, cues, terms, src, tgt_code, cfg)
     unify(llm, cues, src, tgt, tgt_code)
 
@@ -493,26 +494,28 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     return cues, glossary
 
 
-NAME_TYPES = ("人名", "地名", "团体", "場所", "场所", "組織", "组织")
-
-
 _KATA = "ァ-ヺー"
+_HIRA = "ぁ-ゖー"  # 平假名名字（“みーちゃん”）
 
 
 def _mentions(text, name):
-    """原文里有没有提到这个名字。片假名名字要前后都不接着片假名（“イナ”不算“イナゴ”）。"""
+    """原文里有没有提到这个名字。片假名名字要前后都不接着片假名（“イナ”不算“イナゴ”）；
+    平假名名字前面不能接着长音 / 片假名（“みー”不算“まーみー”里的那半截）；前面接助词（“これはみーちゃん”）、后面接“ちゃん”“の”照样算。"""
     if re.fullmatch(f"[{_KATA}]+", name):
         return re.search(f"(?<![{_KATA}]){re.escape(name)}(?![{_KATA}])", text) is not None
+    if re.fullmatch(f"[{_HIRA}]+", name):
+        return re.search(f"(?<![{_KATA}]){re.escape(name)}", text) is not None
     return name in text
 
 
 def term_misses(cues, terms, tgt_code):
-    """译文里没按术语表翻的名字：[(条目序号, [(原文, 译名)])]。只查人名 / 地名 / 团体 / 场所（店名等；这些前后不一致最显眼）。"""
+    """译文里没按术语表翻的名字 / 术语：[(条目序号, [(原文, 译名)])]。术语表里的每一条都查（人名、店名、食物、器物都一样，
+    术语表就是用来保证全集统一的）。“ミーちゃん”去掉敬称是“ミー”：长音也算字，两个字的名字不能当成太短跳过。"""
     want = []
     for t in terms:
         s = re.sub(r"(さん|様|君|ちゃん|くん)$", "", (t.get("src") or "").strip())
         tr = re.split(r"[（(]", (t.get("tr") or "").strip())[0].strip()  # “常用名（当地叫法）”只要求前半
-        if len(norm(s)) >= 2 and tr and any(k in (t.get("type") or "") for k in NAME_TYPES):
+        if len(re.sub(r"\s", "", s)) >= 2 and norm(s) and tr and (s, tr) not in want:
             want.append((s, tr))
     out = []
     for i, c in enumerate(cues):
@@ -525,17 +528,42 @@ def term_misses(cues, terms, tgt_code):
     return out
 
 
+_LABEL = re.compile(r"^[（(]([^）)\n]{1,12})[）)]")
+
+
+def restore_labels(cues, terms, tgt_code):
+    """原文开头有说话人标签（「（中村）これがね…」），译文却把它丢了的：按术语表的译名补回去（「（中村）这个啊……」）。
+    只补术语表里有的名字（「（妻は）」这种不是名字的不补，交给模型）。"""
+    names = {}
+    for t in terms:
+        src, tr = (t.get("src") or "").strip(), re.split(r"[（(]", (t.get("tr") or "").strip())[0].strip()
+        if src and tr:
+            names.setdefault(src, tr)
+            names.setdefault(re.sub(r"(さん|様|君|ちゃん|くん)$", "", src), tr)
+    n = 0
+    for c in cues:
+        m = _LABEL.match(c["orig"]["text"])
+        tr = c.get("tr", {}).get(tgt_code, {}).get("text", "")
+        if not m or not tr or _LABEL.match(tr) or m.group(1) not in names:
+            continue
+        c["tr"][tgt_code] = {**c["tr"][tgt_code], "text": f"（{names[m.group(1)]}）{tr}"}
+        n += 1
+    if n:
+        log(f"补回说话人标签：{n} 条译文把原文开头的（说话人）丢了")
+
+
 def enforce_terms(llm, cues, terms, src, tgt_code, cfg, batch=30):
-    """最后统一一遍名字：译文里没用术语表译名的（前面几段还没定下译名时随手音译的、把两个人名弄混的），只改名字。"""
+    """最后统一一遍术语表：译文里没用术语表译名的（前面几段还没定下译名时随手音译的、把两个人名弄混的、
+    猫的名字一会儿“牛奶”一会儿“咪酱”的、食物换了个叫法的），只改这些名字 / 叫法。"""
     from ..core import segments
 
     todo = term_misses(cues, terms, tgt_code)
     if not todo:
         return
-    log(f"统一译名：{len(todo)} 条译文里的名字和术语表不一致，改成统一的译名")
+    log(f"统一译名：{len(todo)} 条译文里的名字 / 叫法和术语表不一致，改成术语表的译法")
     tgt = lang.get(tgt_code)
-    system = (f"你是{src.name}→{tgt.name}字幕校对。下面每条字幕的译文里，有名字没有按指定译名翻译。"
-              "请只把这些名字改成指定的译名（指代的人 / 地方要和原文一致），语句其他部分尽量不动；"
+    system = (f"你是{src.name}→{tgt.name}字幕校对。下面每条字幕的译文里，有名字 / 叫法没有按术语表的指定译法翻译。"
+              "请只把这些名字 / 叫法改成指定的译法（指代的人 / 地方 / 东西要和原文一致），语句其他部分尽量不动；"
               '译文里的“｜”分段保持原样（段数不变）。输出 JSON：{"items": [{"id": "q12", "tr": "改好的译文"}]}')
     for k in range(0, len(todo), batch):
         group = todo[k:k + batch]
