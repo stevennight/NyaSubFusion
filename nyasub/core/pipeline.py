@@ -967,7 +967,7 @@ class Run:
                    "from": "screen"}
                   for e in self.results.get("ocr_refine") or [] for r in e.get("ruby") or [] if r.get("hint")]
         terms = [{"lang": self.src, "src": t.get("src", ""), "reading": t.get("reading", ""),
-                  "proper": t.get("type") in ("地名", "人名", "团体"), "from": "glossary"}
+                  "proper": t.get("type") in ("地名", "人名", "团体", "场所"), "from": "glossary"}
                  for t in (glossary or {}).get("terms", []) if t.get("reading") and t.get("reading") != "—"]
         for e in self._user_readings() + screen + terms:
             k = (lang.canonical(e.get("lang") or self.src), e.get("src"))

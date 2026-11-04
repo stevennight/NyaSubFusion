@@ -6,7 +6,7 @@ import { useStore } from "../store";
 import type { Cfg, Glossary, Reading, Term } from "../types";
 import { langName, setIn } from "../util";
 
-const TYPES = ["地名", "人名", "团体", "物品", "方言", "其他"];
+const TYPES = ["地名", "人名", "团体", "场所", "物品", "方言", "其他"];
 type Scope = "all" | "series" | "episode";
 
 type Remote<T> = { v: T | null; update: (f: (cur: T) => T) => void; state: SaveState };

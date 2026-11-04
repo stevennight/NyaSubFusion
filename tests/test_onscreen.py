@@ -191,6 +191,12 @@ def test_subs_wording_kept_and_names_checked():
             {"orig": {"text": "蚕のさなぎに イナゴ"}, "tr": {"zh-Hans": {"text": "蚕蛹和蚱蜢"}}}]
     terms = [{"src": "キミイさん", "tr": "纪美", "type": "人名"}, {"src": "イナ", "tr": "伊那", "type": "地名"}]
     assert term_misses(cues, terms, "zh-Hans") == [(0, [("キミイ", "纪美")])]
+    # 店名（场所）也要统一；“其他”类的普通事物（食物等）译法可以有变化，不查
+    cues = [{"orig": {"text": "今夜 どろぶねで"}, "tr": {"zh-Hans": {"text": "今夜 在泥舟"}}},
+            {"orig": {"text": "ナマコを干す"}, "tr": {"zh-Hans": {"text": "晒干海参"}}}]
+    terms = [{"src": "どろぶね", "tr": "泥船", "type": "场所"}, {"src": "ナマコ", "tr": "海参", "type": "其他"},
+             {"src": "干す", "tr": "晾晒", "type": "其他"}]
+    assert term_misses(cues, terms, "zh-Hans") == [(0, [("どろぶね", "泥船")])]
 
 
 def test_refine_moments_shared_when_on_screen():

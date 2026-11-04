@@ -493,7 +493,7 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     return cues, glossary
 
 
-NAME_TYPES = ("人名", "地名", "团体", "組織", "组织")
+NAME_TYPES = ("人名", "地名", "团体", "場所", "场所", "組織", "组织")
 
 
 _KATA = "ァ-ヺー"
@@ -507,7 +507,7 @@ def _mentions(text, name):
 
 
 def term_misses(cues, terms, tgt_code):
-    """译文里没按术语表翻的名字：[(条目序号, [(原文, 译名)])]。只查人名 / 地名 / 团体（这些前后不一致最显眼）。"""
+    """译文里没按术语表翻的名字：[(条目序号, [(原文, 译名)])]。只查人名 / 地名 / 团体 / 场所（店名等；这些前后不一致最显眼）。"""
     want = []
     for t in terms:
         s = re.sub(r"(さん|様|君|ちゃん|くん)$", "", (t.get("src") or "").strip())
