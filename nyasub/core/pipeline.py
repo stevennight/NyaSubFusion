@@ -59,7 +59,7 @@ DEFS = {
                                 "ocr.regions", "ocr.skip_static"]),
     "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
-    "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=2),  # v2：语音段先修时间（asr.repair）
+    "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=3),  # v3：有逐字时间的语音段收到第一个 / 最后一个字上（段从块开头算起、拉长十几秒）；v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=4),  # v4：画面字只对上同时字幕的一小段（字幕“仮設。”、画面字“おれ仮設におった”）不再当重复丢掉；从背景框里救回的字幕行时间让开同一位置的另一条；v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
     # 整理：几路来源合并成一条条字幕（多来源合并、纠错字、分类、丢杂字），只出原文（以前是“翻译”的一部分，翻译 v5 时拆出来）
     # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）；v3：同样的话前后说了两遍（时间错开）各成一条
@@ -155,6 +155,8 @@ class Run:
 
                 d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
+                if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
+                    d["api"]["timing"] = self.cfg.asr.api_timing_model.strip()
             return d or None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容（默认轨不是第一条时也记上）
             return {"video": file_stamp(self.proj.video), "tracks": [

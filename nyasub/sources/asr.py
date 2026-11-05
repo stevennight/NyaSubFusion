@@ -96,10 +96,14 @@ def repair(segments):
 
     - 段内相邻两字间隔超过 GAP 秒就拆开；
     - 拆出来很短的一小块（≤ FRAGMENT 个字）并到空档另一边那块上，时间用那块的；
+    - 有逐字时间的段，开始 / 结束收到第一个字 / 最后一个字上（接口给的段常常从块开头、上一句末尾算起：
+      八犬伝开头那句段从 0.0 秒开始，第一个字在 15.8 秒）；
     - 没有逐字时间的段保持原样。返回新的段列表（id 不变，拆开的加 -2、-3）。"""
     out = []
     for seg in segments:
         words = seg.get("words") or []
+        if words and (seg["start"] < words[0]["s"] or seg["end"] > words[-1]["e"]):
+            seg = dict(seg, start=max(seg["start"], words[0]["s"]), end=min(seg["end"], words[-1]["e"]))
         if len(words) < 2:
             out.append(seg)
             continue

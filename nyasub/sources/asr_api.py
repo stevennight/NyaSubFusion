@@ -524,11 +524,63 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                  words=[dict(x, s=round(x["s"] + offset, 3), e=round(x["e"] + offset, 3)) for x in s["words"]])
         out.append({"id": f"a{len(out) + 1}", "start": s["start"], "end": s["end"], "text": s["text"],
                     "words": s["words"], "timing": s["timing"]})
-    timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "segment", "clip")}
+    timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
+    if timing_model:
+        log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
+        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model=""),
+                            dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
+        out = align_to_reference(out, ref)
+    timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
     log(f"云端识别：{len(out)} 段（时间精度：" + "，".join(f"{n} {k}" for k, n in
-        (("逐字", timing["word"]), ("逐句", timing["segment"]), ("小段", timing["clip"])) if n) +
-        f"），请求 {state['calls']} 次，复用缓存 {state['hits']} 次")
-    if timing["segment"] + timing["clip"] and not timing["word"]:
+        (("逐字", timing["word"]), ("逐句、借转写模型的时间", timing["aligned"]), ("逐句", timing["segment"]),
+         ("小段", timing["clip"])) if n) + f"），请求 {state['calls']} 次，复用缓存 {state['hits']} 次")
+    if timing["segment"] + timing["clip"] and not timing["word"] and not timing["aligned"]:
         log("接口没给逐字时间：字幕自动对时改按逐句时间估计（误差大约 0.2 秒）")
     return out, language or state["lang"]
+
+
+SNAP = 1.5          # 大模型给的句子起止，在这么远以内找转写模型的句子边界
+SNAP_PAUSE = 0.6    # 句子边界离得远时，在这么远以内找转写模型的句中停顿
+PAUSE = 0.25        # 字和字隔这么久算一次停顿
+SHORT = 4           # 大模型漏掉、转写模型听到的这么短的话（「え？」「うわあ！」）补进来
+
+
+def align_to_reference(segs, ref):
+    """大模型的句子（字准，时间是估的）对到转写模型的时间上（逐字时间准，字常常错）：
+    开始 / 结束先对到 SNAP 秒内最近的转写句子边界，没有就对到 SNAP_PAUSE 秒内最近的句中停顿，都没有就不动；
+    转写模型听到、大模型那个时间什么也没有的短话补进来。八犬伝第 1 集按字幕组的人工时间轴比：
+    开头差半秒以上的从 48% 降到 18%（转写模型自己 18%），结尾从 57% 降到 22%（转写模型 15%）。"""
+    from ..textutil import norm
+    from .asr import repair
+
+    ref = repair(ref)
+    if not ref:
+        return segs
+    rs = [s["start"] for s in ref]
+    re_ = [s["end"] for s in ref]
+    words = sorted((w for s in ref for w in s.get("words") or [] if norm(w["w"])), key=lambda w: w["s"])
+    p_on = [w["s"] for k, w in enumerate(words) if k == 0 or w["s"] - words[k - 1]["e"] >= PAUSE]
+    p_off = [w["e"] for k, w in enumerate(words) if k == len(words) - 1 or words[k + 1]["s"] - w["e"] >= PAUSE]
+
+    def near(t, pts, win):
+        c = [p for p in pts if abs(p - t) <= win]
+        return min(c, key=lambda p: abs(p - t)) if c else None
+
+    out = []
+    for s in segs:
+        a = near(s["start"], rs, SNAP)
+        a = a if a is not None else near(s["start"], p_on, SNAP_PAUSE)
+        b = near(s["end"], re_, SNAP)
+        b = b if b is not None else near(s["end"], p_off, SNAP_PAUSE)
+        if a is None and b is None:
+            out.append(s)
+            continue
+        a = s["start"] if a is None else a
+        b = s["end"] if b is None else b
+        out.append(dict(s, start=round(a, 3), end=round(b, 3), timing="aligned") if b > a else s)
+    for r in ref:
+        if len(norm(r["text"])) <= SHORT and not any(min(r["end"], s["end"]) - max(r["start"], s["start"]) > 0.1 for s in out):
+            out.append(dict(r, timing="word"))
+    out.sort(key=lambda s: s["start"])
+    return [dict(s, id=f"a{k + 1}") for k, s in enumerate(out)]
 

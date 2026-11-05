@@ -299,6 +299,12 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
           <Lbl ctx={ctx} k="asr.api_model">模型</Lbl>
           <div className="row"><input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[kind].model} onChange={(e) => set("asr.api_model", e.target.value)} />
             <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0" /></div>
+          {kind === "gemini" && (<>
+            <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
+            <div className="row"><input className="inp" value={String(val("asr.api_timing_model") ?? "")} placeholder="可选：转写模型，比如 microsoft/mai-transcribe-2"
+                onChange={(e) => set("asr.api_timing_model", e.target.value.trim())} />
+              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差半秒以上。填一个转写模型（同一个接口）时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" /></div>
+          </>)}
         </>) : (<>
           <Lbl ctx={ctx} k="asr.model">模型</Lbl>
           <div className="row">

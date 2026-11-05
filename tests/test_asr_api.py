@@ -343,3 +343,27 @@ def test_subtitle_offset_estimated_from_sentence_timing():
     subs = [{"start": 5.0 * i, "end": 5.0 * i + 3.0, "text": t} for i, t in enumerate(lines)]
     off, gain = estimate_offset(subs, speech)
     assert abs(off - 1.0) <= 0.3 and gain > 0.05
+
+
+def test_llm_sentences_snapped_to_transcribe_timing_and_short_lines_added():
+    """大模型的字、转写模型的时间：起止对到 1.5 秒内最近的转写句子边界；离得远就对到句中停顿；
+    大模型漏掉、转写模型听到的短感叹补进来。"""
+    gem = [{"id": "a1", "start": 10.6, "end": 13.9, "text": "生きたいか？", "words": [], "timing": "segment"},
+           {"id": "a2", "start": 30.0, "end": 31.0, "text": "遠すぎる", "words": [], "timing": "segment"}]
+    w = lambda t, s, e: {"w": t, "s": s, "e": e}
+    ref = [{"id": "a1", "start": 10.1, "end": 13.2, "text": "行きたいか？", "words": [w("行", 10.1, 10.3), w("きたいか", 10.3, 13.2)]},
+           {"id": "a2", "start": 20.0, "end": 20.4, "text": "え？", "words": [w("え", 20.0, 20.3), w("？", 20.3, 20.4)]},
+           {"id": "a3", "start": 50.0, "end": 52.0, "text": "長いけど大模型が聞いてない台詞", "words": [w("長", 50.0, 52.0)]}]
+    out = asr_api.align_to_reference(gem, ref)
+    assert [(s["text"], s["start"], s["end"], s["timing"]) for s in out] == [
+        ("生きたいか？", 10.1, 13.2, "aligned"), ("え？", 20.0, 20.4, "word"), ("遠すぎる", 30.0, 31.0, "segment")]
+    assert [s["id"] for s in out] == ["a1", "a2", "a3"]
+
+
+def test_timing_model_only_counts_for_llm_kind(sample):
+    base = {"project": {"source": "ja"}, "ocr": {"enabled": False}, "asr": {"backend": "api", "separate": "off"}}
+    run = lambda asr: pipeline.Run(sample, config.load(None, None, {**base, "asr": {**base["asr"], **asr}})[0], pipeline.Options())
+    assert "timing" not in run({"api_kind": "transcribe", "api_timing_model": "m"})._extra("asr")["api"]
+    assert "timing" not in run({"api_kind": "gemini"})._extra("asr")["api"]
+    assert run({"api_kind": "gemini", "api_timing_model": "microsoft/mai-transcribe-2"})._extra("asr")["api"]["timing"] == \
+        "microsoft/mai-transcribe-2"

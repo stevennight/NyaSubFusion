@@ -338,3 +338,15 @@ def test_resegment_fixes_bar_inside_one_caption():
     assert good["orig"]["text"].count("｜") == 1
     assert good["tr"]["zh-Hans"]["text"] == "纸模型套件嘛，富士市是纸之城｜在富士市做再合适不过了 我当时想，等辞职后就来做"
     assert still["orig"]["text"] == _FUJI_ORIG and still["tr"]["zh-Hans"]["text"] == _FUJI_TR
+
+
+def test_segment_time_trimmed_to_its_words():
+    """接口给的段从块开头算起（八犬伝开头：段 0.0 秒开始，第一个字在 15.8 秒）：收到字的时间上。"""
+    from nyasub.sources.asr import repair
+
+    seg = {"id": "a1", "start": 0.0, "end": 20.1, "text": "あの時", "timing": "word",
+           "words": [{"w": "あ", "s": 15.84, "e": 15.92}, {"w": "の", "s": 15.92, "e": 16.0}, {"w": "時", "s": 16.04, "e": 16.12}]}
+    one = {"id": "a2", "start": 799.5, "end": 804.8, "text": "う", "words": [{"w": "う", "s": 804.39, "e": 804.48}]}
+    plain = {"id": "a3", "start": 1.0, "end": 9.0, "text": "x", "words": []}
+    out = repair([seg, one, plain])
+    assert [(s["start"], s["end"]) for s in out] == [(15.84, 16.12), (804.39, 804.48), (1.0, 9.0)]

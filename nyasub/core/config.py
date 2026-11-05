@@ -59,6 +59,9 @@ class AsrCfg(_M):
     api_provider: str = ""                   # 用哪个接口（llm.providers 里的 name）；空 = 和翻译用同一个
     api_model: str = "gpt-transcribe"        # 空 = 按 api_kind 的默认模型
     api_chunk_seconds: float = 0             # 每块上传多长（秒）；0 = 自动：OpenRouter 3 分钟（它上游 60 秒超时），其它 10 分钟
+    # 多模态大模型识别时，再用这个转写模型（同一个接口，比如 microsoft/mai-transcribe-2）识别一遍，借它的时间：
+    # 大模型的字准、时间是估的（常差半秒以上），转写模型有逐字时间；句子起止对到转写模型的时间上，大模型漏掉的短感叹也补上。空 = 不用
+    api_timing_model: str = ""
 
 
 class Region(_M):
