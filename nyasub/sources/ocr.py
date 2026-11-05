@@ -746,7 +746,7 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
 
     events = []
     for members in groups.values():
-        events.append(_compose(members, W, H))
+        events.append(drop_offscreen(_compose(members, W, H)))
     events.sort(key=lambda e: (e["start"], e["rect"][1]))
     for i, ev in enumerate(events):
         ev["id"] = f"o{i + 1}"
@@ -841,6 +841,19 @@ def _dedupe_pieces(members):
             continue
         keep.append(m)
     return keep
+
+
+def drop_offscreen(e):
+    """移动的字（滚动字幕、镜头扫过的招牌）按截图那一刻的位置拼框：那一刻已经移出画面的块，位置被夹在画面边上、
+    宽或高是 0（「神開」在 [0, 1, 0, 1]），算进框会把框撑到画面边上。框只算那一刻还在画面上的块；字照旧都留着。
+    就地改 e 并返回它。老的扫描结果在视觉复核那一步再过一遍。"""
+    pieces = e.get("pieces") or []
+    keep = [p for p in pieces if p[2] > p[0] and p[3] > p[1]]
+    if not e.get("moving") or not keep or len(keep) == len(pieces):
+        return e
+    rect = [min(p[0] for p in keep), min(p[1] for p in keep), max(p[2] for p in keep), max(p[3] for p in keep)]
+    e.update(rect=rect, crop_rect=list(rect), snap_rect=list(rect), pieces=keep, zone=_zone(rect, e.get("vertical")))
+    return e
 
 
 def _compose(members, W, H):

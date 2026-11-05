@@ -794,3 +794,46 @@ def test_glossary_enforced_for_every_type_and_short_names():
     restore_labels(cues, terms, "zh-Hans")
     assert cues[4]["tr"]["zh-Hans"]["text"] == "（中村）这个啊……"
     assert cues[5]["tr"]["zh-Hans"]["text"] == "原本在图书馆工作"   # 不是名字的标签不补
+
+
+def test_vlm_text_read_slightly_outside_excluded_region_still_excluded():
+    """台标下面的「私の居場所」实际在排除区里，模型给的框往下偏了一点、中心落到排除区外：大半在外扩一圈里，照样排除；
+    底部的字幕、旁边的竖排字不受影响。"""
+    from nyasub.llm.refine import read_items
+
+    regions = [{"rect": [0.824, 0.025, 0.976, 0.181], "exclude": True}]
+    raw = {"items": [{"text": "私の居場所", "kind": "caption", "bbox": [850, 188, 947, 227]},
+                     {"text": "新日本風土記", "kind": "caption", "bbox": [824, 49, 968, 138]},
+                     {"text": "居場所がないと思う", "kind": "caption", "bbox": [340, 914, 661, 980]},
+                     {"text": "弱者の居場所がない社会", "kind": "scene", "bbox": [808, 353, 836, 891]}]}
+    assert [it["text"] for it in read_items(raw, regions)] == ["居場所がないと思う", "弱者の居場所がない社会"]
+
+
+def test_model_box_too_flat_for_its_text_is_clipped():
+    """模型的框只框了字的下面一条（「回せ回せ回せ」）：扁得装不下这几个字，用本地的框；
+    模型的框比本地的小但装得下（本地的框连着树叶，「とうとう」）：照用模型的框。"""
+    from nyasub.llm.refine import _clipped
+
+    asp = 16 / 9
+    assert _clipped([0.389, 0.96, 0.61, 0.979], "回せ回せ回せ", False, asp)
+    assert not _clipped([0.3836, 0.9069, 0.6133, 0.9792], "回せ回せ回せ", False, asp)
+    assert not _clipped([0.444, 0.914, 0.556, 0.975], "とうとう", False, asp)
+    assert not _clipped([0.45, 0.916, 0.551, 0.968], "この戸", False, asp)
+    assert _clipped([0.90, 0.20, 0.905, 0.60], "縦書きの字幕です", True, asp)
+
+
+def test_close_up_blacks_out_excluded_regions(tmp_path):
+    """截大框的特写时四周多留的一圈会截到台标：排除区（外扩一圈）涂黑，模型就读不到台标、不会当成这块的字。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.llm import refine
+
+    img = np.full((200, 400, 3), 255, np.uint8)
+    path = tmp_path / "f.png"
+    cv2.imwrite(str(path), img)
+    regions = [{"rect": [0.8, 0.0, 1.0, 0.2], "exclude": True}, {"rect": [0.0, 0.0, 0.1, 0.1], "exclude": False}]
+    plain = cv2.imread(refine._Frame(path, str(tmp_path), 400).crop([0.5, 0.15, 0.95, 0.6], "a"))
+    masked = cv2.imread(refine._Frame(path, str(tmp_path), 400, mask=regions).crop([0.5, 0.15, 0.95, 0.6], "b"))
+    assert plain.min() > 200
+    assert masked[0, -1].max() < 30 and masked[-1, 0].min() > 200  # 右上角（台标）涂黑，别处不动

@@ -230,6 +230,21 @@ def _together(a, b):
     return inter >= 0.5 * min(a["end"] - a["start"], b["end"] - b["start"])
 
 
+EXCLUDE_MARGIN = 0.04  # 模型给的框会偏一点：排除区外扩这么多（占画面宽高的比例）再看
+
+
+def excluded(b, r):
+    """模型读出的这块字在排除区里：中心落在排除区里，或者框的大半落在排除区外扩一圈的范围里
+    （台标下面的「私の居場所」实际在排除区里，模型给的框往下偏了 0.04，中心落到了外面）。"""
+    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    if r[0] <= cx <= r[2] and r[1] <= cy <= r[3]:
+        return True
+    m = EXCLUDE_MARGIN
+    w = min(b[2], r[2] + m) - max(b[0], r[0] - m)
+    h = min(b[3], r[3] + m) - max(b[1], r[1] - m)
+    return w > 0 and h > 0 and w * h >= 0.5 * _area(b)
+
+
 def read_items(raw, regions):
     """模型读出的字：框换成 0~1，去掉中心落在排除区（台标、角标）里的、空的。"""
     out = []
@@ -239,9 +254,7 @@ def read_items(raw, regions):
         b, text = _box(x.get("bbox")), (x.get("text") or "").strip()
         if not b or not norm(text):
             continue
-        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-        if any(g.get("exclude") and g["rect"][0] <= cx <= g["rect"][2] and g["rect"][1] <= cy <= g["rect"][3]
-               for g in regions):
+        if any(g.get("exclude") and excluded(b, g["rect"]) for g in regions):
             continue
         out.append({"text": text.replace(" / ", "\n"), "kind": x.get("kind"), "box": b})
     return out
@@ -296,6 +309,20 @@ def _line_px(rect, text, vertical, aspect):
     return ((rect[2] - rect[0]) * aspect if vertical else rect[3] - rect[1]) / n
 
 
+def _clipped(box, text, vertical, aspect):
+    """模型的框只框住了字的一部分：按字数算，一个字该有多高（横排：框宽 / 每行字数，乘画面宽高比换成高），
+    框里每行的高还不到一半（「回せ回せ回せ」六个字宽 0.22，每个字该高 0.065，模型的框只框了下面 0.019）。
+    比本地的框小不算：本地的框常常连着旁边的东西（「とうとう」连着树叶），模型的框反而准。"""
+    lines = [ln for ln in (text or "").split(chr(10)) if norm(ln)]
+    if not lines:
+        return False
+    n = max(len(norm(ln)) for ln in lines)
+    w, h = box[2] - box[0], box[3] - box[1]
+    if vertical:
+        return w / len(lines) < 0.5 * (h / n) / aspect
+    return h / len(lines) < 0.5 * (w / n) * aspect
+
+
 def _differs(model, local):
     """模型读的和本地读的差很多（本地认出的字够多、又不在模型的结果里）。"""
     a, b = norm(model), norm(local)
@@ -305,11 +332,13 @@ def _differs(model, local):
 class _Frame:
     """一个画面时刻：从原视频按原分辨率截的整帧，缩小给模型看，按需截特写。"""
 
-    def __init__(self, path, out_dir, width):
+    def __init__(self, path, out_dir, width, mask=()):
+        """mask：排除区（台标、角标）。特写里把排除区涂黑，免得截大框的特写时把台标也截进去、模型读成这块的字。"""
         from ..sources.ocr import _imread
 
         self.img = _imread(str(path)) if path else None
         self.path, self.dir, self.width = path, out_dir, width
+        self.mask = [g["rect"] for g in mask or () if g.get("exclude")]
 
     def scaled(self, name):
         import cv2
@@ -335,6 +364,13 @@ class _Frame:
         if X1 - X0 < 4 or Y1 - Y0 < 4:
             return None
         c = self.img[Y0:Y1, X0:X1]
+        m = 0.0  # 涂的是画面本身：排除区画的就是台标的范围，不用外扩（外扩一圈会涂掉旁边招牌、书脊上的字，读错）
+        for g in self.mask:
+            gx0, gy0 = max(X0, int((g[0] - m) * W)), max(Y0, int((g[1] - m) * H))
+            gx1, gy1 = min(X1, int((g[2] + m) * W)), min(Y1, int((g[3] + m) * H))
+            if gx1 > gx0 and gy1 > gy0:
+                c = c.copy() if c.base is not None else c
+                c[gy0 - Y0:gy1 - Y0, gx0 - X0:gx1 - X0] = 0
         if c.shape[1] > CROP_MAX_W:
             c = cv2.resize(c, (CROP_MAX_W, round(c.shape[0] * CROP_MAX_W / c.shape[1])), interpolation=cv2.INTER_AREA)
         p = os.path.join(self.dir, f"{name}.jpg")
@@ -482,7 +518,7 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
             check_cancel()
             progress(ci + ti, len(times), "复核")
             mine_events = [e for e in moments[t] if e["id"] not in gone]
-            frame = _Frame(got.get(round(t, 3)), read_dir, width)
+            frame = _Frame(got.get(round(t, 3)), read_dir, width, mask=regions)
             key = f"{round(t * 1000):09d}"
             if frame.img is None:  # 截不出画面：这几条保持本地结果
                 for e in mine_events:
@@ -544,6 +580,8 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
                 if not keep.get("moving"):  # 位置用模型框的（本地框常常不全）；滚动的字只有那一刻的框，不动
                     mine_box = _union([boxes[e["id"]] for e in evs])
+                    if norm(text) == norm(local) and _covered(mine_box, box) >= 0.8                             and _clipped(box, text, keep.get("vertical"), aspect) and not _clipped(mine_box, text, keep.get("vertical"), aspect):
+                        box = mine_box  # 模型的框只框住了字的一部分（扁得装不下这几个字）、字和本地一样：用本地的框
                     if _covered(mine_box, box) < 0.6:
                         # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
                         # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来

@@ -197,3 +197,15 @@ def test_words_added_in_front_after_a_while_is_another_line():
     assert len(_lines_run(["ちゃ寒いです"] * 2 + [full] * 8, fps=10, need=5)) == 1
     # 从前往后逐字出现（半截是开头）照旧是一条，哪怕半截停了一阵
     assert len(_lines_run(["めちゃめちゃ"] * 6 + [full] * 6, fps=10, need=5)) == 1
+
+
+def test_moving_text_box_leaves_out_pieces_already_off_screen():
+    """镜头扫过酒单：截图那一刻已经移出画面的块被夹在画面边上（[0, 1, 0, 1]），框不能因此撑到画面底下；字照旧留着。"""
+    e = {"moving": True, "vertical": False, "text": "①七贤\n⑨神開", "rect": [0.0, 0.12, 0.98, 1.0],
+         "crop_rect": [0.0, 0.12, 0.98, 1.0], "snap_rect": [0.0, 0.12, 0.98, 1.0], "zone": "middle",
+         "pieces": [[0.70, 0.12, 0.74, 0.16, "①七贤"], [0.06, 0.50, 0.98, 0.65, "③八海山"], [0.0, 1.0, 0.0, 1.0, "⑨神開"]]}
+    ocr.drop_offscreen(e)
+    assert e["rect"] == e["crop_rect"] == e["snap_rect"] == [0.06, 0.12, 0.98, 0.65]
+    assert len(e["pieces"]) == 2 and e["text"] == "①七贤\n⑨神開"
+    still = {"vertical": False, "rect": [0.0, 0.5, 0.1, 1.0], "pieces": [[0.0, 1.0, 0.0, 1.0, "x"], [0.0, 0.5, 0.1, 0.6, "y"]]}
+    assert ocr.drop_offscreen(dict(still))["rect"] == still["rect"]  # 不是移动的字：不动

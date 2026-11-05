@@ -57,7 +57,7 @@ DEFS = {
     "ocr": StageDef(["probe"], ["ocr.enabled", "ocr.fps", "ocr.height", "ocr.det_model", "ocr.rec_model",
                                 "ocr.min_score", "ocr.min_duration", "ocr.max_gap", "ocr.persistent_seconds",
                                 "ocr.regions", "ocr.skip_static"]),
-    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=4),  # v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
+    "ocr_refine": StageDef(["ocr"], ["ocr.refine", "llm.vision_model", "llm.model"], version=5),  # v5：移动的字框里不算已经移出画面的块（框不再撑到画面边上）；模型的框扁得装不下那几个字（只框了「回せ回せ回せ」下面一条）时用本地的框；模型读出的字大半落在排除区（外扩一圈）里也排除、特写里把排除区涂黑（台标「新日本風土記 私の居場所」读偏了一点、或被截进大框的特写，混进了别的框）；v3：按整帧画面让模型自己读，再和本地对上；v4：也看本地找到位置但认不出字的地方（本地截图方式见 llm/refine_crop）
     # v2：截图里字没出全（渐入动画）时换一帧重新截图复核，不再把画面字截成半句
     "align": StageDef(["subs", "asr"], ["fusion.auto_sync"], version=3),  # v3：有逐字时间的语音段收到第一个 / 最后一个字上（段从块开头算起、拉长十几秒）；v2：语音段先修时间（asr.repair）
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=4),  # v4：画面字只对上同时字幕的一小段（字幕“仮設。”、画面字“おれ仮設におった”）不再当重复丢掉；从背景框里救回的字幕行时间让开同一位置的另一条；v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
@@ -756,7 +756,9 @@ class Run:
         return events
 
     def _refine(self, events):
-        events = [dict(e) for e in events]
+        from ..sources.ocr import drop_offscreen
+
+        events = [drop_offscreen(dict(e)) for e in events]  # 老的扫描结果：移动的字框里不算移出画面的块
         if self.cfg.ocr.refine != "vlm" or not events:
             return events
         from ..fusion.fuse import prefilter
