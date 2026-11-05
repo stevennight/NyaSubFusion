@@ -11,7 +11,7 @@ const LBL: Record<string, string> = {
   "ocr.refine": "画面字复核 › 开关", "ocr.refine_mode": "画面字复核 › 复核方式", "ocr.refine_frame_width": "画面字复核 › 整帧画面宽度",
   "ocr.refine_boxed": "画面字复核 › 框出要转写的字", "ocr.refine_batch": "画面字复核 › 每批几处",
   "ocr.refine_context": "画面字复核 › 附整帧画面", "ocr.refine_context_width": "画面字复核 › 附的整帧画面宽度",
-  "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.frames": "翻译 › 参考画面",
+  "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.frames": "翻译 › 参考画面", "llm.listen_audio": "翻译 › 参考语音",
   "llm.grouped": "翻译 › 分组按顺序翻", "llm.reasoning_effort": "翻译 › 思考程度",
   "render.profiles": "输出 › 字幕文件（整份）", "render.strip_marks": "输出 › 文字清理", "render.fallback_style": "输出 › 兜底样式",
   "render.broadcast": "输出 › 广播字幕原样", "render.broadcast_font": "输出 › 广播字幕原样的字体",

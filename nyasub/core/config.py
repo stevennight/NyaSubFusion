@@ -107,6 +107,7 @@ class ProviderCfg(_M):
     base_url: str
     model: str = ""
     vision_model: str = ""                   # 这个接口用于视觉复核时的模型；空 = 用 model
+    listen_model: str = ""                   # 这个接口用于听音标注时的模型（要能听音频，比如 Gemini）；空 = 不用这个接口听
     api_key_env: str = ""                    # 凭据库里没有时，从这个环境变量取
     api_key: str = ""                        # 不推荐：明文写在配置里
 
@@ -117,6 +118,7 @@ class LlmCfg(_M):
     translate: str = ""                      # 翻译用哪个接口（providers 里的 name）；空 = 用下面的旧写法
     vision: str = ""                         # 视觉复核用哪个接口；空 = 和翻译用同一个
     asr: str = ""                            # 云端语音识别默认用哪个接口；空 = 和翻译用同一个（一集里可以用 asr.api_provider 单独换）
+    listen: str = ""                         # 听音标注用哪个接口；空 = 和翻译用同一个（那个接口要设了听音模型）
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     api_key_env: str = "OPENAI_API_KEY"
@@ -126,6 +128,9 @@ class LlmCfg(_M):
     chunk_seconds: float = 150
     chunk_max_items: int = 60
     frames: bool = True                      # 翻译时每条字幕附一张画面小图（看场景判断多义词，比如「揚げる」是炸还是收网）；接口不支持图片时自动不带
+    # 参考语音（听音标注）：翻译前把对话的原声一段段发给能听音频的模型，逐条标出问句 / 陈述、语气、
+    # 只有语音识别来源的句子听到的是什么，翻译时附在每条字幕后面。要在「设置」里给接口设听音模型
+    listen_audio: bool = False
     # 分组按顺序翻（代替普通翻译）：先整理一份人物表（同一个人 / 动物的各种叫法），再按话题分成几句一组，
     # 从头到尾一组一组翻（带前后文、前面的译法和这几句的画面）。界面上的“精翻”= 这个 + 思考程度 high
     grouped: bool = False
@@ -311,6 +316,8 @@ class Config(_M):
 
         c = self.llm
         name = (c.vision or c.translate) if purpose == "vision" else c.translate
+        if purpose == "listen":
+            name = c.listen or c.translate
         if purpose == "asr":  # 云端语音识别：接口凭据和翻译共用一套，模型单独设
             name = self.asr.api_provider or c.asr or c.translate
         p = next((x for x in c.providers if x.name == name), None) if name else None
@@ -318,11 +325,15 @@ class Config(_M):
             model = (p.vision_model or p.model) if purpose == "vision" else p.model
             if purpose == "asr":
                 model = self.asr_api_model()
+            if purpose == "listen":  # 单独选了听音接口时没填听音模型就用它的模型；跟着翻译接口时要填了听音模型才算设了
+                model = p.listen_model or (p.model if c.listen else "")
             key = secrets.get(p.name) or (os.environ.get(p.api_key_env, "") if p.api_key_env else "") or p.api_key
             return {"name": p.name, "base_url": p.base_url, "model": model, "key": key}
         model = (c.vision_model or c.model) if purpose == "vision" else c.model
         if purpose == "asr":
             model = self.asr_api_model()
+        if purpose == "listen":
+            model = ""
         key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")
         return {"name": "", "base_url": c.base_url, "model": model, "key": key}
 

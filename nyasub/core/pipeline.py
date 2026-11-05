@@ -178,10 +178,11 @@ class Run:
             mode = self._llm_mode()
             c = self.cfg.llm
             effort = c.reasoning_effort.strip() if mode == "api" else ""
-            if name == "translate":  # 翻译：分组翻、思考程度、参考画面（默认开着，关掉才记）、作品术语表
+            if name == "translate":  # 翻译：分组翻、思考程度、参考画面（默认开着，关掉才记）、参考语音（默认关着，开了才记）、作品术语表
                 return {"src": self.src, "mode": mode, "series": self._series_terms_digest(),
                         "model": self.cfg.endpoint()["model"] if mode == "api" else None,
                         **({} if self._use_frames(mode) or mode != "api" else {"frames": False}),
+                        **({"listen": self.cfg.endpoint("listen")["model"]} if self._use_listen(mode) else {}),
                         **({"grouped": 1} if c.grouped and mode == "api" else {}),
                         **({"effort": effort} if effort else {})}
             jobs = None
@@ -845,6 +846,10 @@ class Run:
         info = self.results.get("probe") or {}
         return bool(self.cfg.llm.frames) and mode == "api" and bool(info.get("video", True))
 
+    def _use_listen(self, mode):
+        return (bool(self.cfg.llm.listen_audio) and mode == "api" and bool((self.results.get("audio") or {}).get("wav"))
+                and bool(self.cfg.endpoint("listen")["model"]))  # 没设听音模型就不听，指纹也不变
+
     def _frames(self, items):
         """每条候选字幕出现时的画面小图（取中间时刻），存在 media/frames/，再翻译时直接用。返回 {条目 id: 路径}。"""
         from ..sources import media
@@ -905,6 +910,13 @@ class Run:
         cues, glossary = copy.deepcopy(organized["cues"]), copy.deepcopy(organized["glossary"])  # 整理的结果另存着，不改它
         if mode == "api" and cues:
             frames = self._frames(fused["items"]) if self._use_frames(mode) else None
+            if self.cfg.llm.listen_audio and not self._use_listen(mode):
+                log("参考语音：没有设置听音模型（「设置」里给接口填“听音模型”，比如 Gemini）或者没有音频，这次不听")
+            if self._use_listen(mode):
+                from ..llm import listen
+
+                listen.annotate(cues, self.cfg, self.proj / "llm_cache", self.proj / self.results["audio"]["wav"],
+                                self.proj.media("listen"))
             cues, glossary = translate.translate_api(cues, glossary, fused["items"], self.cfg, self.proj / "llm_cache",
                                                      self.src, self._series_terms(), frames)
         translate.add_quality_flags(cues)

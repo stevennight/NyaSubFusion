@@ -157,6 +157,9 @@ def _memory(group, done, tgt_code):
 
 def group_prompt(cues, a, b, topic, tgt_code, summary, terms, cast, done=None):
     """done：前面已经翻好的字幕（翻译时可能合过几条，和 cues 对不上序号）；不给就用 cues[:a]。"""
+    from .listen import note_text
+    from .translate import listen_note
+
     done = cues[:a] if done is None else done
     pre, grp, post = done[-8:], cues[a:b + 1], cues[b + 1:b + 7]
     seen = "\n".join(c["orig"]["text"] for c in pre + grp + post)
@@ -167,8 +170,9 @@ def group_prompt(cues, a, b, topic, tgt_code, summary, terms, cast, done=None):
             + _memory(grp, done, tgt_code)
             + f"## 这一组{f'（{topic}）' if topic else ''}\n"
             + "\n".join(f"[{c['id']}] {_mmss(c['start'])}-{_mmss(c['end'])} {KIND.get(c.get('type'), c.get('type'))}：{_show(c['orig']['text'])}"
-                        for c in grp)
+                        f"{note_text(c)}" for c in grp)
             + ("\n\n## 后文（只帮助理解）\n" + "\n".join(f"{_mmss(c['start'])} {_show(c['orig']['text'])}" for c in post) if post else "")
+            + listen_note(grp)
             + "\n\n请按要求输出 JSON。")
 
 

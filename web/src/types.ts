@@ -151,7 +151,7 @@ export interface Term { src: string; reading?: string; tr?: string; type?: strin
 export interface Glossary { series: string; context: string; summary: string; path: string; episode: string; terms: Term[] }
 export interface Reading { lang: string; src: string; reading: string; proper?: boolean }
 
-export interface Provider { name: string; base_url: string; model: string; vision_model?: string; api_key_env?: string }
+export interface Provider { name: string; base_url: string; model: string; vision_model?: string; listen_model?: string; api_key_env?: string }
 export interface Settings {
   user_config: Cfg; effective: Cfg; path: string; keyring: string;
   keys: Record<string, boolean>; env_keys: Record<string, boolean>;

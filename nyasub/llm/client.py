@@ -19,46 +19,54 @@ class FatalLLMError(RuntimeError):
 
 
 class LLM:
-    def __init__(self, cfg, vision=False, cache_dir=None, effort=""):
-        """effort：思考程度（请求里的 reasoning_effort，比如 low / medium / high），空 = 不设、用接口默认。"""
+    def __init__(self, cfg, vision=False, cache_dir=None, effort="", purpose=""):
+        """effort：思考程度（请求里的 reasoning_effort，比如 low / medium / high），空 = 不设、用接口默认。
+        purpose：用哪个接口（translate / vision / listen），空 = 按 vision 选翻译或视觉复核的接口。"""
         from openai import OpenAI
 
         c = cfg.llm
         self.c = c
         self.effort = (effort or "").strip()
-        ep = cfg.endpoint("vision" if vision else "translate")
+        ep = cfg.endpoint(purpose or ("vision" if vision else "translate"))
         self.model = ep["model"]
         if not ep["key"] or not self.model:
             raise RuntimeError("没有配置大模型接口：请在「设置」里添加接口并设置 API Key（或在配置的 [llm] 里填 base_url / model）")
         self.client = OpenAI(base_url=ep["base_url"], api_key=ep["key"], timeout=c.timeout)
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.usage = None  # 最近一次真正发出去的请求的用量（读缓存时是 None）
 
-    def chat_json(self, system, user, images=None):
-        """images：图片路径，或 {"path", "label"（图前面的说明文字）, "detail"（low / high）}。"""
+    def chat_json(self, system, user, images=None, audio=None):
+        """images：图片路径，或 {"path", "label"（图前面的说明文字）, "detail"（low / high）}。
+        audio：(音频文件, 格式 mp3 / wav)，附在提示词后面（chat/completions 的 input_audio）。"""
         img_hashes = [hashlib.sha1(Path(p).read_bytes()).hexdigest() if not isinstance(p, dict)
                       else [p.get("label"), hashlib.sha1(Path(p["path"]).read_bytes()).hexdigest(), p.get("detail")]
                       for p in images or []]
         key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes,
-                      **({"effort": self.effort} if self.effort else {})})  # 不设思考程度时和以前的缓存一样
+                      **({"effort": self.effort} if self.effort else {}),  # 不设思考程度时和以前的缓存一样
+                      **({"audio": hashlib.sha1(Path(audio[0]).read_bytes()).hexdigest()} if audio else {})})
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
+        self.usage = None
         if cache and cache.exists() and not fresh():
             return load_json(cache)
-        result = self._call(system, user, images)
+        result = self._call(system, user, images, **({"audio": audio} if audio else {}))
         if cache:
             save_json(cache, result)
         return result
 
-    def _call(self, system, user, images):
+    def _call(self, system, user, images, audio=None):
         content = user
-        if images:
+        if images or audio:
             content = [{"type": "text", "text": user}]
-            for img in images:
+            for img in images or []:
                 img = img if isinstance(img, dict) else {"path": img}
                 if img.get("label"):
                     content.append({"type": "text", "text": img["label"]})
                 b64 = base64.b64encode(Path(img["path"]).read_bytes()).decode()
                 url = {"url": f"data:image/jpeg;base64,{b64}", **({"detail": img["detail"]} if img.get("detail") else {})}
                 content.append({"type": "image_url", "image_url": url})
+            if audio:
+                b64 = base64.b64encode(Path(audio[0]).read_bytes()).decode()
+                content.append({"type": "input_audio", "input_audio": {"data": b64, "format": audio[1]}})
         messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
         last_err = None
         json_mode = self.c.json_mode
@@ -71,6 +79,7 @@ class LLM:
                 if self.effort:
                     kw["reasoning_effort"] = self.effort
                 resp = self.client.chat.completions.create(**kw)
+                self.usage = resp.usage.model_dump() if getattr(resp, "usage", None) else None
                 return parse_json(resp.choices[0].message.content or "")
             except Exception as e:
                 last_err = e

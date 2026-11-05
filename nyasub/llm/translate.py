@@ -388,6 +388,13 @@ def apply_translation(chunk, result, tgt_code):
     return out, [c for c in chunk if c["id"] not in seen]
 
 
+def listen_note(chunk):
+    """这几条里有听原声的标注时，提示词后面加上标注的说明（没有标注时提示词和以前一样，缓存照用）。"""
+    from .listen import NOTE
+
+    return NOTE if any(c.get("listen") for c in chunk) else ""
+
+
 def chunk_images(chunk, frames):
     """这几条字幕的画面：每条取第一张有截图的来源。"""
     out = []
@@ -440,6 +447,7 @@ def translate_chunks(llm, cues, glossary, cfg, src, tgt, tgt_code, frames=None):
         gl_text = prompts.glossary_text(glossary["terms"])
         memory = recall([{"id": c["id"], "text": c["orig"]["text"]} for c in chunk], done, tgt_code)
         prompt = prompts.translate_prompt(chunk, gl_text, glossary.get("summary"), done[-6:], tgt_code, memory)
+        prompt += listen_note(chunk)
         res = ask(system, prompt, chunk)
         out, missing = apply_translation(chunk, res, tgt_code)
         if missing:

@@ -244,7 +244,10 @@ def translate_system(src, tgt, context: str, tgt_opts: dict) -> str:
 
 
 def cue_line(c) -> str:
-    return f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])} {KIND.get(c.get('type'), c.get('type'))}：{c['orig']['text'].replace(chr(10), ' / ')}"
+    from .listen import note_text
+
+    return (f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])} {KIND.get(c.get('type'), c.get('type'))}："
+            f"{c['orig']['text'].replace(chr(10), ' / ')}{note_text(c)}")
 
 
 def translate_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> str:

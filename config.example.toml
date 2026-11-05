@@ -47,9 +47,11 @@ mode = "auto"                 # auto：配了接口和 Key 就调接口，否则
 #   translate = "deepseek"    # 翻译用哪个
 #   vision = "bailian"        # 画面字复核用哪个（空 = 和翻译一样）
 #   asr = ""                  # 云端语音识别用哪个（空 = 和翻译一样）
+#   listen = "openrouter"     # 参考语音（听音标注）用哪个（空 = 和翻译一样，那个接口要填 listen_model）
 #   providers = [
 #     { name = "deepseek", base_url = "https://api.deepseek.com/v1", model = "deepseek-chat" },
 #     { name = "bailian", base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1", model = "qwen-max", vision_model = "qwen-vl-max" },
+#     { name = "openrouter", base_url = "https://openrouter.ai/api/v1", model = "openai/gpt-6-luna", listen_model = "google/gemini-4-argon" },
 #   ]
 # 下面是旧的单接口写法，没设置 translate 时使用：
 # 任何 OpenAI 兼容接口都行：
@@ -60,6 +62,7 @@ base_url = "https://api.openai.com/v1"
 api_key = ""                  # 也可以不写在这里，改用环境变量（api_key_env 指定的名字，默认 OPENAI_API_KEY）
 model = ""
 chunk_seconds = 150           # 每段送给大模型的时长
+listen_audio = false          # 参考语音：翻译前把对话原声发给能听音频的模型（listen_model），标出问句 / 陈述、语气
 
 # ---------------- 输出 ----------------
 # 按语言的排版选项

@@ -83,11 +83,13 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
               <div className="row"><input className="inp" style={{ maxWidth: 180 }} value={p.name} onChange={(e) => upd(i, { name: e.target.value.trim() })} />
                 {val("llm.translate") === p.name && <span className="chip acc">翻译</span>}
                 {(val("llm.vision") || val("llm.translate")) === p.name && <span className="chip">视觉复核</span>}
+                {(val("llm.listen") ? val("llm.listen") === p.name : val("llm.translate") === p.name && !!p.listen_model) && <span className="chip">听音</span>}
                 <span className="sp" /><button className="btn sm ghost" onClick={() => setProviders(providers.filter((_, k) => k !== i))}>删除</button></div>
               <span className="lbl">接口地址</span><input className="inp" value={p.base_url} placeholder="https://…/v1" onChange={(e) => upd(i, { base_url: e.target.value })} />
               <span className="lbl">模型</span>
               <div className="row"><input className="inp" value={p.model} placeholder="翻译用的模型" onChange={(e) => upd(i, { model: e.target.value })} />
-                <input className="inp" value={p.vision_model ?? ""} placeholder="视觉模型（可选）" onChange={(e) => upd(i, { vision_model: e.target.value })} /></div>
+                <input className="inp" value={p.vision_model ?? ""} placeholder="视觉模型（可选）" onChange={(e) => upd(i, { vision_model: e.target.value })} />
+                <input className="inp" value={p.listen_model ?? ""} placeholder="听音模型（可选）" title="翻译页勾了“参考语音”时，用这个模型听对话原声，标出问句还是陈述、语气。要能听音频的模型，比如 OpenRouter 上的 google/gemini-4-argon（测试里判断最准；flash 便宜但常把讲解听成问句）。gpt-6-luna 之类不能听音频。" onChange={(e) => upd(i, { listen_model: e.target.value })} /></div>
               <span className="lbl">API Key</span>
               <div className="row">
                 {st.keys[p.name] ? <span className="chip ok">已设置</span> : st.env_keys[p.name] ? <span className="chip ok">来自环境变量</span> : <span className="chip warn">未设置</span>}
@@ -113,7 +115,10 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
           <span className="lbl">云端语音识别用</span>
           <select className="inp" style={{ maxWidth: 260 }} value={val("llm.asr") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.asr", e.target.value))}>
             <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
-          <span /><span className="hint">一集里可以单独换（在「处理」的对应步骤里），不换就用这里的。</span>
+          <span className="lbl">听音标注用</span>
+          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.listen") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.listen", e.target.value))}>
+            <option value="">和翻译用同一个（要填了听音模型）</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}{p.listen_model ? ` · ${p.listen_model}` : ` · ${p.model}`}</option>)}</select>
+          <span /><span className="hint">一集里可以单独换（在「处理」的对应步骤里），不换就用这里的。听音标注只在翻译页勾了“参考语音”时用。</span>
           <span className="lbl">当前翻译</span>
           <span className="dim">{st.translate.model ? `${st.translate.name || "旧配置"} · ${st.translate.model} @ ${st.translate.base_url}` : "未配置 → 导出任务文件"}</span>
         </div>
