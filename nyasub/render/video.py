@@ -181,13 +181,16 @@ def streams(path):
     return json.loads(out.decode("utf-8", "replace")).get("streams", [])
 
 
-def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None):
-    """运行 ffmpeg，推 {"type": "progress"} 事件。返回 (返回码, 错误输出末尾, 处理到的秒数)。"""
+def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, vinfo=None):
+    """运行 ffmpeg，推 {"type": "progress"} 事件。返回 (返回码, 错误输出末尾, 处理到的秒数)。
+    给了 video / vinfo 时按视频帧数也算一份进度（某条音轨中途断了时 ffmpeg 报的时间会卡住）。"""
     from ..sources import media
 
     def progress(done, total):
-        env.progress(done, total, {"mux": "封装", "burn": "压制"}.get(label, label), stage=label, every=0.5)
-    return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part)
+        env.progress(min(done, total) if total else done, total, {"mux": "封装", "burn": "压制"}.get(label, label),
+                     stage=label, every=0.5)
+    fps = media.stream_fps(video, vinfo["index"])[0] if video and vinfo else 0.0
+    return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part, fps=fps)
 
 
 def _finish(rc, tail, part, out):
@@ -246,7 +249,7 @@ def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=
         cmd += ["-attach", str(f), f"-metadata:s:t:{n_att + j}", f"mimetype={mime}",
                 f"-metadata:s:t:{n_att + j}", f"filename={Path(f).name}"]
     cmd += ["-max_interleave_delta", "0", str(part)]
-    rc, tail, _ = _ffmpeg(cmd, duration, "mux", cancel, part=part)
+    rc, tail, _ = _ffmpeg(cmd, duration, "mux", cancel, part=part, video=video, vinfo=vinfo)
     _finish(rc, tail, part, out)
     return out
 
@@ -291,7 +294,7 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
                "-map", "0:a?", "-vf", ",".join(vf), *ENCODERS[enc](quality), *limit, "-pix_fmt", "yuv420p", *acodec,
                "-movflags", "+faststart", str(part)]
         env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}" + (f"，码率不超过 {cap / 1e6:.1f} Mbps" if cap else ""))
-        rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part)
+        rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part, video=video, vinfo=vinfo)
         if rc != 0 and done < 1 and i + 1 < len(tried):  # 一开始就失败（没有 N 卡、显卡不支持这种编码）：换下一种
             env.log(f"{how} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
             continue

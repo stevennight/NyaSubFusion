@@ -206,9 +206,11 @@ PROXY_NAME = "proxy2.mp4"  # v2：一律 8 位 H.264、最高约 30 帧（v1 遇
 from ..env import Cancelled as Stopped  # noqa: E402（取消了：ffmpeg 已结束，半成品已删除）
 
 
-def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None):
+def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None, fps=0.0):
     """运行 ffmpeg，用 -progress 读进度：on_progress(处理到的秒数, 总秒数)，大约每半秒一次。
-    cancel（threading.Event）设置后结束 ffmpeg、删掉半成品 part，抛 Stopped。返回 (返回码, 错误输出末尾, 处理到的秒数)。"""
+    cancel（threading.Event）设置后结束 ffmpeg、删掉半成品 part，抛 Stopped。返回 (返回码, 错误输出末尾, 处理到的秒数)。
+    fps：输出视频的帧率。ffmpeg 报的 out_time 取各条流里最慢的那条，有一条音轨中途断了（广播开头的立体声音轨
+    1.9 秒后就没数据了）时会一直停在那里；给了帧率就再用“视频帧数 ÷ 帧率”算一个，取大的。"""
     import threading
     import time
     from pathlib import Path
@@ -229,6 +231,8 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
             k, _, v = raw.decode("utf-8", "replace").strip().partition("=")
             if k == "out_time_us" and v.strip().lstrip("-").isdigit():
                 done = max(done, int(v) / 1e6)
+            elif k == "frame" and fps > 0 and v.strip().isdigit():
+                done = max(done, int(v) / fps)
             if on_progress and (time.time() - last > 0.5 or (k == "progress" and v == "end")):
                 last = time.time()
                 on_progress(done, duration)
