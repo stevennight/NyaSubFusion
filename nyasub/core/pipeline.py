@@ -159,6 +159,8 @@ class Run:
                     d["api"]["timing"] = self.cfg.asr.api_timing_model.strip()
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.project.context.strip():  # 节目说明也发给大模型
                     d["api"]["context"] = digest(self.cfg.project.context.strip())
+                if self.cfg.asr.api_kind == "gemini" and self._user_terms():  # 术语表里人工给的名字也发给大模型
+                    d["api"]["names"] = digest([[t.get("src"), t.get("reading"), t.get("type")] for t in self._user_terms()])
             return d or None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容（默认轨不是第一条时也记上）
             return {"video": file_stamp(self.proj.video), "tracks": [
@@ -711,7 +713,8 @@ class Run:
         if c.backend == "api":  # 云端接口：没有本地模型，补识别（_fill_gaps）不做
             from ..sources import asr_api
 
-            segs, detected = asr_api.transcribe(str(self.proj / wav), dict(c.model_dump(), context=self.cfg.project.context),
+            segs, detected = asr_api.transcribe(str(self.proj / wav),
+                                                dict(c.model_dump(), context=self.cfg.project.context, names=self._user_terms()),
                                                 self.cfg.endpoint("asr"),
                                                 whisper_lang, offset=info.get("audio_offset", 0.0),
                                                 duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache")
@@ -873,6 +876,11 @@ class Run:
         """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍）。"""
         terms = load_json(self.glossary_path(), {"terms": []})["terms"]
         return [t for t in terms if t.get("from") != self.proj.stem]
+
+    def _user_terms(self):
+        """术语表里人工给的（手动加的、导入的）：语音识别（多模态大模型）照这些写人名。自动整理的可能带着识别错字，不给。"""
+        return [t for t in load_json(self.glossary_path(), {"terms": []})["terms"]
+                if t.get("from") in ("manual", "import") and (t.get("src") or "").strip()]
 
     def _series_terms_digest(self):
         return digest(self._series_terms())

@@ -235,6 +235,17 @@ CONTEXT_NOTE = ("\n\n节目信息（只用来写对人名、地名、专有名�
                 "这里有、但音频里没说的名字不要加进去，听不清的照听到的写）：\n{context}")
 
 
+def names_text(terms):
+    """术语表里人工给的名字（手动加的、导入的）→ 给多模态大模型的名单：一行一个「原文（读音）」。
+    只给原文和读音：译法、类型、备注是翻译用的，识别用不上，不占提示词。"""
+    rows = []
+    for t in terms or []:
+        src = (t.get("src") or "").strip()
+        if src:
+            rows.append(src + (f"（{t['reading'].strip()}）" if (t.get("reading") or "").strip() else ""))
+    return "\n".join(rows)
+
+
 def _chat_audio(ep, path, fmt, language, seconds, context=""):
     """多模态大模型（chat/completions + input_audio）：返回 {"language", "segments": [...]}。
     context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。"""
@@ -446,7 +457,10 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     """c 是 AsrCfg 的 dict，ep 是 Config.endpoint("asr")。返回 (语音段列表, 检测到的语言)，和 asr.transcribe 一样。
     duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。"""
     kind = c.get("api_kind", "transcribe")
-    context = (c.get("context") or "").strip() if kind == "gemini" else ""  # 节目说明：只给多模态大模型
+    context = (c.get("context") or "").strip() if kind == "gemini" else ""  # 节目说明 + 术语表里的名字：只给多模态大模型
+    names = names_text(c.get("names")) if kind == "gemini" else ""
+    if names:
+        context = (context + "\n\n" if context else "") + "人名、地名、专有名词（原文（读音））：\n" + names
     if not ep.get("key") or not ep.get("model"):
         raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
     _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
@@ -541,7 +555,7 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
     if timing_model:
         log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
-        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context=""),
+        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context="", names=[]),
                             dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
         out = align_to_reference(out, ref)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}

@@ -394,3 +394,24 @@ def test_show_notes_count_for_llm_asr_fingerprint_only(sample):
     run = lambda kind: pipeline.Run(sample, config.load(None, None, {**base, "asr": {**base["asr"], "api_kind": kind}})[0], pipeline.Options())
     assert "context" not in run("transcribe")._extra("asr")["api"]
     assert run("gemini")._extra("asr")["api"]["context"]
+
+
+def test_user_glossary_names_go_to_llm_asr_not_auto_ones(sample, wav, api):
+    """术语表里手动加的、导入的名字（带读音）发给多模态大模型；自动整理的（可能带着识别错字，比如「ソニー」）不发。"""
+    import nyasub.core.store as store
+
+    cfg = config.load(None, None, {"project": {"source": "ja"}, "ocr": {"enabled": False},
+                                   "asr": {"backend": "api", "separate": "off", "api_kind": "gemini"}})[0]
+    r = pipeline.Run(sample, cfg, pipeline.Options())
+    store.save_json(r.glossary_path(), {"terms": [{"src": "四白", "reading": "よしろ", "tr": "四白", "type": "人名", "from": "import"},
+                                                  {"src": "大塚村", "type": "地名", "from": "manual"},
+                                                  {"src": "ソニー", "tr": "索尼", "type": "人名", "from": "第1話"}]})
+    assert [t["src"] for t in r._user_terms()] == ["四白", "大塚村"]
+    fp = r._extra("asr")["api"]["names"]
+    store.save_json(r.glossary_path(), {"terms": [{"src": "四白", "reading": "よしろ", "from": "import"}]})
+    assert r._extra("asr")["api"]["names"] != fp  # 名单改了：重新识别
+    api["api"].mode = "chat"
+    asr_api.transcribe(str(wav), {"api_kind": "gemini", "names": [{"src": "四白", "reading": "よしろ", "type": "人名"}]},
+                       dict(EP, model="m-gemini"), "ja")
+    user = json.loads(api["api"].requests[0].content)["messages"][1]["content"][0]["text"]
+    assert "四白（よしろ）" in user and "没说的名字不要加进去" in user
