@@ -367,3 +367,30 @@ def test_timing_model_only_counts_for_llm_kind(sample):
     assert "timing" not in run({"api_kind": "gemini"})._extra("asr")["api"]
     assert run({"api_kind": "gemini", "api_timing_model": "microsoft/mai-transcribe-2"})._extra("asr")["api"]["timing"] == \
         "microsoft/mai-transcribe-2"
+
+
+def test_llm_gets_show_notes_in_prompt(wav, api):
+    """多模态大模型收到节目说明（角色表），提示里写明没听到的名字不要加；节目说明不同，缓存也分开。"""
+    api["api"].mode = "chat"
+    c = {"api_kind": "gemini", "context": "犬塚信乃（いぬづか しの）主人公"}
+    asr_api.transcribe(str(wav), c, dict(EP, model="m-gemini"), "ja")
+    user = json.loads(api["api"].requests[0].content)["messages"][1]["content"][0]["text"]
+    assert "犬塚信乃（いぬづか しの）" in user and "没说的名字不要加进去" in user
+    api["api"].requests.clear()
+    asr_api.transcribe(str(wav), {"api_kind": "transcribe", "context": "x"}, EP, "ja")
+    assert all("犬".encode() not in r.content for r in api["api"].requests)  # 转写接口不带节目说明
+
+
+def test_spaces_between_japanese_words_removed():
+    """模型偶尔按词加空格（「見 た とこ 普通 の ガキ」）：字之间的去掉，英文单词之间的留着。"""
+    segs = asr_api._from_chat({"segments": [{"start": "00:01.00", "end": "00:03.00", "text": "見 た とこ 普通 の ガキ"},
+                                            {"start": "00:04.00", "end": "00:05.00", "text": "Don't choose my fate"},
+                                            {"start": "00:06.00", "end": "00:07.00", "text": "荘介 、 四白"}]}, 0.0, 10.0)
+    assert [s["text"] for s in segs] == ["見たとこ普通のガキ", "Don't choose my fate", "荘介、四白"]
+
+
+def test_show_notes_count_for_llm_asr_fingerprint_only(sample):
+    base = {"project": {"source": "ja", "context": "角色表"}, "ocr": {"enabled": False}, "asr": {"backend": "api", "separate": "off"}}
+    run = lambda kind: pipeline.Run(sample, config.load(None, None, {**base, "asr": {**base["asr"], "api_kind": kind}})[0], pipeline.Options())
+    assert "context" not in run("transcribe")._extra("asr")["api"]
+    assert run("gemini")._extra("asr")["api"]["context"]

@@ -18,7 +18,7 @@ const DOT: Record<string, string> = { done: "done", cached: "done", stale: "stal
 const SEP_LBL: Record<string, string> = { auto: "自动", on: "开", off: "关" };
 const ASR_API_KINDS = {
   transcribe: { label: "转写接口", model: "gpt-transcribe", desc: "OpenAI 兼容的 /v1/audio/transcriptions（gpt-transcribe、whisper-1 等）；只给文字的接口会切成小段识别" },
-  gemini: { label: "多模态大模型", model: "gemini-2.5-flash", desc: "Gemini 等能听音频的大模型（chat/completions + 音频），按句给时间，没有逐字时间" },
+  gemini: { label: "多模态大模型", model: "gemini-2.5-flash", desc: "Gemini 等能听音频的大模型（chat/completions + 音频），按句给时间，没有逐字时间。会带上「资料」里的节目说明：贴一份角色表（名字的汉字和读音，比如从日文维基百科复制）能让人名写对，例如八犬伝的「四白（よしろ）」" },
 };
 const LLM_MODE: Record<string, string> = { auto: "自动", api: "调接口", export: "导出任务文件", off: "不翻译" };
 

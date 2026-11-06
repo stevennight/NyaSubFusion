@@ -157,6 +157,8 @@ class Run:
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
                     d["api"]["timing"] = self.cfg.asr.api_timing_model.strip()
+                if self.cfg.asr.api_kind == "gemini" and self.cfg.project.context.strip():  # 节目说明也发给大模型
+                    d["api"]["context"] = digest(self.cfg.project.context.strip())
             return d or None
         if name in VIDEO_STAGES:  # 视频文件 + 实际封装 / 压制进去的字幕内容（默认轨不是第一条时也记上）
             return {"video": file_stamp(self.proj.video), "tracks": [
@@ -709,7 +711,8 @@ class Run:
         if c.backend == "api":  # 云端接口：没有本地模型，补识别（_fill_gaps）不做
             from ..sources import asr_api
 
-            segs, detected = asr_api.transcribe(str(self.proj / wav), c.model_dump(), self.cfg.endpoint("asr"),
+            segs, detected = asr_api.transcribe(str(self.proj / wav), dict(c.model_dump(), context=self.cfg.project.context),
+                                                self.cfg.endpoint("asr"),
                                                 whisper_lang, offset=info.get("audio_offset", 0.0),
                                                 duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache")
         else:

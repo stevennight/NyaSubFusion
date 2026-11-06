@@ -225,18 +225,25 @@ def _transcribe_file(ep, path, fmt, language, timed):
 
 
 SYSTEM = """你是逐字转写员。把音频里说出来的每一句话按原语言逐字写下来：不翻译、不总结、不润色，口语、语气词、方言照原样写；
-不写音乐、音效、笑声之类的说明；听不清的地方按听到的写，不要编。
+不写音乐、音效、笑声之类的说明；听不清的地方按听到的写，不要编。日语、中文照常写，词和词之间不加空格，句末照常加标点。
 按句子分段（一句话一段，长句在停顿处断开，每段不超过 8 秒），每段给出开始和结束时间（相对这段音频开头，格式 MM:SS.ss）。
 只输出 JSON：{"language": "ISO 639-1 语言代码", "segments": [{"start": "MM:SS.ss", "end": "MM:SS.ss", "text": "..."}]}
 没有人说话就输出 {"language": "", "segments": []}。"""
 
 
-def _chat_audio(ep, path, fmt, language, seconds):
-    """多模态大模型（chat/completions + input_audio）：返回 {"language", "segments": [...]}。"""
+CONTEXT_NOTE = ("\n\n节目信息（只用来写对人名、地名、专有名词的写法：听到的名字照这里的写法写；"
+                "这里有、但音频里没说的名字不要加进去，听不清的照听到的写）：\n{context}")
+
+
+def _chat_audio(ep, path, fmt, language, seconds, context=""):
+    """多模态大模型（chat/completions + input_audio）：返回 {"language", "segments": [...]}。
+    context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。"""
     from ..llm.client import parse_json
 
     b64 = base64.b64encode(Path(path).read_bytes()).decode()
     user = f"这段音频长 {seconds:.1f} 秒（{int(seconds // 60):02d}:{seconds % 60:05.2f}）。语言：{language or '请自动判断'}。"
+    if context.strip():
+        user += CONTEXT_NOTE.format(context=context.strip())
     body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": [{"type": "text", "text": user},
@@ -329,10 +336,15 @@ def _join(ws):
     return out.strip()
 
 
+_CJK = "々぀-ヿ㐀-鿿！-～、。"
+_CJK_SPACE = re.compile(f"(?<=[{_CJK}]) +(?=[{_CJK}])")
+
+
 def _from_chat(resp, t0, seconds):
     segs = []
     for s in resp.get("segments") or []:
         a, b, text = _ts(s.get("start")), _ts(s.get("end")), (s.get("text") or "").strip()
+        text = _CJK_SPACE.sub("", text)  # 模型偶尔把日语按词分开写（「見 た とこ 普通 の ガキ」）：字之间的空格去掉，英文单词之间的照留
         if a is None or not text or a > seconds + 2:
             continue
         b = b if b is not None and b > a else a + max(0.5, len(text) * 0.12)
@@ -434,6 +446,7 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     """c 是 AsrCfg 的 dict，ep 是 Config.endpoint("asr")。返回 (语音段列表, 检测到的语言)，和 asr.transcribe 一样。
     duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。"""
     kind = c.get("api_kind", "transcribe")
+    context = (c.get("context") or "").strip() if kind == "gemini" else ""  # 节目说明：只给多模态大模型
     if not ep.get("key") or not ep.get("model"):
         raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
     _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
@@ -457,7 +470,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         path, f = _encode(wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
         try:
             if kind == "gemini":
-                resp, hit = _cached(cache_dir, key_of(path, "chat"), lambda: _chat_audio(ep, path, f, language, b - a))
+                resp, hit = _cached(cache_dir, key_of(path, ["chat", hashlib.sha1(context.encode()).hexdigest()] if context else "chat"),
+                                    lambda: _chat_audio(ep, path, f, language, b - a, context))
                 segs, lang = _from_chat(resp, a, b - a), resp.get("language")
             else:
                 resp, hit = _cached(cache_dir, key_of(path, timed),
@@ -527,7 +541,7 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
     if timing_model:
         log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
-        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model=""),
+        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context=""),
                             dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
         out = align_to_reference(out, ref)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
