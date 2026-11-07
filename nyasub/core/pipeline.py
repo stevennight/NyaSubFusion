@@ -156,7 +156,9 @@ class Run:
                 d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
-                    d["api"]["timing"] = self.cfg.asr.api_timing_model.strip()
+                    from ..sources.asr_api import ALIGN_V
+
+                    d["api"]["timing"] = [self.cfg.asr.api_timing_model.strip(), ALIGN_V]
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.project.context.strip():  # 节目说明也发给大模型
                     d["api"]["context"] = digest(self.cfg.project.context.strip())
                 if self.cfg.asr.api_kind == "gemini" and self._user_terms():  # 术语表里人工给的名字也发给大模型

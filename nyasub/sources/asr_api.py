@@ -48,6 +48,13 @@ DEFAULT_MODEL = {"transcribe": "gpt-transcribe", "gemini": "gemini-2.5-flash"}
 # 多出这么一点，说明音频被中转丢了（实测：40 秒音频 + 350 字提示只计了 409 个）。太短的块不查，免得误报
 MIN_AUDIO_TOKENS = 2.0
 GUARD_SECONDS = 30.0
+# 多模态大模型的输出上限（max_tokens）：基数 + 每秒音频这么多。不给上限时 OpenRouter 按模型的最大输出预扣费用
+# （gemini-4-argon 约 94 万 token ≈ 9 美元一次），几块同时传就报 402 in_flight_budget_exhausted。
+# 实测对话最密的 3 分钟输出 2532 token（每秒 14 个），这个上限留了 5 倍以上（会先思考的模型，思考也算在里面）；
+# 只按实际输出收费，上限只影响预扣。万一还是写满被截断，这一块对半切开重新识别
+OUT_BASE = 8000
+OUT_PER_SEC = 80
+SPLIT_MIN = 20.0    # 被截断的块短于这么长就不再切，报错
 LANG_NAMES = {"japanese": "ja", "chinese": "zh", "english": "en", "korean": "ko", "french": "fr", "german": "de",
               "spanish": "es", "russian": "ru", "italian": "it", "portuguese": "pt", "thai": "th", "vietnamese": "vi",
               "cantonese": "yue", "indonesian": "id"}
@@ -60,6 +67,10 @@ class AsrApiError(RuntimeError):
 
 class _NoTimestamps(Exception):
     """接口不支持 verbose_json / 时间戳，只肯给文字。"""
+
+
+class _Truncated(Exception):
+    """多模态大模型写到输出上限被截断（finish_reason = length）：这一块切短重新识别。"""
 
 
 class _Retry(Exception):
@@ -163,6 +174,9 @@ def _check(r):
     msg = r.text[:400].replace("\n", " ")
     if r.status_code in (408, 409, 429) or r.status_code >= 500:
         raise _Retry(f"{r.status_code} {msg}")
+    if r.status_code == 402 and "in_flight" in msg:
+        # OpenRouter：同时在处理的几个请求预扣的费用加起来超过余额（不是余额用完了），等前面的处理完再试
+        raise _Retry(f"{r.status_code} {msg}")
     if r.status_code == 400 and re.search(r"response_format|timestamp|verbose_json|granularit", msg, re.I):
         raise _NoTimestamps(msg)
     hint = {401: "API Key 不对", 403: "没有权限", 404: "接口地址或模型不存在（这个接口可能不支持音频转写）",
@@ -256,6 +270,7 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
     if context.strip():
         user += CONTEXT_NOTE.format(context=context.strip())
     body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
+            "max_tokens": max_out(seconds),
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": [{"type": "text", "text": user},
                                                       {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
@@ -266,6 +281,9 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
         if r.status_code == 400 and "response_format" in r.text and "response_format" in body:
             body.pop("response_format")  # 有的接口不支持 JSON 模式
             raise _Retry("不支持 JSON 模式，去掉再试")
+        if r.status_code == 400 and "max_tokens" in r.text and "max_tokens" in body:
+            body.pop("max_tokens")
+            raise _Retry("不支持 max_tokens，去掉再试")
         _check(r)
         return r.json()
     try:
@@ -277,11 +295,19 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
     if used is not None and seconds >= GUARD_SECONDS and used < text_tokens + seconds * MIN_AUDIO_TOKENS:
         raise AsrApiError(f"接口没有收到音频（{seconds:.0f} 秒音频 + 提示词只计了 {used} 个输入 token）：这个接口 / 中转不支持音频输入，"
                           "模型会凭空编一段话或者什么也不给。请换支持音频的接口（例如 Gemini 官方接口）")
-    text = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    choice = (resp.get("choices") or [{}])[0]
+    text = (choice.get("message") or {}).get("content") or ""
+    if choice.get("finish_reason") == "length":
+        raise _Truncated(f"{seconds:.0f} 秒的音频写到输出上限（{body.get('max_tokens')} token）被截断")
     try:
         return parse_json(text)
     except Exception as e:
         raise AsrApiError(f"模型返回的不是 JSON：{text[:200]}") from e
+
+
+def max_out(seconds):
+    """多模态大模型识别这么长的音频，输出上限（max_tokens）设多少。"""
+    return int(OUT_BASE + seconds * OUT_PER_SEC)
 
 
 def _ts(v):
@@ -484,8 +510,17 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         path, f = _encode(wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
         try:
             if kind == "gemini":
-                resp, hit = _cached(cache_dir, key_of(path, ["chat", hashlib.sha1(context.encode()).hexdigest()] if context else "chat"),
-                                    lambda: _chat_audio(ep, path, f, language, b - a, context))
+                try:
+                    resp, hit = _cached(cache_dir, key_of(path, ["chat", hashlib.sha1(context.encode()).hexdigest()] if context else "chat"),
+                                        lambda: _chat_audio(ep, path, f, language, b - a, context))
+                except _Truncated as e:
+                    if b - a < SPLIT_MIN * 2:
+                        raise AsrApiError(f"语音识别：{e}，这一块已经很短，没法再切") from e
+                    m = w.quiet(a + (b - a) * 0.4, a + (b - a) * 0.6)  # 切在中间附近最安静的地方
+                    log(f"{a:.0f}–{b:.0f} 秒：{e}，切成两块重新识别")
+                    s1, l1 = one(a, m, timed)
+                    s2, l2 = one(m, b, timed)
+                    return s1 + s2, l1 or l2
                 segs, lang = _from_chat(resp, a, b - a), resp.get("language")
             else:
                 resp, hit = _cached(cache_dir, key_of(path, timed),
@@ -567,47 +602,69 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     return out, language or state["lang"]
 
 
-SNAP = 1.5          # 大模型给的句子起止，在这么远以内找转写模型的句子边界
-SNAP_PAUSE = 0.6    # 句子边界离得远时，在这么远以内找转写模型的句中停顿
-PAUSE = 0.25        # 字和字隔这么久算一次停顿
+ALIGN_V = 2          # 对时的做法改了就加一（记进语音识别的指纹，填了“对时用”的工程重新对；两个模型的结果都有缓存）
+DRIFT = 3.0         # 大模型估的时间最多偏这么多：对上的字在这个范围外，当成对错了位置
+MIN_HIT = 0.4       # 一句里至少这么多字（而且至少 2 个）对上了转写模型的字，才用它的时间
+PUNCT_GAP = 0.5     # 标点离前一个字不超过这么远，才算这个字的一部分
+CHAR_SEC = 0.12     # 句首 / 句尾几个字没对上（名字写法不同）时，按每个字这么长往外推
 SHORT = 4           # 大模型漏掉、转写模型听到的这么短的话（「え？」「うわあ！」）补进来
+SHORT_GAP = 0.6     # 补的短话离大模型的句子（原来的时间、对过的时间都算）至少这么远
 
 
 def align_to_reference(segs, ref):
-    """大模型的句子（字准，时间是估的）对到转写模型的时间上（逐字时间准，字常常错）：
-    开始 / 结束先对到 SNAP 秒内最近的转写句子边界，没有就对到 SNAP_PAUSE 秒内最近的句中停顿，都没有就不动；
-    转写模型听到、大模型那个时间什么也没有的短话补进来。八犬伝第 1 集按字幕组的人工时间轴比：
-    开头差半秒以上的从 48% 降到 18%（转写模型自己 18%），结尾从 57% 降到 22%（转写模型 15%）。"""
+    """大模型的句子（字准，时间是估的）按文字对到转写模型上（逐字时间准，字常常错）：两边的字大多一样，
+    整集按字对齐，每句的起止用对上的第一个 / 最后一个字在转写模型里的时间。按文字对，大模型的时间整段偏了一两秒、
+    转写模型把两句并成一句（「犬塚志乃、犬川荘助。」）都不影响；对上的字太少的句子（转写模型没听到）保留原来的时间。
+    转写模型听到、大模型那个时间什么也没有的短话补进来。"""
+    from difflib import SequenceMatcher
+
     from ..textutil import norm
     from .asr import repair
 
     ref = repair(ref)
-    if not ref:
+    chars = []  # 转写模型的每个字：(字, 开始, 结束)；字后面紧跟的标点（「。」也有时间）算进结束，句尾才不会收得太早
+    spans = []  # 转写模型每句的字在 chars 里的范围
+    for r in ref:
+        first = len(chars)
+        for w in r.get("words") or []:
+            t = norm(w["w"])
+            if not t:
+                if chars and w["s"] - chars[-1][2] < PUNCT_GAP:
+                    chars[-1] = (chars[-1][0], chars[-1][1], max(chars[-1][2], w["e"]))
+                continue
+            for k, ch in enumerate(t):
+                d = (w["e"] - w["s"]) / len(t)
+                chars.append((ch, w["s"] + k * d, w["s"] + (k + 1) * d))
+        spans.append(range(first, len(chars)))
+    if not chars:
         return segs
-    rs = [s["start"] for s in ref]
-    re_ = [s["end"] for s in ref]
-    words = sorted((w for s in ref for w in s.get("words") or [] if norm(w["w"])), key=lambda w: w["s"])
-    p_on = [w["s"] for k, w in enumerate(words) if k == 0 or w["s"] - words[k - 1]["e"] >= PAUSE]
-    p_off = [w["e"] for k, w in enumerate(words) if k == len(words) - 1 or words[k + 1]["s"] - w["e"] >= PAUSE]
-
-    def near(t, pts, win):
-        c = [p for p in pts if abs(p - t) <= win]
-        return min(c, key=lambda p: abs(p - t)) if c else None
-
-    out = []
-    for s in segs:
-        a = near(s["start"], rs, SNAP)
-        a = a if a is not None else near(s["start"], p_on, SNAP_PAUSE)
-        b = near(s["end"], re_, SNAP)
-        b = b if b is not None else near(s["end"], p_off, SNAP_PAUSE)
-        if a is None and b is None:
+    texts = [norm(s["text"]) for s in segs]
+    owner = [i for i, t in enumerate(texts) for _ in t]
+    hit = {}  # 大模型第几个字 → 转写模型第几个字
+    for a, b, n in SequenceMatcher(None, "".join(texts), "".join(c[0] for c in chars), autojunk=False).get_matching_blocks():
+        for k in range(n):
+            hit[a + k] = b + k
+    out, pos = [], 0
+    for i, s in enumerate(segs):
+        n = len(texts[i])
+        got = [(k, hit[pos + k]) for k in range(n) if pos + k in hit
+               and s["start"] - DRIFT <= chars[hit[pos + k]][1] <= s["end"] + DRIFT]
+        pos += n
+        if n == 0 or len(got) < max(2, MIN_HIT * n):
             out.append(s)
             continue
-        a = s["start"] if a is None else a
-        b = s["end"] if b is None else b
+        (k0, m0), (k1, m1) = got[0], got[-1]
+        a = chars[m0][1] - k0 * CHAR_SEC
+        b = chars[m1][2] + (n - 1 - k1) * CHAR_SEC
         out.append(dict(s, start=round(a, 3), end=round(b, 3), timing="aligned") if b > a else s)
-    for r in ref:
-        if len(norm(r["text"])) <= SHORT and not any(min(r["end"], s["end"]) - max(r["start"], s["start"]) > 0.1 for s in out):
+    used = set(hit.values())
+    near = [(s["start"], s["end"]) for s in segs] + [(s["start"], s["end"]) for s in out]
+    for r, span in zip(ref, spans):
+        # 大模型漏掉的短话：字一个也没对上，附近大模型也什么都没写（「ケンタ」旁边有「健太！」、「ソニー」是听错的「荘兄」，不补）
+        if (len(norm(r["text"])) <= SHORT and not any(m in used for m in span)
+                and not any(min(r["end"] + SHORT_GAP, b) - max(r["start"] - SHORT_GAP, a) > 0 for a, b in near)
+                and not (out[-1]["timing"] == "word" and norm(out[-1]["text"]) == norm(r["text"])
+                         and r["start"] - out[-1]["end"] < SHORT_GAP)):  # 转写模型把一声「ん？」写成了挨着的两条
             out.append(dict(r, timing="word"))
     out.sort(key=lambda s: s["start"])
     return [dict(s, id=f"a{k + 1}") for k, s in enumerate(out)]

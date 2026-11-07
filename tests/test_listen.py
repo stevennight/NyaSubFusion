@@ -159,3 +159,28 @@ def test_pipeline_listens_before_translating_and_notes_reach_prompt(sample, api_
     assert heard and {m for m, _ in heard} == {"gem"}
     assert talk and all(c.get("listen") == {"kind": "陈述", "tone": "平静地讲解"} for c in talk)
     assert any("〔听原声：陈述，平静地讲解〕" in u and "听原声的标注" in u for u in translated)
+
+
+def test_listen_provider_choice_is_kept_in_user_config():
+    """「设置」里“听音标注用”选的接口是这台电脑的设置，和翻译用哪个接口一样留在全局配置里（以前被当成处理参数挪走了）。"""
+    from nyasub.core import config
+
+    machine, rest = config.split_machine({"llm": {"translate": "custom", "listen": "openrouter", "listen_audio": True}})
+    assert machine == {"llm": {"translate": "custom", "listen": "openrouter"}}
+    assert rest == {"llm": {"listen_audio": True}}  # 参考语音开不开是每一集自己的
+
+
+def test_listen_provider_moved_away_by_old_versions_is_restored(tmp_path, monkeypatch):
+    """0.5.2 以前存进全局配置的“听音标注用”被挪进了 legacy_global.toml：读配置时挪回来，只挪一次。"""
+    from nyasub.core import config
+
+    monkeypatch.setenv("NYASUB_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[llm]\ntranslate = "custom"\n', encoding="utf-8")
+    (tmp_path / "legacy_global.toml").write_text('[llm]\nlisten = "openrouter"\nchunk_seconds = 120\n', encoding="utf-8")
+    cfg, _ = config.load()
+    assert cfg.llm.listen == "openrouter"
+    assert config.read_toml(tmp_path / "config.toml")["llm"] == {"translate": "custom", "listen": "openrouter"}
+    assert config.read_toml(tmp_path / "legacy_global.toml") == {"llm": {"chunk_seconds": 120}}  # 处理参数照旧留着
+    # 之后在「设置」里改成跟着翻译接口（删掉这一项），不会再被挪回来
+    (tmp_path / "config.toml").write_text('[llm]\ntranslate = "custom"\n', encoding="utf-8")
+    assert config.load()[0].llm.listen == ""

@@ -69,6 +69,7 @@ class Api:
         self.requests = []
         self.fail = []            # 依次返回的错误状态码
         self.prompt_tokens = None
+        self.truncate_over = None  # 多模态：音频长过这么多秒就写到输出上限被截断
         self.lock = threading.Lock()
 
     def handler(self, req: httpx.Request):
@@ -76,7 +77,8 @@ class Api:
             self.requests.append(req)
             if self.fail:
                 code = self.fail.pop(0)
-                return httpx.Response(code, json={"error": {"message": f"error {code}"}})
+                code, msg = code if isinstance(code, tuple) else (code, f"error {code}")
+                return httpx.Response(code, json={"error": {"message": msg}})
         if req.url.path.endswith("/audio/transcriptions"):
             body = req.content.decode("utf-8", "replace")
             span = json.loads(re.search(r'\{"a": [^}]*\}', body).group(0))
@@ -106,6 +108,9 @@ class Api:
         mmss = lambda v: f"{int(v // 60):02d}:{v % 60:05.2f}"  # noqa: E731
         segs = [{"start": mmss(t[0] - a), "end": mmss(t[1] - a), "text": t[2]} for t in TRUTH if a <= (t[0] + t[1]) / 2 < b]
         tokens = self.prompt_tokens if self.prompt_tokens is not None else int((b - a) * 32) + 300
+        if self.truncate_over is not None and b - a > self.truncate_over:
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"language": "ja", "segments": [{"start": "00'},
+                                                          "finish_reason": "length"}], "usage": {"prompt_tokens": tokens}})
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
             {"language": "ja", "segments": segs}, ensure_ascii=False)}}], "usage": {"prompt_tokens": tokens}})
 
@@ -219,6 +224,34 @@ def test_chat_audio_segments_with_mmss_times(wav, api):
     assert body["model"] == "m-gemini" and body["messages"][1]["content"][1]["input_audio"]["format"] == "mp3"
 
 
+def test_chat_audio_sets_output_cap_by_length(wav, api):
+    api["api"].mode = "chat"
+    _run(wav, kind="gemini")
+    for r in api["api"].requests:
+        body = json.loads(r.content)
+        span = json.loads(base64.b64decode(body["messages"][1]["content"][1]["input_audio"]["data"]))
+        assert body["max_tokens"] == asr_api.max_out(span["b"] - span["a"])
+    assert asr_api.max_out(180) > 2532 * 5  # 实测最密的 3 分钟输出 2532 token
+
+
+def test_chat_audio_truncated_chunk_is_split_and_retried(wav, api, monkeypatch):
+    monkeypatch.setattr(asr_api, "SPLIT_MIN", 4.0)
+    api["api"].mode = "chat"
+    api["api"].truncate_over = 12.0  # 20 秒的块写不完：切成两半各自识别
+    segs, _ = _run(wav, kind="gemini")
+    assert [s["text"] for s in segs] == [t[2] for t in TRUTH]
+    for s, (a, b, _) in zip(segs, TRUTH):
+        assert s["start"] == pytest.approx(a, abs=0.01) and s["end"] == pytest.approx(b, abs=0.01)
+
+
+def test_chat_audio_truncated_short_chunk_is_an_error(wav, api, monkeypatch):
+    monkeypatch.setattr(asr_api, "SPLIT_MIN", 30.0)
+    api["api"].mode = "chat"
+    api["api"].truncate_over = 1.0
+    with pytest.raises(asr_api.AsrApiError, match="截断"):
+        _run(wav, kind="gemini")
+
+
 def test_chat_audio_dropped_by_relay_is_an_error(wav, api, monkeypatch):
     monkeypatch.setattr(asr_api, "GUARD_SECONDS", 10.0)
     api["api"].mode = "chat"
@@ -233,6 +266,17 @@ def test_bad_key_is_fatal_and_stops_after_first_chunk(wav, api):
     with pytest.raises(asr_api.AsrApiError, match="API Key"):
         _run(wav)
     assert len(api["api"].requests) == 1
+
+
+def test_openrouter_in_flight_budget_is_retried(wav, api):
+    # 同时传的几块预扣费用超过余额：等前面的处理完再试；真没钱（402 别的原因）照样报错
+    api["api"].fail = [(402, '{"error":{"message":"This request would exceed your available credits given your current '
+                             'in-flight requests.","code":402,"metadata":{"reason":"in_flight_budget_exhausted"}}}')]
+    segs, _ = _run(wav)
+    assert [s["text"] for s in segs] == [t[2] + "。" for t in TRUTH]
+    api["api"].fail = [402]
+    with pytest.raises(asr_api.AsrApiError, match="402"):
+        asr_api.transcribe(str(wav), {"api_kind": "transcribe"}, dict(EP, model="m2"), "ja")
 
 
 def test_transient_errors_are_retried(wav, api):
@@ -345,19 +389,50 @@ def test_subtitle_offset_estimated_from_sentence_timing():
     assert abs(off - 1.0) <= 0.3 and gain > 0.05
 
 
-def test_llm_sentences_snapped_to_transcribe_timing_and_short_lines_added():
-    """大模型的字、转写模型的时间：起止对到 1.5 秒内最近的转写句子边界；离得远就对到句中停顿；
-    大模型漏掉、转写模型听到的短感叹补进来。"""
-    gem = [{"id": "a1", "start": 10.6, "end": 13.9, "text": "生きたいか？", "words": [], "timing": "segment"},
-           {"id": "a2", "start": 30.0, "end": 31.0, "text": "遠すぎる", "words": [], "timing": "segment"}]
-    w = lambda t, s, e: {"w": t, "s": s, "e": e}
-    ref = [{"id": "a1", "start": 10.1, "end": 13.2, "text": "行きたいか？", "words": [w("行", 10.1, 10.3), w("きたいか", 10.3, 13.2)]},
-           {"id": "a2", "start": 20.0, "end": 20.4, "text": "え？", "words": [w("え", 20.0, 20.3), w("？", 20.3, 20.4)]},
-           {"id": "a3", "start": 50.0, "end": 52.0, "text": "長いけど大模型が聞いてない台詞", "words": [w("長", 50.0, 52.0)]}]
+def _ref(sentences):
+    """转写模型的结果：[(开始, 文字, 每个字多长)]，逐字时间，句末标点也有时间。"""
+    out = []
+    for k, (t0, text, step) in enumerate(sentences):
+        words, t = [], t0
+        for ch in text:
+            words.append({"w": ch, "s": round(t, 3), "e": round(t + step, 3)})
+            t += step
+        out.append({"id": f"a{k + 1}", "start": t0, "end": round(t, 3), "text": text, "words": words})
+    return out
+
+
+def _gem(*items):
+    return [{"id": f"a{k + 1}", "start": a, "end": b, "text": t, "words": [], "timing": "segment"} for k, (a, b, t) in enumerate(items)]
+
+
+def test_llm_sentences_aligned_to_transcribe_by_text():
+    """按字对：大模型的时间整段晚了 1.5 秒、转写模型把两句并成一句（「犬塚志乃、犬川荘助。」）都对得上；
+    名字写法不同（荘介 / 荘助）没对上的字按每字 CHAR_SEC 往外推；字后面的标点（「、」「。」）的时间算进结尾。"""
+    ref = _ref([(10.0, "犬塚志乃、犬川荘助。", 0.2), (13.0, "主の命によって迎えに来た。", 0.1)])
+    gem = _gem((11.5, 12.6, "犬塚信乃。"), (12.6, 13.9, "犬川荘介。"), (14.5, 16.0, "主の命によって迎えに来た。"))
+    out = asr_api.align_to_reference(gem, ref)
+    got = [(s["text"], s["start"], s["end"], s["timing"]) for s in out]
+    assert got == [("犬塚信乃。", 10.0, 11.0, "aligned"),                                    # 「乃」也对上了，结尾含「、」
+                   ("犬川荘介。", 11.0, pytest.approx(11.6 + asr_api.CHAR_SEC), "aligned"),  # 「介」没对上，往后推一个字
+                   ("主の命によって迎えに来た。", 13.0, 14.3, "aligned")]                     # 结尾含「。」
+    assert [s["id"] for s in out] == ["a1", "a2", "a3"]
+
+
+def test_llm_sentence_without_matching_text_keeps_its_time():
+    ref = _ref([(10.0, "おはよう。", 0.2)])
+    gem = _gem((10.2, 11.0, "おはよう。"), (30.0, 31.0, "遠すぎる"), (50.0, 51.0, "おやすみ"))  # 后两句转写模型没听到
     out = asr_api.align_to_reference(gem, ref)
     assert [(s["text"], s["start"], s["end"], s["timing"]) for s in out] == [
-        ("生きたいか？", 10.1, 13.2, "aligned"), ("え？", 20.0, 20.4, "word"), ("遠すぎる", 30.0, 31.0, "segment")]
-    assert [s["id"] for s in out] == ["a1", "a2", "a3"]
+        ("おはよう。", 10.0, 11.0, "aligned"), ("遠すぎる", 30.0, 31.0, "segment"), ("おやすみ", 50.0, 51.0, "segment")]
+
+
+def test_short_lines_only_added_where_llm_wrote_nothing():
+    """大模型漏掉的短感叹补进来；转写模型把名字写成片假名（「ケンタ」，大模型写「健太！」）或者听错的，旁边大模型有句子，不补。"""
+    ref = _ref([(10.0, "おはよう。", 0.2), (20.0, "え？", 0.2), (20.5, "え？", 0.1), (30.4, "ケンタ。", 0.1)])  # 第二个「え？」是重复
+    gem = _gem((10.0, 11.2, "おはよう。"), (30.0, 30.5, "健太！"))
+    out = asr_api.align_to_reference(gem, ref)
+    assert [(s["text"], s["timing"]) for s in out] == [("おはよう。", "aligned"), ("え？", "word"), ("健太！", "segment")]
+    assert out[1]["start"] == 20.0 and out[1]["end"] == 20.4
 
 
 def test_timing_model_only_counts_for_llm_kind(sample):
@@ -366,7 +441,7 @@ def test_timing_model_only_counts_for_llm_kind(sample):
     assert "timing" not in run({"api_kind": "transcribe", "api_timing_model": "m"})._extra("asr")["api"]
     assert "timing" not in run({"api_kind": "gemini"})._extra("asr")["api"]
     assert run({"api_kind": "gemini", "api_timing_model": "microsoft/mai-transcribe-2"})._extra("asr")["api"]["timing"] == \
-        "microsoft/mai-transcribe-2"
+        ["microsoft/mai-transcribe-2", asr_api.ALIGN_V]
 
 
 def test_llm_gets_show_notes_in_prompt(wav, api):

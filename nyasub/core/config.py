@@ -285,7 +285,7 @@ VERSION = 3   # 配置格式：2 = 样式是整套的；3 = 不再从全局配�
 
 # 用户全局配置里只留这些（跟这台电脑 / 这个人有关的），其余是每一集自己的处理参数
 MACHINE_KEYS = {
-    "llm": {"providers", "translate", "vision", "asr", "base_url", "api_key", "api_key_env", "model", "vision_model",
+    "llm": {"providers", "translate", "vision", "asr", "listen", "base_url", "api_key", "api_key_env", "model", "vision_model",
             "timeout", "max_retries", "json_mode"},
     "asr": {"device", "compute_type", "download_root", "hf_endpoint"},
     "ocr": {"use_cuda", "hwaccel"},
@@ -446,6 +446,7 @@ def migrate_global() -> bool:
     if not user.is_file():
         return False
     raw = read_toml(user)
+    restore_machine(user, raw)
     machine, rest = split_machine(raw)
     if not rest:
         return False
@@ -458,6 +459,32 @@ def migrate_global() -> bool:
     write_backup(user, "v2")
     user.write_text(tomli_w.dumps(machine), encoding="utf-8")
     return True
+
+
+def restore_machine(user, raw) -> bool:
+    """以前不在 MACHINE_KEYS 里、被当成处理参数挪进 legacy_global.toml 的本机设置挪回来
+    （0.5.2 以前「设置」里选的“听音标注用”（llm.listen）存进去，下次读配置就被挪走了）。挪回来的从 legacy 里删掉，只挪一次。"""
+    import tomli_w
+
+    lf = legacy_file()
+    legacy = read_toml(lf) if lf.is_file() else {}
+    back, _ = split_machine(legacy)
+    moved = False
+    for sec, part in back.items():
+        for k, v in part.items():
+            if k not in raw.get(sec, {}):
+                raw.setdefault(sec, {})[k] = v
+                moved = True
+            legacy[sec].pop(k)
+        if not legacy[sec]:
+            legacy.pop(sec)
+    if not back:
+        return False
+    if moved:
+        write_backup(user, "restore")
+        user.write_text(tomli_w.dumps(raw), encoding="utf-8")
+    lf.write_text(tomli_w.dumps(legacy), encoding="utf-8")
+    return moved
 
 
 def legacy_global() -> dict:
