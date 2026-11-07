@@ -391,6 +391,10 @@ def _in_regions(rect, W, H, include, exclude):
 
 
 CHANGE_SECONDS = 0.5   # 同一处的字换成另一句、稳定显示这么久才算真换了一句（短的多是认错 / 闪一下）
+BOX_CHANGE = 6.0       # 画面整体没变（跳过不识别）时，上一次认出字的框里平均亮度差到这么多，也重新识别（小字在不动的画面上消失）
+SHORT_MIN = 0.3        # 比 min_duration 短、但认得干净（每帧都认出、置信度高、字数够）的字：至少这么长也留下（只闪半秒的采访字幕）
+SHORT_SCORE = 0.9
+SHORT_CHARS = 3
 
 
 def _rejoin(tracks):
@@ -407,6 +411,22 @@ def _rejoin(tracks):
         out.append(tr)
         kept.add(id(tr))
     return out
+
+
+def _boxes_changed(gray, prev, dets, roi):
+    """上一次认出字的那几个框里变了没有：缩略图看整体，小字（资料来源、角落的说明）在不动的画面上淡出时
+    整体几乎没变，按缩略图会一直沿用上一次的结果，字没了还算在（一直算到换镜头）。"""
+    if prev is None or prev.shape != gray.shape:
+        return True
+    for d in dets:
+        x0, y0, x1, y1 = (int(v) for v in d["rect"])
+        x0, x1 = max(0, x0 - roi[0]), min(gray.shape[1], x1 - roi[0])
+        y0, y1 = max(0, y0 - roi[1]), min(gray.shape[0], y1 - roi[1])
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            continue
+        if cv2.absdiff(gray[y0:y1, x0:x1], prev[y0:y1, x0:x1]).mean() >= BOX_CHANGE:
+            return True
+    return False
 
 
 def _step(active, dets, t, next_id, need, snap):
@@ -454,7 +474,7 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
 
     active, closed = [], []
     next_id = 1
-    prev_thumb, prev_dets, prev_blank = None, [], []
+    prev_thumb, prev_gray, prev_dets, prev_blank = None, None, [], []
     unread_regions = []
     n_frames = n_ocr = 0
     t0 = time.time()
@@ -469,7 +489,8 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
         img = frame if full_roi else frame[roi[1]:roi[3], roi[0]:roi[2]]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         thumb = cv2.resize(gray, (192, 108), interpolation=cv2.INTER_AREA).astype(np.int16)
-        if c["skip_static"] and prev_thumb is not None and np.percentile(np.abs(thumb - prev_thumb), 99.5) < 8:
+        if (c["skip_static"] and prev_thumb is not None and np.percentile(np.abs(thumb - prev_thumb), 99.5) < 8
+                and not _boxes_changed(gray, prev_gray, prev_dets, roi)):
             dets, blank = prev_dets, prev_blank
         else:
             dets = _detect(eng, np.ascontiguousarray(img), float(c["min_score"]))
@@ -482,7 +503,7 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
             if filter_regions:
                 dets = [d for d in dets if _in_regions(d["rect"], W, H, include, exclude)]
                 blank = [r for r in blank if _in_regions(r, W, H, include, exclude)]
-            prev_thumb, prev_dets, prev_blank = thumb, dets, blank
+            prev_thumb, prev_gray, prev_dets, prev_blank = thumb, gray, dets, blank
             n_ocr += 1
         _track_unread(unread_regions, blank, t, max_gap)
 
@@ -542,7 +563,7 @@ def crop_at(video, ev, t, path, height=720):
 
     full = path + ".frame.jpg"
     try:
-        subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", str(video), "-frames:v", "1",
+        subprocess.run(["ffmpeg", "-v", "quiet", "-y", *media.seek_input(video, t), "-frames:v", "1",
                         "-vf", f"scale=-2:{height}", "-q:v", "2", full], check=True, stdin=subprocess.DEVNULL,
                        capture_output=True, timeout=60)
         img = _imread(full)
@@ -569,7 +590,7 @@ def track_region(video, t, rect, aspect=16 / 9, window=15.0, fps=5.0, height=720
     fallback = (round(max(0.0, t - 1), 3), round(t + 1, 3))
     if x1 - x0 < 4 or y1 - y0 < 4:
         return fallback
-    cmd = ["ffmpeg", "-v", "quiet", "-ss", f"{t0:.3f}", "-i", str(video), "-t", f"{t + window - t0:.3f}",
+    cmd = ["ffmpeg", "-v", "quiet", *media.seek_input(video, t0), "-t", f"{t + window - t0:.3f}",
            "-vf", f"fps={fps},scale={W}:{height},format=gray", "-f", "rawvideo", "-"]
     crops, thumbs = [], []
     try:
@@ -696,13 +717,21 @@ def _stitch(tracks, max_gap, bounds):
     return out
 
 
+def _clean_short(tr, fps):
+    """比 min_duration 短的字，认得干净的也留下：采访字幕「すごくありがたい」只出现 0.6 秒（10 帧/秒扫到 6 帧，
+    算出来 0.5999…），以前当成闪一下的杂字丢了。杂字多是一两个字、置信度低、时有时无。"""
+    frames = round((tr.last - tr.first) * fps) + 1  # 首尾之间扫过的帧数
+    return (frames / fps >= SHORT_MIN - 1e-6 and len(tr.obs) >= max(3, frames - 1)  # 中间最多漏一帧
+            and min(sc for _, sc in tr.obs) >= SHORT_SCORE and len(norm(tr.best_text())) >= SHORT_CHARS)
+
+
 def _build_events(tracks, c, fps, W, H, duration, roi=None):
     half = 0.5 / fps
     bounds = roi or (0, 0, W, H)
     items = []
     for tr in _stitch(tracks, float(c["max_gap"]), bounds):
         start, end = tr.first - half, tr.last + half
-        if end - start < float(c["min_duration"]) or len(tr.obs) < 2:
+        if len(tr.obs) < 2 or (end - start < float(c["min_duration"]) - 1e-6 and not _clean_short(tr, fps)):
             continue
         motion = _motion(tr, bounds)
         moving = motion is not None

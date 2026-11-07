@@ -354,6 +354,19 @@ def waveform_peaks(wav_path, per_second=50):
     return {"per_second": rate / step, "peaks": np.clip(peaks * 255 // top, 0, 255).astype(int).tolist()}
 
 
+SEEK_PRE = 1.5  # 截某一刻的画面：先跳到这么多秒之前，再往后解码到那一刻
+
+
+def seek_input(path, t, pre=SEEK_PRE):
+    """ffmpeg 输入参数：从 t 秒那一帧开始读（和逐帧扫描同一时间轴）。
+    直接跳（-ss 放在 -i 前面）在广播录下来的 HEVC .m2ts 上会晚 0.1–0.5 秒落地（跳到的位置后面几帧解不出来、被丢掉，
+    实测 4K 新日本風土記），字幕刚好在那时消失的话，截到的是下一个镜头（人名条那一刻截成了没有字的画面，模型对着空画面编出字来）。
+    先跳到前面 pre 秒、再按解码出来的时间往后走到 t，就准了。"""
+    t = max(0.0, float(t))
+    a = max(0.0, t - pre)
+    return ["-ss", f"{a:.3f}", "-i", str(path), "-ss", f"{t - a:.3f}"]
+
+
 def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, exact=False, quality=5):
     """在这些时间点各截一张小图（翻译时给大模型看画面）。按 0.5 秒取整，截过的直接用。
     exact：按毫秒截（视觉复核要按画面上字的位置对上本地识别的结果，差半秒字可能已经挪了）。quality：JPEG 质量（ffmpeg -q:v，越小越清楚）。
@@ -375,7 +388,7 @@ def grab_frames(path, times, out_dir, width=512, workers=4, on_progress=None, ex
         k, f = job
         check_cancel()
         try:
-            subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-ss", f"{k:.3f}", "-i", str(path), "-frames:v", "1",
+            subprocess.run(["ffmpeg", "-v", "quiet", "-y", *seek_input(path, k), "-frames:v", "1",
                             "-vf", f"scale={width}:-2", "-q:v", str(quality), str(f)],
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
         except subprocess.TimeoutExpired:

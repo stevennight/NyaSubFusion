@@ -209,3 +209,25 @@ def test_moving_text_box_leaves_out_pieces_already_off_screen():
     assert len(e["pieces"]) == 2 and e["text"] == "①七贤\n⑨神開"
     still = {"vertical": False, "rect": [0.0, 0.5, 0.1, 1.0], "pieces": [[0.0, 1.0, 0.0, 1.0, "x"], [0.0, 0.5, 0.1, 0.6, "y"]]}
     assert ocr.drop_offscreen(dict(still))["rect"] == still["rect"]  # 不是移动的字：不动
+
+
+def test_short_clean_caption_is_kept():
+    """只出现 0.6 秒的采访字幕（10 帧/秒扫到 6 帧，算出来 0.5999…）：每帧都认出、置信度高，要留下；一两个字闪一下的照旧丢。"""
+    fps = 10
+    cap = [(1580.0 + k / fps, [("すごくありがたい", (400, 640, 900, 680))]) for k in range(6)]
+    flash = [(1590.0 + k / fps, [("口", (100, 100, 130, 130))]) for k in range(4)]
+    ev = ocr._build_events(_track(cap + flash), C, fps, W, H, 3600)
+    assert [e["text"] for e in ev] == ["すごくありがたい"]
+    assert round(ev[0]["end"] - ev[0]["start"], 2) == 0.6
+
+
+def test_box_change_rechecks_static_frame():
+    """画面整体没变（缩略图看不出），但上一次认出字的框里变了（小字在不动的画面上淡出）：要重新识别。"""
+    import numpy as np
+
+    prev = np.full((720, 1280), 120, np.uint8)
+    prev[690:710, 30:400] = 250  # 左下角的小字
+    gone = np.full((720, 1280), 120, np.uint8)
+    dets = [{"rect": (30, 690, 400, 710)}]
+    assert ocr._boxes_changed(gone, prev, dets, (0, 0, 1280, 720))
+    assert not ocr._boxes_changed(prev.copy(), prev, dets, (0, 0, 1280, 720))

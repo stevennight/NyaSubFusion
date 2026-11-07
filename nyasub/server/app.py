@@ -1592,7 +1592,9 @@ def create_app(token: str | None = None) -> FastAPI:
         from fastapi.responses import Response
 
         p, _ = project_paths(pid)
-        cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", p["video"], "-frames:v", "1",
+        from ..sources.media import seek_input
+
+        cmd = ["ffmpeg", "-v", "error", *seek_input(p["video"], t), "-frames:v", "1",
                "-vf", f"scale=-2:{max(90, min(h, 1080))}", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-"]
         r = subprocess.run(cmd, capture_output=True, timeout=60)
         if r.returncode != 0 or not r.stdout:

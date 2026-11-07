@@ -32,9 +32,13 @@ def chunk_items(items, seconds, max_items):
 
 
 def fix_type(typ, srcs):
-    """说明 / 人名条 / 标题是画面上打出来的字：来源里没有画面字（只有字幕、语音）的，是旁白念出来的，不能当说明（否则会显示到画面顶部）。"""
+    """说明 / 人名条 / 标题是画面上打出来的字：来源里没有画面字（只有字幕、语音）的，是旁白念出来的，不能当说明（否则会显示到画面顶部）。
+    反过来，旁白是有人念出来的：只有画面字、同时段的语音也没念这几个字的（配乐时打在画面上的叙述「今も子どもたちや鉄道ファンを笑顔に」），
+    是说明字幕，不是旁白（大模型看它像叙述，常标成旁白）。"""
     if typ in ("info", "name", "title") and srcs and not any(s["src"] in SCREEN for s in srcs):
         return "narration"
+    if typ == "narration" and srcs and all(s["src"] in SCREEN for s in srcs)             and not any(covered(s["text"], s.get("asr_hint") or "") >= 0.5 for s in srcs):
+        return "info"
     return typ
 
 

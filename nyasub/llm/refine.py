@@ -245,8 +245,9 @@ def excluded(b, r):
     return w > 0 and h > 0 and w * h >= 0.5 * _area(b)
 
 
-def read_items(raw, regions):
-    """模型读出的字：框换成 0~1，去掉中心落在排除区（台标、角标）里的、空的。"""
+def read_items(raw, regions, logo=None):
+    """模型读出的字：框换成 0~1，去掉中心落在排除区（台标、角标）里的、空的。
+    logo 给一个 set 的话，排除区里读到的字（台标上的字）放进去，见 logo_text。"""
     out = []
     for x in raw.get("items") or []:
         if not isinstance(x, dict):
@@ -255,9 +256,18 @@ def read_items(raw, regions):
         if not b or not norm(text):
             continue
         if any(g.get("exclude") and excluded(b, g["rect"]) for g in regions):
+            if logo is not None:
+                logo.update(n for n in (norm(p) for p in text.split(" / ")) if len(n) >= 2)
             continue
         out.append({"text": text.replace(" / ", "\n"), "kind": x.get("kind"), "box": b})
     return out
+
+
+def logo_text(text, local, logo):
+    """模型给这块字读出来的其实是台标上的字（排除区里读到过的那几个字，比如片名「富士南麓」）、本地这块字里又没有：
+    多半是这一刻这块字已经不在了（或特写里只剩背景），模型照着台标编的，不能用。"""
+    t = norm(text)
+    return len(t) >= 2 and t not in norm(local) and any(t in x or x in t for x in logo)
 
 
 def match_moment(items, visible, mine):
@@ -511,6 +521,7 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
     from ..sources.ocr import _zone, track_region
     from .client import FatalLLMError
 
+    logo = set()  # 排除区（台标）里读到过的字，见 logo_text
     for ci in range(0, len(times), chunk):
         part = times[ci:ci + chunk]
         got = media.grab_frames(str(video), part, frame_dir, width=W, exact=True, quality=2)
@@ -526,7 +537,7 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 continue
             try:
                 raw = llm.chat_json(READ_SYSTEM, "这是画面。", images=[{"path": frame.scaled(key), "label": "画面", "detail": "high"}])
-                items = read_items(raw, regions)
+                items = read_items(raw, regions, logo)
             except (Cancelled, FatalLLMError):
                 raise
             except Exception as ex:
@@ -555,6 +566,9 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                     n["unseen"] += 1
                     g = _recheck(llm, frame, boxes[keep["id"]], [local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
+                    if g.get("text") and logo_text(g["text"], local, logo):
+                        log(f"  {keep['id']}：特写读成了台标上的字「{g['text']}」，不用，保持本地结果")
+                        g = {}
                     if truncated(g.get("text") or "", local):
                         short.append(keep)
                         g = {"kind": g["kind"]} if g.get("kind") else {}
@@ -568,7 +582,7 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 if _differs(text, local) or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
                     g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
-                    if g.get("text"):
+                    if g.get("text") and not logo_text(g["text"], local, logo):
                         text = g["text"]
                     kind = g.get("kind", kind)
                 if truncated(text, local):  # 这一帧字还没出全（逐字出现的字幕）：换一帧再问

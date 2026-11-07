@@ -837,3 +837,31 @@ def test_close_up_blacks_out_excluded_regions(tmp_path):
     masked = cv2.imread(refine._Frame(path, str(tmp_path), 400, mask=regions).crop([0.5, 0.15, 0.95, 0.6], "b"))
     assert plain.min() > 200
     assert masked[0, -1].max() < 30 and masked[-1, 0].min() > 200  # 右上角（台标）涂黑，别处不动
+
+
+def test_logo_text_is_not_taken_for_a_caption():
+    """排除区（台标）里读到「新日本風土記 / 富士南麓 鉄道の旅」；人名条那一刻字已经没了，特写里模型照着片名写了「富士南麓」：不能用。
+    本地这块字里本来就有的（真的写着片名的标题）照常用。"""
+    from nyasub.llm.refine import logo_text, read_items
+
+    regions = [{"rect": [0.824, 0.025, 0.976, 0.181], "exclude": True}]
+    raw = {"items": [{"text": "新日本風土記 / 富士南麓 鉄道の旅", "kind": "caption", "bbox": [827, 30, 975, 176]},
+                     {"text": "住職 / 遠藤文祥上人", "kind": "caption", "bbox": [772, 272, 878, 741]}]}
+    logo = set()
+    assert [it["text"] for it in read_items(raw, regions, logo)] == ["住職\n遠藤文祥上人"]
+    assert logo_text("富士南麓", "富市柏果町木林满代\n住職\n遠藤文祥上人", logo)
+    assert not logo_text("住職 / 遠藤文祥上人", "住職\n遠藤文祥上人", logo)
+    assert not logo_text("富士南麓 鉄道の旅", "富士南麓鉄道の旅", logo)
+
+
+def test_screen_only_narration_without_voice_is_info():
+    """配乐时打在画面上的叙述（只有画面字、语音没念）是说明，不是旁白；画面字和语音念的一样的（烧进画面的旁白字幕）照旧是旁白。"""
+    from nyasub.llm.translate import fix_type
+
+    caption = {"src": "telop", "text": "今も子どもたちや鉄道ファンを笑顔に", "asr_hint": "おーい、お母さん。"}
+    assert fix_type("narration", [caption]) == "info"
+    assert fix_type("narration", [dict(caption, asr_hint="")]) == "info"
+    voiced = dict(caption, asr_hint="今も子どもたちや鉄道ファンを笑顔にしています")
+    assert fix_type("narration", [voiced]) == "narration"
+    assert fix_type("narration", [{"src": "subs", "text": "午前６時。"}]) == "narration"
+    assert fix_type("dialogue", [caption]) == "dialogue"
