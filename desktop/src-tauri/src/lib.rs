@@ -1,11 +1,13 @@
 //! NyaSubFusion 桌面壳：启动内核（nyasub-core），等它就绪后把窗口切到内核提供的界面。
 //!
-//! - 内核用随机端口、随机 token 启动，只监听 127.0.0.1；token 通过地址栏参数交给界面。
+//! - 内核只监听 127.0.0.1，用随机 token；token 通过地址栏参数交给界面。
+//! - 端口第一次随机选，记下来以后一直用同一个（被占了才换）：界面的本机偏好（布局、倍速、缩放）存在浏览器存储里，
+//!   按地址（含端口）分开存，端口每次不一样就每次都丢。
 //! - 内核会监视本进程（--parent-pid），壳意外退出时内核也会自己退出。
 //! - 退出时先请求内核正常关闭，3 秒后还没退就强制结束。
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -65,13 +67,40 @@ fn show_error(app: &tauri::AppHandle, msg: &str) {
     }
 }
 
+/// 内核端口：用上次记下的；被占了（或第一次）就让系统挑一个空的，记下来。
+fn core_port(app: &tauri::AppHandle) -> u16 {
+    let file = app.path().app_data_dir().ok().map(|d| d.join("core_port"));
+    let saved = file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .filter(|&p| p != 0);
+    if let Some(p) = saved {
+        if TcpListener::bind(("127.0.0.1", p)).is_ok() {
+            return p;
+        }
+    }
+    let p = TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(0);
+    if let (Some(f), true) = (file, p != 0) {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, p.to_string());
+    }
+    p
+}
+
 fn start_core(app: tauri::AppHandle) {
     let state = app.state::<Core>();
     let mut cmd = match core_command(&app) {
         Ok(c) => c,
         Err(e) => return show_error(&app, &e),
     };
-    cmd.args(["serve", "--port", "0", "--token", &state.token, "--parent-pid", &std::process::id().to_string()])
+    let port = core_port(&app).to_string();
+    cmd.args(["serve", "--port", &port, "--token", &state.token, "--parent-pid", &std::process::id().to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]

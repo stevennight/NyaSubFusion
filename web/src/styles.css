@@ -120,9 +120,9 @@ table.tb { width: 100%; border-collapse: collapse }
 .stat .d { font-size: 11.5px; color: var(--tx3) }
 
 /* 审校 */
-.editor { display: grid; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto auto 14px minmax(150px, 1fr); gap: 8px; height: 100%; padding: 12px; overflow: hidden; --pv: 40vh }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto auto 14px minmax(150px, 1fr); gap: 8px; height: 100%; padding: 12px; overflow: hidden; --pvh: 300px }
 .player { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0 }
-.player .frame { width: min(100%, calc(var(--pv) * 16 / 9)) }
+.player .frame { width: min(100%, calc(var(--pvh) * 16 / 9)) }
 .pctl { width: 100% }
 .pctl { display: flex; align-items: center; gap: 8px }
 .pctl .time { font-variant-numeric: tabular-nums; color: var(--tx2); min-width: 116px }

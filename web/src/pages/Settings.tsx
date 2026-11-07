@@ -5,6 +5,7 @@ import { GpuComponents } from "../components/GpuComponents";
 import { useStore } from "../store";
 import type { Cfg, PresetInfo, Provider, Settings, Style } from "../types";
 import { deepGet, setIn } from "../util";
+import { canZoom, getZoom, setZoom, ZOOMS } from "../zoom";
 
 // 常用服务：一键填入地址和推荐模型（模型名以服务商文档为准，可以改）
 const PRESETS: (Provider & { label: string })[] = [
@@ -128,6 +129,8 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
       <div className="gap" />
       <GpuComponents />
       <div className="gap" />
+      <UiCard />
+      <div className="gap" />
       <div className="card">
         <h3>下载</h3>
         <div className="kv">
@@ -186,6 +189,32 @@ function PresetsCard({ onEdit }: { onEdit: (id: string) => void }) {
           <div key={k}><span className="swatch" style={{ color: f.color, textShadow: `0 0 2px ${f.outline_color}` }}>字</span>{k}<span className="dim">{f.font} {f.size}</span></div>
         ))}</div>
         <div className="hint" style={{ marginTop: 8 }}>软件自带，改不了也删不掉。每一集、每个预设的样式都是从这里复制出去的：改乱了可以在样式上点“恢复出厂”，删掉了可以“＋ 新样式 › 从出厂样式添加”。</div>
+      </div>
+    </div>
+  );
+}
+
+/** 界面缩放：屏幕小（1080p）的时候缩小一点，一屏能多放几行。只记在这台电脑上，马上生效。 */
+function UiCard() {
+  const [z, setZ] = useState(getZoom);
+  useEffect(() => {
+    const on = () => setZ(getZoom());
+    window.addEventListener("nyasub-zoom", on);
+    return () => window.removeEventListener("nyasub-zoom", on);
+  }, []);
+  return (
+    <div className="card">
+      <h3>界面</h3>
+      <div className="kv">
+        <span className="lbl">界面缩放</span>
+        {canZoom() ? (
+          <div className="row">
+            <select className="inp" style={{ width: "auto" }} value={z} onChange={(e) => setZoom(Number(e.target.value))}>
+              {ZOOMS.map((v) => <option key={v} value={v}>{Math.round(v * 100)}%</option>)}
+            </select>
+            <span className="dim">屏幕小时调小一点，审校页能多看几行字幕。快捷键 Ctrl + / Ctrl - / Ctrl 0（恢复 100%）</span>
+          </div>
+        ) : <span className="dim">在浏览器里打开的：用浏览器自己的缩放（Ctrl + / Ctrl -）</span>}
       </div>
     </div>
   );

@@ -22,12 +22,20 @@ const loadAuto = () => { try { return { on: true, sec: 3, ...JSON.parse(localSto
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
-// 审校页布局：视频高度（占窗口高度的百分比）和要不要显示参考轨，记在本机
-const LAYOUTS: [string, number, string][] = [["视频大", 56, "视频为主：画面大，列表少几行"], ["均衡", 40, "视频和列表差不多"], ["列表大", 22, "列表为主：一屏多看几条字幕"]];
+// 审校页布局：视频占多少（视频和字幕列表分剩下的高度，扣掉播放控制条、时间轴之后）、要不要显示参考轨，记在本机。
+// 按剩下的高度分而不是按窗口高度：1080p 的窗口扣掉页头、时间轴只剩一半，按窗口算列表就只剩一两行
+const LAYOUTS: [string, number, string][] = [["视频大", 0.7, "视频为主：画面大，列表少几行"], ["均衡", 0.5, "视频和列表差不多"], ["列表大", 0.3, "列表为主：一屏多看几条字幕"]];
 const LAYOUT_KEY = "nyasub.edLayout";
-function loadLayout(): { pv: number; ref: boolean } {
-  try { return { pv: 40, ref: true, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}") }; } catch { return { pv: 40, ref: true }; }
+const MIN_VIDEO = 120, MIN_LIST = 150;
+type Layout = { vs: number; ref: boolean };
+function loadLayout(): Layout {
+  try {
+    const l = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}");
+    return { vs: typeof l.vs === "number" ? l.vs : 0.5, ref: l.ref ?? true };
+  } catch { return { vs: 0.5, ref: true }; }
 }
+/** 视频的高度（像素）：room 是视频和列表一共能分的高度。 */
+const videoHeight = (room: number, vs: number) => Math.round(Math.max(MIN_VIDEO, Math.min(room * vs, room - MIN_LIST)));
 
 /** 读“时:分:秒.毫秒”，也接受“分:秒”或者直接写秒；格式不对返回 null。 */
 function parseHms(v: string): number | null {
@@ -216,12 +224,33 @@ export function EditorPage() {
   // 播放倍速：记在本机，下次打开还是这个速度
   const [playing, setPlaying] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
-  const setLayout = useCallback((v: { pv: number; ref: boolean } | ((l: { pv: number; ref: boolean }) => { pv: number; ref: boolean })) => {
+  const setLayout = useCallback((v: Layout | ((l: Layout) => Layout)) => {
     setLayoutState((l) => {
       const n = typeof v === "function" ? v(l) : v;
       try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(n)); } catch { /* 存不了就只在这次有效 */ }
       return n;
     });
+  }, []);
+  // 视频和列表能分的高度：编辑区的高度减去播放控制条、时间轴、分隔条和间距。窗口大小、参考轨开关一变就重算
+  const [room, setRoom] = useState(0);
+  const edObs = useRef<ResizeObserver | null>(null);
+  const edRef = useCallback((ed: HTMLDivElement | null) => {
+    edObs.current?.disconnect();
+    edObs.current = null;
+    if (!ed) return;
+    const calc = () => {
+      const cs = getComputedStyle(ed);
+      const h = (q: string) => (ed.querySelector(q) as HTMLElement | null)?.offsetHeight ?? 0;
+      const gap = parseFloat(cs.rowGap) || 0, inner = parseFloat(getComputedStyle(ed.querySelector(".player")!).rowGap) || 0;
+      setRoom(ed.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 3 * gap
+        - h(".pctl") - inner - h(".timeline") - h(".splitter"));
+    };
+    const ro = new ResizeObserver(calc);
+    ro.observe(ed);
+    const tl = ed.querySelector(".timeline");
+    if (tl) ro.observe(tl);
+    edObs.current = ro;
+    calc();
   }, []);
   const [rate, setRateState] = useState(() => { try { return Number(localStorage.getItem("nyasub.rate")) || 1; } catch { return 1; } });
   const setRate = useCallback((r: number) => {
@@ -350,7 +379,7 @@ export function EditorPage() {
   const selected = cues.find((c) => c.id === sel) ?? null;
 
   return (
-    <div className="editor" style={{ "--pv": `${layout.pv}vh` } as React.CSSProperties}>
+    <div className="editor" ref={edRef} style={{ "--pvh": `${room > 0 ? videoHeight(room, layout.vs) : 300}px` } as React.CSSProperties}>
       <div className="player">
         <Player ref={player} preview={preview} boxes={showBoxes ? d.ocr : undefined} onTime={onTime} rate={rate} onPlaying={setPlaying}
                 onMoveSub={(cid, pos) => { setSel(cid); edit(() => api.editCue(s.pid!, cid, { pos }), "位置已保存（右栏可以恢复自动）"); }}
@@ -420,8 +449,9 @@ export function EditorPage() {
       <div className="splitter" title="上下拖动：调整视频和字幕列表的大小" onMouseDown={(e) => {
         // 往下拖 = 视频变大
         e.preventDefault();
-        const y0 = e.clientY, pv0 = layout.pv, vh = window.innerHeight / 100;
-        const move = (ev: MouseEvent) => setLayout((l) => ({ ...l, pv: Math.min(70, Math.max(14, Math.round(pv0 + (ev.clientY - y0) / vh))) }));
+        if (room <= 0) return;
+        const y0 = e.clientY, h0 = videoHeight(room, layout.vs);
+        const move = (ev: MouseEvent) => setLayout((l) => ({ ...l, vs: Math.min(0.9, Math.max(0.1, Math.round((h0 + ev.clientY - y0) / room * 100) / 100)) }));
         const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); document.body.classList.remove("rowresize"); };
         window.addEventListener("mousemove", move);
         window.addEventListener("mouseup", up);
@@ -429,7 +459,7 @@ export function EditorPage() {
       }}>
         <span className="grip" />
         <div className="seg" onMouseDown={(e) => e.stopPropagation()}>
-          {LAYOUTS.map(([l, v, tip]) => <button key={l} title={tip} className={layout.pv === v ? "on" : ""} onClick={() => setLayout((l) => ({ ...l, pv: v }))}>{l}</button>)}
+          {LAYOUTS.map(([l, v, tip]) => <button key={l} title={tip} className={layout.vs === v ? "on" : ""} onClick={() => setLayout((l) => ({ ...l, vs: v }))}>{l}</button>)}
         </div>
       </div>
       <div className="cuelist">
