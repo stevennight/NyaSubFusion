@@ -120,7 +120,10 @@ def glossary_text(terms) -> str:
     lines = []
     for t in terms[:200]:
         r = f"（{t['reading']}）" if t.get("reading") else ""
-        lines.append(f"{t.get('src', '')}{r} → {t.get('tr', '')}")
+        # 人工写的备注（手动加的、导入的）一起给：是谁、和谁什么关系、说话习惯（村雨用「村雨」称呼自己，「それ村雨の！」是“那是我的！”）。
+        # 自动整理的备注是从字幕里猜的，不给（也免得没有人工备注的工程提示词变了）
+        note = (t.get("note") or "").strip() if t.get("from") in ("manual", "import") else ""
+        lines.append(f"{t.get('src', '')}{r} → {t.get('tr', '')}" + (f"　备注：{note}" if note else ""))
     return "\n".join(lines)
 
 

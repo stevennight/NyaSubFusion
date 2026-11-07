@@ -12,6 +12,11 @@ type Scope = "all" | "series" | "episode";
 /** 人工给的术语（手动加的、导入的）：大模型听音频识别时也参考它们的写法；自动整理的（可能带着识别错字）不参考 */
 const userTerm = (t: Term) => t.from === "manual" || t.from === "import";
 
+/** 节目说明写什么（各集、作品共用的说明） */
+const CONTEXT_HINT = "写节目类型、故事背景、简介、说话的特点；也写会影响称呼的设定（谁小时候被当成女孩养大、谁管谁叫什么），"
+  + "语音听不清时多模态大模型照这个写对称呼，翻译时也会参考。"
+  + "人名、地名这类名单放进旁边的术语表（可以导入），不用写在这里。";
+
 export const TERMS_FORMAT = "一行一条：原文 | 读音 | 译法 | 类型 | 备注（用 | 或 Tab 分开，后面几项可以空着；# 开头的行不读）";
 
 /** 导入的文字 → 术语。类型不认识的算“其他” */
@@ -54,11 +59,11 @@ function ImportTerms({ terms, onImport, onClose }: { terms: Term[]; onImport: (t
   return (
     <Modal onClose={onClose} width={720}>
       <h3 style={{ marginTop: 0 }}>导入术语</h3>
-      <div className="hint" style={{ marginBottom: 6 }}>{TERMS_FORMAT}。比如：<span className="ja">犬塚信乃 | いぬづか しの | 犬冢信乃 | 人名 | 主人公</span></div>
+      <div className="hint" style={{ marginBottom: 6 }}>{TERMS_FORMAT}。比如：<span className="ja">山田太郎 | やまだ たろう | 山田太郎 | 人名 | 主人公的哥哥，说话爱用自己的名字自称</span></div>
       <textarea className="inp ja" rows={14} style={{ width: "100%" }} placeholder="把名单粘贴到这里" value={text} onChange={(e) => setText(e.target.value)} />
       <label className="row" style={{ marginTop: 8 }}><input type="checkbox" checked={clearAuto} onChange={(e) => setClearAuto(e.target.checked)} />
         先删掉自动整理的术语（{auto} 条，只留手动加的、导入的）</label>
-      <div className="hint">导入的和手动加的术语：翻译时统一译名，选“多模态大模型”识别语音时也照这里的写法写人名；自动整理的只用来统一译名。</div>
+      <div className="hint">导入的和手动加的术语：翻译时统一译名，备注（是谁、和谁什么关系、说话习惯）也给翻译参考；选“多模态大模型”识别语音时照这里的写法写人名（只用原文和读音）。自动整理的只用来统一译名。备注写人物本身的情况，不要写某一集的台词。</div>
       <div className="row" style={{ marginTop: 10 }}>
         <span className="dim">读到 {parsed.length} 条（新增 {parsed.filter((t) => !known.has(t.src)).length}，覆盖 {parsed.filter((t) => known.has(t.src)).length}）</span>
         <span className="sp" />
@@ -96,7 +101,7 @@ export function NotesPage() {
   const rd = useRemote<Record<string, Reading[]>>(() => api.readings(pid!), (r) => api.putReadings(pid!, r), [pid], s.setError);
   if (!pid || ctx.v === null) return <div className="empty">加载中…</div>;
   return <NotesView context={ctx.v} setContext={(v) => ctx.update(() => v)} ctxState={ctx.state} gl={gl} rd={rd} episode
-                    hint="写节目类型、故事背景、简介、说话的特点，大模型翻译时会参考。人名、地名这类名单放进旁边的术语表（可以导入），不用写在这里。改了下次运行会重新翻译。" />;
+                    hint={CONTEXT_HINT + "改了下次运行会重新翻译（用多模态大模型识别语音时也会重新识别）。"} />;
 }
 
 /** 作品的资料：作品默认设置里的节目说明（新建的集复制过去）、各集共用的术语表和读音词典 */
@@ -107,7 +112,7 @@ export function SeriesNotes({ name }: { name: string }) {
   const rd = useRemote<Record<string, Reading[]>>(() => api.seriesReadings(name), (r) => api.putSeriesReadings(name, r), [name], s.setError);
   if (!raw.v) return <div className="empty">加载中…</div>;
   return <NotesView context={String(raw.v.project?.context ?? "")} setContext={(v) => raw.update((r) => setIn(r, "project.context", v))} ctxState={raw.state}
-                    gl={gl} rd={rd} episode={false} hint="作品默认设置里的节目说明（故事背景、简介）：新建这部作品的集时复制过去，已有的集各自在「资料」里改。人名、地名这类名单放进旁边的术语表（可以导入），各集共用。" />;
+                    gl={gl} rd={rd} episode={false} hint={"作品默认设置里的节目说明：新建这部作品的集时复制过去，已有的集各自在「资料」里改。" + CONTEXT_HINT} />;
 }
 
 function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
@@ -193,7 +198,7 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
               </tbody></table>
               {g.terms.length === 0 && <div className="dim" style={{ padding: 12 }}>还没有术语。翻译时大模型会自动整理，也可以手动新增。</div>}
             </div>
-            <div className="hint" style={{ marginTop: 6 }}>保存在 {g.path}；改了下次运行会重新翻译。手动加的、导入的术语，选“多模态大模型”识别语音时也会参考（改了会重新识别）。</div>
+            <div className="hint" style={{ marginTop: 6 }}>保存在 {g.path}；改了下次运行会重新翻译。手动加的、导入的术语，备注也给翻译参考；选“多模态大模型”识别语音时也会参考名字的写法（改了原文、读音会重新识别）。</div>
             {dialog === "import" && <ImportTerms terms={g.terms} onClose={() => setDialog("")}
               onImport={(add, clearAuto) => { gl.update((x) => ({ ...x, terms: importTerms(x.terms, add, clearAuto) })); s.toast(`已导入 ${add.length} 条术语`); }} />}
             {dialog === "export" && <ExportTerms terms={g.terms} onClose={() => setDialog("")} />}

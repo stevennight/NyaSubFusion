@@ -29,3 +29,14 @@ def test_memory_shown_in_prompt_as_reference():
     p = chunk_prompt([], "（无）", "", [], "zh-Hans", mem)
     assert "译文记忆" in p and "[o9] 前面 00:14" in p and "品尝冬日" in p and "场景变了" in p
     assert "译文记忆" not in chunk_prompt([], "（无）", "", [], "zh-Hans")
+
+
+def test_glossary_text_gives_user_notes_only():
+    """人工写的备注（手动加的、导入的）给翻译：说话习惯这种光看字幕猜不到（村雨用「村雨」称呼自己）；自动整理的备注不给。"""
+    from nyasub.llm import prompts
+
+    text = prompts.glossary_text([
+        {"src": "村雨", "reading": "むらさめ", "tr": "村雨", "note": "说话时用「村雨」称呼自己", "from": "import"},
+        {"src": "健太", "tr": "健太", "note": "", "from": "manual"},
+        {"src": "大塚村", "tr": "大冢村", "note": "信乃的故乡", "from": "ep01"}])
+    assert text.splitlines() == ["村雨（むらさめ） → 村雨　备注：说话时用「村雨」称呼自己", "健太 → 健太", "大塚村 → 大冢村"]
