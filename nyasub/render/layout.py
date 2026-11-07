@@ -300,7 +300,9 @@ def _resolve_overlaps(items, min_dur=0.6, merge=False):
             prev["sources"] = prev.get("sources", []) + c.get("sources", [])
             continue
         for p in out:
-            if p["end"] > c["start"] + 0.05 and c["start"] - p["start"] >= min_dur:
+            # 叠一点点也要截（以前叠不到 0.05 秒的不管）：播放器在叠着的那一两帧里把后一句往上推、前一句一消失又掉回来，
+            # 看着像字幕出来以后往下掉一下（「吉原商店街の有志…」和前一句叠了 0.013 秒）
+            if p["end"] > c["start"] and c["start"] - p["start"] >= min_dur:
                 p["end"] = c["start"]
         out.append(dict(c))
     return out

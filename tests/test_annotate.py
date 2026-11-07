@@ -192,3 +192,15 @@ layers = [
     out = sample.with_name("sample.learn.ass").read_text(encoding="utf-8-sig")
     assert "にほんかい" in out and "にっぽん" not in out
     assert "Nihonkai" in out  # 读音词典条目默认按专有名词处理（首字母大写）
+
+
+def test_tiny_overlap_is_trimmed():
+    """前一句和后一句叠了 0.013 秒也要截：播放器在叠着的那一两帧把后一句往上推，前一句一消失又掉回来。
+    几乎同时开始的（两个人同时说）照旧同时显示。"""
+    cues = [_cue("q1", "彼らは？", "他们是？", 0, 3.013), _cue("q2", "吉原商店街の有志", "吉原商店街的乐手", 3.0, 8),
+            _cue("q3", "はい", "是", 8.2, 10), _cue("q4", "うん", "嗯", 8.3, 10)]
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+    items = layout.build(cues, prof, config.Config(), "ja", _tokens(cues))
+    by = {it["cue"]: it for it in items}
+    assert by["q1"]["end"] == 3.0
+    assert by["q3"]["end"] == 10 and by["q4"]["start"] == 8.3
