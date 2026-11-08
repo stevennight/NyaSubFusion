@@ -865,3 +865,43 @@ def test_screen_only_narration_without_voice_is_info():
     assert fix_type("narration", [voiced]) == "narration"
     assert fix_type("narration", [{"src": "subs", "text": "午前６時。"}]) == "narration"
     assert fix_type("dialogue", [caption]) == "dialogue"
+
+
+def test_terms_and_translations_with_kana_are_fixed_into_chinese():
+    """术语表的译法夹着假名（「ヘビトンボ幼虫（孙太郎）」）：先改成中文；改不好的不再拿来统一译名（照它改只会把假名搬进译文）。
+    最后译文里还有假名的，请模型只改那几处，分段 / 换行对不上、还留着假名的不收。"""
+    from types import SimpleNamespace
+
+    from nyasub.llm.translate import fix_leftover, fix_terms, term_misses
+
+    class LLM:
+        def __init__(self, answer):
+            self.answer, self.calls = answer, []
+
+        def chat_json(self, system, user):
+            self.calls.append((system, user))
+            return self.answer
+
+    ja, zh = lang.get("ja"), lang.get("zh-Hans")
+    terms = [{"src": "孫太郎", "reading": "まごたろう", "tr": "ヘビトンボ幼虫（孙太郎）", "type": "物品"},
+             {"src": "ざざ虫", "tr": "ざざ虫（扎扎虫）", "type": "物品"},
+             {"src": "慎也", "tr": "慎也さん", "type": "人名"},
+             {"src": "天竜川", "tr": "天龙川", "type": "地名"},
+             {"src": "孫太郎（ヘビトンボ）", "tr": "孙太郎（dobsonfly幼虫）", "type": "人名"},  # 没译出来的英文普通名词也算
+             {"src": "ジャトコ前", "tr": "JATCO前", "type": "场所"}]                       # 大写的英文写法照常用
+    llm = LLM({"terms": [{"id": "t1", "tr": "齿蛉幼虫（孙太郎）"}, {"id": "t2", "tr": "ざざ虫"}, {"id": "t4", "tr": "孙太郎（dobsonfly幼虫）"}]})
+    fix_terms(llm, terms, ja, zh, "专有名词用俗名、学名")
+    assert "专有名词用俗名、学名" in llm.calls[0][0] and "天竜川" not in llm.calls[0][1] and "JATCO" not in llm.calls[0][1]
+    assert [t["tr"] for t in terms] == ["齿蛉幼虫（孙太郎）", "ざざ虫（扎扎虫）", "慎也さん", "天龙川",
+                                        "孙太郎（dobsonfly幼虫）", "JATCO前"]  # 模型还写假名 / 英文的不收
+    cues = [{"id": "q1", "orig": {"text": "ざざ虫を食べる　慎也さん"}, "tr": {"zh-Hans": {"text": "吃扎扎虫的慎也"}}},
+            {"id": "q2", "orig": {"text": "これ 孫太郎"}, "tr": {"zh-Hans": {"text": "这是孙太郎"}}}]
+    assert term_misses(cues, terms, "zh-Hans") == [(1, [("孫太郎", "齿蛉幼虫")])]  # 没改好的两条不拿来统一
+
+    cues = [{"id": "q1", "orig": {"text": "ざざ虫で乾杯やわ"}, "tr": {"zh-Hans": {"text": "为ざざ虫干杯！"}}},
+            {"id": "q2", "orig": {"text": "天竜川の｜ざざ虫"}, "tr": {"zh-Hans": {"text": "天龙川的｜ざざ虫"}}},
+            {"id": "q3", "orig": {"text": "どうですか"}, "tr": {"zh-Hans": {"text": "怎么样"}}}]
+    llm = LLM({"items": [{"id": "q1", "tr": "为扎扎虫干杯！"}, {"id": "q2", "tr": "天龙川的扎扎虫"}]})
+    fix_leftover(llm, cues, terms, ja, zh, "zh-Hans", SimpleNamespace(project=SimpleNamespace(context="")))
+    assert "q3" not in llm.calls[0][1] and "天竜川 → 天龙川" in llm.calls[0][1]
+    assert [c["tr"]["zh-Hans"]["text"] for c in cues] == ["为扎扎虫干杯！", "天龙川的｜ざざ虫", "怎么样"]  # 分段对不上的不收

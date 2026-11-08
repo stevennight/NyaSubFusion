@@ -318,8 +318,9 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     tgt = lang.get(tgt_code)
 
     log("生成术语表 / 本集概要")
-    gl = llm.chat_json(prompts.glossary_system(src, tgt), prompts.glossary_input(items, known_terms))
+    gl = llm.chat_json(prompts.glossary_system(src, tgt, cfg.project.context), prompts.glossary_input(items, known_terms))
     terms = merge_terms(known_terms, gl.get("terms"))
+    fix_terms(llm, terms, src, tgt, cfg.project.context)
     glossary = {"summary": gl.get("summary", ""), "terms": terms, "new": len(terms) - len(known_terms or [])}
     gl_text = prompts.glossary_text(terms)
 
@@ -479,6 +480,9 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     tgt_code = targets[0]
     tgt = lang.get(tgt_code)
     n_before = len(cues)
+    fix_terms(llm, glossary["terms"], src, tgt, cfg.project.context)  # 整理时定的译法夹着原文的（旧工程的整理结果）先改好再翻
+    fixed = {t.get("src"): t for t in glossary["terms"]}
+    known_terms = [fixed.get(t.get("src"), t) for t in known_terms or []]  # 分组翻按作品术语表重排术语，用改好的那份
     if cfg.llm.grouped:
         from . import fine
 
@@ -492,6 +496,7 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     cues = finalize(cues)
     glossary["new"] = len(glossary["terms"]) - len(known_terms or [])
     terms = glossary["terms"]
+    fix_terms(llm, terms, src, tgt, cfg.project.context)  # 人物表、翻译时新收的
     gl_text = prompts.glossary_text(terms)
     translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
     by_id = {it["id"]: it for it in items}
@@ -500,6 +505,7 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     restore_labels(cues, terms, tgt_code)
     enforce_terms(llm, cues, terms, src, tgt_code, cfg)
     unify(llm, cues, src, tgt, tgt_code)
+    fix_leftover(llm, cues, terms, src, tgt, tgt_code, cfg)
 
     for extra in targets[1:]:
         translate_extra(llm, cues, src, extra, tgt_code, gl_text, cfg)
@@ -523,10 +529,12 @@ def _mentions(text, name):
 def term_misses(cues, terms, tgt_code):
     """译文里没按术语表翻的名字 / 术语：[(条目序号, [(原文, 译名)])]。术语表里的每一条都查（人名、店名、食物、器物都一样，
     术语表就是用来保证全集统一的）。“ミーちゃん”去掉敬称是“ミー”：长音也算字，两个字的名字不能当成太短跳过。"""
-    want = []
+    want, tgt = [], lang.get(tgt_code)
     for t in terms:
         s = re.sub(r"(さん|様|君|ちゃん|くん)$", "", (t.get("src") or "").strip())
         tr = re.split(r"[（(]", (t.get("tr") or "").strip())[0].strip()  # “常用名（当地叫法）”只要求前半
+        if tgt.leftover(t.get("tr"), t.get("src")):  # 译法里夹着看不懂的字（fix_terms 没改好的）：照它改只会把这些字搬进译文
+            continue
         if len(re.sub(r"\s", "", s)) >= 2 and norm(s) and tr and (s, tr) not in want:
             want.append((s, tr))
     out = []
@@ -574,7 +582,8 @@ def enforce_terms(llm, cues, terms, src, tgt_code, cfg, batch=30):
         return
     log(f"统一译名：{len(todo)} 条译文里的名字 / 叫法和术语表不一致，改成术语表的译法")
     tgt = lang.get(tgt_code)
-    system = (f"你是{src.name}→{tgt.name}字幕校对。下面每条字幕的译文里，有名字 / 叫法没有按术语表的指定译法翻译。"
+    system = (f"你是{src.name}→{tgt.name}字幕校对。节目信息：{cfg.project.context or '（未提供）'}\n"
+              "下面每条字幕的译文里，有名字 / 叫法没有按术语表的指定译法翻译。"
               "请只把这些名字 / 叫法改成指定的译法（指代的人 / 地方 / 东西要和原文一致），语句其他部分尽量不动；"
               '译文里的“｜”分段保持原样（段数不变）。输出 JSON：{"items": [{"id": "q12", "tr": "改好的译文"}]}')
     for k in range(0, len(todo), batch):
@@ -598,6 +607,86 @@ def enforce_terms(llm, cues, terms, src, tgt_code, cfg, batch=30):
             old = c["tr"][tgt_code]["text"]
             if new and len(segments.pieces(new)) == len(segments.pieces(old)):
                 c["tr"][tgt_code] = {"text": new}
+
+
+def fix_terms(llm, terms, src, tgt, context):
+    """术语表里译法夹着观众看不懂的字的（「ヘビトンボ幼虫（孙太郎）」「ざざ虫（扎扎虫）」「慎也さん」「孙太郎（dobsonfly幼虫）」）：
+    “统一译名”还会照着它把这些字搬进译文。请大模型按节目说明重新给这几条的译法，就地改 terms 里的条目。
+    改不好的留着，统一译名时不再按它改（term_misses）。"""
+    bad = [i for i, t in enumerate(terms) if tgt.leftover(t.get("tr"), t.get("src"))]
+    if not bad:
+        return
+    log(f"术语表：{len(bad)} 条译法里夹着{src.name}假名 / 英文（" + "、".join(terms[i]["tr"] for i in bad[:5])
+        + ("……" if len(bad) > 5 else "") + f"），改成{tgt.name}")
+    system = (f"你是{src.name}→{tgt.name}影视字幕的术语校对。节目信息：{context or '（未提供）'}\n"
+              f"下面这些术语的译法里还留着{src.name}的假名或英文单词，{tgt.name}观众看不懂。请给出只用{tgt.name}写的译法：\n"
+              f"- 动物、植物、食物、器物用{tgt.name}最常用的叫法，常用名不明确时用学名 / 正式名；"
+              f"当地特有的叫法写成“常用名（当地叫法的音译或直译）”；\n"
+              f"- 人名、地名、店名、作品名音译或意译；人名不带敬称（「さん」「ちゃん」去掉）；\n"
+              "- 要简短，是字幕里直接用的写法。\n"
+              '输出 JSON：{"terms": [{"id": "t1", "tr": "新的译法"}]}')
+    lines = [f"[t{k}] {terms[i]['src']}" + (f"（读音 {terms[i]['reading']}）" if terms[i].get("reading") else "")
+             + f"　现在的译法：{terms[i]['tr']}　类型：{terms[i].get('type') or '其他'}"
+             + (f"　说明：{terms[i]['note']}" if terms[i].get("note") else "") for k, i in enumerate(bad, 1)]
+    try:
+        res = llm.chat_json(system, "\n".join(lines))
+    except Cancelled:
+        raise
+    except Exception as e:
+        log(f"  术语表没改成，保持原样：{e}")
+        return
+    got = {str(x.get("id")).strip(): (x.get("tr") or "").strip()
+           for x in res.get("terms", []) or [] if isinstance(x, dict)}
+    for k, i in enumerate(bad, 1):
+        new = got.get(f"t{k}")
+        if new and not tgt.leftover(new, terms[i]["src"]):
+            terms[i] = {**terms[i], "tr": new}
+    left = [terms[i]["tr"] for i in bad if tgt.leftover(terms[i]["tr"], terms[i]["src"])]
+    if left:
+        log(f"  {len(left)} 条没改好（{'、'.join(left[:5])}），统一译名时不按它改")
+
+
+def fix_leftover(llm, cues, terms, src, tgt, tgt_code, cfg, batch=30):
+    """最后检查一遍：译文里还夹着观众看不懂的字的（照抄了没译的名字、歌名、方言词，原文没有的英文单词），
+    请大模型只把这些地方译成目标语言。"""
+    from ..core import segments
+
+    tr_of = lambda c: c.get("tr", {}).get(tgt_code, {}).get("text", "")
+    todo = [c for c in cues if tgt.leftover(tr_of(c), c["orig"]["text"])]
+    if not todo:
+        return
+    log(f"译文里还夹着{src.name}假名 / 英文：{len(todo)} 条，改成{tgt.name}")
+    system = (f"你是{src.name}→{tgt.name}字幕校对。节目信息：{cfg.project.context or '（未提供）'}\n"
+              f"下面每条字幕的译文里还留着{src.name}的假名、或者原文没有的英文单词，{tgt.name}观众看不懂。请只把这些地方改成{tgt.name}"
+              "（名字音译或意译，事物用常用名，术语表里有的用术语表的译法），语句其他部分尽量不动；"
+              '译文里的“｜”分段、“ / ”换行保持原样。输出 JSON：{"items": [{"id": "q12", "tr": "改好的译文"}]}')
+    flat = lambda t: t.replace("\n", " / ")
+    fixed = 0
+    for k in range(0, len(todo), batch):
+        group = todo[k:k + batch]
+        lines = []
+        for c in group:
+            names = [f"{t['src']} → {t['tr']}" for t in terms if t.get("src") and t.get("tr")
+                     and not tgt.leftover(t["tr"], t["src"]) and _mentions(c["orig"]["text"], t["src"])]
+            lines.append(f"[{c['id']}] 原文：{flat(c['orig']['text'])}\n　译文：{flat(tr_of(c))}"
+                         + (f"\n　术语表：{'、'.join(names)}" if names else ""))
+        try:
+            res = llm.chat_json(system, "\n\n".join(lines))
+        except Cancelled:
+            raise
+        except Exception as e:
+            log(f"  没改成，保持原样：{e}")
+            continue
+        got = {str(x.get("id")): (x.get("tr") or "").strip().replace(" / ", "\n")
+               for x in res.get("items", []) or [] if isinstance(x, dict)}
+        for c in group:
+            new, old = got.get(c["id"]), tr_of(c)
+            if new and not tgt.leftover(new, c["orig"]["text"]) \
+                    and len(segments.pieces(new)) == len(segments.pieces(old)) and new.count("\n") == old.count("\n"):
+                c["tr"][tgt_code] = {**c["tr"][tgt_code], "text": new}
+                fixed += 1
+    if fixed < len(todo):
+        log(f"  {len(todo) - fixed} 条没改好，保持原样")
 
 
 def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):

@@ -38,6 +38,11 @@ class LanguagePack:
     break_after = set(" ,.;:!?)]}\"'")
     no_line_start = set(",.;:!?)]}")
     no_line_end = set("([{")              # 不放在行末的字（开括号、开引号）
+    foreign = None                        # 作为目标语言时，译文里不该出现的文字（中文译文里的日文假名）
+
+    def leftover(self, text: str, orig: str = "") -> bool:
+        """译文里夹着不属于这门语言的文字（翻译时照抄了原文）。orig：原文，原文里本来就有的不算。"""
+        return bool(self.foreign and self.foreign.search(text or ""))
 
     # ---------- 给大模型的说明 ----------
     def prompt_source_notes(self, with_tr=True) -> str:

@@ -72,7 +72,7 @@ def export_jobs(items, cfg, job_dir: Path, video, src_code, known_terms, fingerp
     system = prompts.chunk_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}))
     finish = finish_command(video, config_path)
     write_text(job_dir / "TASK.md", TASK_MD.format(src=src.name, tgt=tgt.name, finish=finish,
-                                                   glossary=prompts.glossary_system(src, tgt), chunk=system))
+                                                   glossary=prompts.glossary_system(src, tgt, cfg.project.context), chunk=system))
     write_text(job_dir / "glossary.input.txt", prompts.glossary_input(items, known_terms))
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     for i, chunk in enumerate(chunks, 1):

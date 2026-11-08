@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from functools import lru_cache
 
 from . import ruby
@@ -46,6 +47,15 @@ class Chinese(LanguagePack):
     break_after = set("　 ，。、；：？！…」』）】》”")
     no_line_start = set("，。、；：？！…」』）】》”")
     no_line_end = set("“‘（「『《【〈〔")
+    foreign = re.compile(r"[ぁ-ゖァ-ヺ]")  # 假名：中文观众看不懂（「ヘビトンボ幼虫」「慎也さん」）
+
+    def leftover(self, text, orig=""):
+        """还有：原文里没有的全小写英文单词（「孫太郎（ヘビトンボ）」译成“孙太郎（dobsonfly幼虫）”，普通名词没译出来）。
+        大写开头的是片假名名字的英文写法（JATCO、BS Premium、Live House），照常用；原文里就有的、两个字母的（km）不算。"""
+        if super().leftover(text, orig):
+            return True
+        o = unicodedata.normalize("NFKC", orig or "").lower()
+        return any(w not in o for w in re.findall(r"(?<![A-Za-z])[a-z]{3,}(?![A-Za-z])", unicodedata.normalize("NFKC", text or "")))
 
     def learn_words(self, words):
         """术语表里的译名告诉 jieba（“加贺市”“差间正树”），折行时不拆开；加了新词就清掉分词缓存。"""

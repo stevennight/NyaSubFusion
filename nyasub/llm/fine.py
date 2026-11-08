@@ -181,7 +181,7 @@ def run(deep, plain, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frame
     deep：翻每一组用（带思考程度）；plain：人物表、分组用。人物表的叫法并进 glossary["terms"]（作品术语表优先），
     人物表存进 glossary["cast"]。frames：{来源条目 id: 截图路径}。"""
     from . import prompts
-    from .translate import Asker, apply_translation, merge_terms
+    from .translate import Asker, apply_translation, fix_terms, merge_terms
 
     if not cues:
         return []
@@ -193,6 +193,11 @@ def run(deep, plain, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frame
     except Exception as e:
         log(f"  人物表没整理出来（{str(e)[:150]}），不带人物表翻")
         cast = []
+    names = [(n, ch) for ch in cast for n in ch["names"]]
+    tmp = [{"src": n["src"], "tr": n["tr"], "type": ch["kind"] or "人名", "note": ch["who"]} for n, ch in names]
+    fix_terms(plain, tmp, src, tgt, cfg.project.context)  # 「孫太郎（ヘビトンボ）」→“孙太郎（dobsonfly幼虫）”这种
+    for (n, _), t in zip(names, tmp):
+        n["tr"] = t["tr"]
     if cast:
         log("  " + "；".join("、".join(f"{n['src']}→{n['tr']}" for n in ch["names"][:4]) for ch in cast[:12])
             + ("……" if len(cast) > 12 else ""))

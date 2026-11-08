@@ -66,7 +66,8 @@ DEFS = {
     "organize": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
                                     "llm.chunk_seconds", "llm.chunk_max_items"], version=3),
     "translate": StageDef(["organize"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=7),
+                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=8),
+    # v8：术语表 / 译文里夹着假名的（「ヘビトンボ幼虫（孙太郎）」）改成中文；统一译名带上节目说明（生成术语表也带上，只对新整理的生效）
     # v7：不擅自补主语（旁白写成“我”、讲妻子的事写成“我”）
     # v6：只翻一次（普通翻译或分组按顺序翻），翻的时候可以把相邻几条合成一条；补翻、重新分段、拆长句从整理挪过来；参考画面用在这里
     # v5：合并、拆分、分类、丢杂字拆成单独的“整理”一步；这一步只管译文（分组翻、统一术语和译法、其余目标语言）

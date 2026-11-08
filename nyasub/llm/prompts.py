@@ -4,8 +4,8 @@ from ..textutil import fmt_time
 SRC_LABEL = {"subs": "字幕", "telop": "画面字", "info": "画面字", "asr": "语音识别"}
 
 
-def glossary_system(src, tgt) -> str:
-    return f"""你是影视字幕翻译的术语整理助手，负责{src.name}→{tgt.name}。
+def glossary_system(src, tgt, context: str = "") -> str:
+    return f"""你是影视字幕翻译的术语整理助手，负责{src.name}→{tgt.name}。节目信息：{context or "（未提供）"}
 给你一集节目里出现的全部{src.name}文本（字幕 + 画面字 OCR，可能有 OCR 错字）。
 请输出 JSON：
 {{"summary": "用中文 3~6 句话概括本集内容（地点、人物、主题）",
@@ -21,9 +21,16 @@ def glossary_system(src, tgt) -> str:
   有通用名就用通用名（比如鱼、虫、野菜的{tgt.name}常用名），常用名不明确时用学名 / 正式名，不要泛泛地译成上位词（“某某幼虫”“一种鱼”）。
   当地特有的叫法、方言名：tr 写成“{tgt.name}常用名（当地叫法的音译或直译）”，note 里写清楚是什么。
   拿不准具体物种时，按节目里的描述（样子、产地、季节）判断，并在 note 里写出依据。
-- tr 就是字幕里直接要用的写法，要简短；不要在 tr 里写长篇解释。
+- tr 就是字幕里直接要用的写法，要简短；不要在 tr 里写长篇解释。{_script_rule(src, tgt)}
 - OCR 错字明显时按正确写法收录。
 - 如果提供了“已有术语表”，其中的条目不要重复输出，只补充新的。"""
+
+
+def _script_rule(src, tgt) -> str:
+    """目标语言里不该出现的文字（中文译文里的假名）：术语的译法、译文都不能照抄。"""
+    if tgt.foreign is None:
+        return ""
+    return (f"tr 里不能出现{tgt.name}观众看不懂的{src.name}文字（假名），括号里的当地叫法也要音译 / 意译成{tgt.name}。")
 
 
 def _name_rule(tgt) -> str:
