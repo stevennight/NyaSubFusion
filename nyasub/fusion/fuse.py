@@ -4,7 +4,8 @@
 - 画面字 telop / info：和字幕重复的去掉；能和语音对上的算台词（telop），否则算说明文字（info）。
   字幕和画面字同时存在时两者都保留——这正是“半句字幕、半句画面字”的情况。
 - 语音 asr：能被字幕 / 画面字解释的丢掉（只用来校准时间）；没有任何字幕覆盖的单独成条；
-  时间重叠但文字对不上的（多半是听错了），作为“语音参考”附到那条上。
+  时间重叠但文字对不上的（多半是听错了），作为“语音参考”附到那条上；画面字只是从这句话里摘的几个字、
+  或者只有画面字而且一个词都对不上的（标题卡下面的另一句话），语音单独成条。
 产出的 items 交给大模型做最终的合并 / 纠错 / 翻译；cues 是不经过大模型的原文合并字幕。
 """
 import re
@@ -180,6 +181,54 @@ def _mostly_said(text, said):
     return sum(1 for i, ch in enumerate(a) if i not in hit and ch.isalnum()) <= 3  # “＝”这种符号不算
 
 
+_INTERJ = re.compile(r"^[ぁ-ゖー]{1,3}$")
+
+
+def _content(speech):
+    """语音里有内容的部分：去掉标点隔开的“ね。そう、あ、…うん”这种三个字以内的纯平假名语气词、应答。"""
+    return "".join(p for p in re.split(r"[、。，,．.！？!?…\s]+", speech or "") if p and not _INTERJ.match(p))
+
+
+def _share(speech, texts):
+    """speech 有多少比例的字出现在这几条字里（每条分别对，按至少两个字连续相同的片段算；
+    几条按时间排的先后不一定是说的先后，不能拼起来对）。"""
+    a = norm(speech)
+    if not a:
+        return 1.0
+    hit = set()
+    for t in texts:
+        for x in SequenceMatcher(None, a, norm(t), autojunk=False).get_matching_blocks():
+            if x.size >= 2:
+                hit.update(range(x.a, x.a + x.size))
+    return len(hit) / len(a)
+
+
+def _latin(text):
+    """大半是拉丁字母（英文）。"""
+    t = [ch for ch in norm(text) if ch.isalnum()]
+    return bool(t) and sum(ch.isascii() and ch.isalpha() for ch in t) * 2 >= len(t)
+
+
+def _unrelated(speech, hit):
+    """同时只有画面字（没有广播字幕，也没有「♬〜」）、语音和画面字一个词都对不上（连两个字连续相同的都没有）、
+    去掉语气词还有至少 4 个字：是画面字之外的另一句话（片尾标题卡挂着十几秒，旁白说“ぜひご覧ください”），
+    附到画面字上当参考就丢了，单独成条。
+    有广播字幕的地方，字幕没打的话是电视台有意不打的（音乐下的闲聊），照旧；英文的话配日文画面字
+    （“Good night”和「グッドナイト」）是翻译关系、写法不同对不上，也照旧。"""
+    c = _content(speech)
+    texts = [x["text"] for x in hit]
+    return (not any(x["src"] == "subs" for x in hit) and len(norm(c)) >= 4 and _share(c, texts) == 0
+            and not _latin(speech) and not any(_latin(t) for t in texts))
+
+
+def _quoted(text, speech):
+    """画面字只是这句话里的几个字：几乎整个出现在语音里，而且不到语音（去掉语气词）的一半长（「刀剣」之于
+    “刀剣の波紋や、切子の繊細な手仕事など…”）。和语音差不多长的（方言硬字幕、听错了几个字，
+    「踊り食いね」之于“ね。そう、あ、踊り食いね、うん。”）不算。"""
+    t = norm(text)
+    return len(t) >= 2 and len(t) * 2 <= len(norm(_content(speech))) and covered(text, speech) >= 0.8
+
+
 def _drop_vlm_dups(ocr_events, gap=1.0):
     """视觉复核“补出本地漏掉的字”时，模型给的框偶尔不对（框到了旁边没字的地方），本地明明认出了同一句，
     却当成漏掉的补了一条：位置不对，时间按那个框找也早了（「命日にお経さ読んで…」早出来 1.4 秒，盖住前一句）。
@@ -255,15 +304,24 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     # 只有音乐记号的字幕不要了，但还算“这段有字幕”：放音乐时语音识别出的歌声、杂音不单独成条（和以前一样）
     music = [dict(c, src="subs") for c in subs if music_only(c["text"])]
     text_items = sub_items + music + [o for o in ocr_items if o["src"] == "telop"]
-    intervals = [(x["start"], x["end"]) for x in text_items]
-    asr_items, n_hint = [], 0
+    asr_items, n_hint, quoted_ids = [], 0, {}
     for a in asr:
         hit, txt = _concat(text_items, a["start"], a["end"], slack=0.5)
+        # 画面上只是从这句话里摘出来的几个字（旁白“日本の伝統工芸をはじめ、各地の食文化、建築まで”时的「伝統工芸」「建築」），
+        # 同时的画面字合起来也没说到这句话的一半：不算“画面字已经有了”，这句话单独成条，否则整句被丢掉 / 附到那两个字上，
+        # 翻译出来只剩“传统工艺”。一句长话配好几行采访硬字幕的，每行也是这句话的一段，但合起来说到了大半，不算
+        quotes = [x for x in hit if x["src"] == "telop" and _quoted(x["text"], a["text"])]
+        if quotes and not any(x["src"] == "subs" for x in hit) and _share(_content(a["text"]), [x["text"] for x in hit]) < 0.5:
+            asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
+                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
+            for x in quotes:  # 这几个字语音里念了，和有字幕时一样按重复去掉
+                quoted_ids.setdefault(x["id"], a["id"])
+            continue
         s = sim(a["text"], txt) if txt else 0
         if s >= asr_th:
             continue
-        cov = _coverage(intervals, a["start"], a["end"])
-        if cov < m["asr_uncovered_ratio"]:
+        cov = _coverage([(x["start"], x["end"]) for x in hit], a["start"], a["end"])
+        if cov < m["asr_uncovered_ratio"] or _unrelated(a["text"], hit):
             asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
                               "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
             continue
@@ -271,6 +329,13 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         target["asr_hint"] = (target.get("asr_hint", "") + " " + a["text"]).strip()
         n_hint += 1
 
+    quoted_ids = {k: v for k, v in quoted_ids.items()  # 另一句语音附在它上面的，它还是那句话的字幕，留着
+                  if not any(o["id"] == k and o.get("asr_hint") for o in ocr_items)}
+    if quoted_ids:
+        ocr_items = [o for o in ocr_items if o["id"] not in quoted_ids]
+        for e in ocr_events:
+            if e["id"] in quoted_ids:
+                e["dup_of"] = [quoted_ids[e["id"]]]
     items = sub_items + ocr_items + asr_items
     items.sort(key=lambda x: (x["start"], x["end"]))
 

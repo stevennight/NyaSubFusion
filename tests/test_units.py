@@ -113,6 +113,47 @@ def test_fuse_dup_needs_most_of_the_text():
     assert "o2" not in kept and ocr[1]["dup_of"] == ["c2"]
 
 
+def test_fuse_keeps_speech_when_screen_only_quotes_a_few_words():
+    """没有字幕的预告：旁白一整句，画面上只打出其中两三个字（「伝統工芸」「建築」）。这句话单独成条、那几个字按重复去掉，
+    不能整句被当成“画面字已经有了”丢掉。一句长话配几行采访硬字幕的（每行都是这句话的一段、合起来说到了大半），
+    以及硬字幕之外只多了“ね。そう、あ、…うん”语气词的，照旧用硬字幕。"""
+    ja = lang.get("ja")
+    ocr = [_ocr("o1", 10.0, 12.5, "伝統工芸", rect=(0.08, 0.55, 0.49, 0.72), zone="middle"),
+           _ocr("o2", 15.8, 17.4, "建築", rect=(0.05, 0.76, 0.28, 0.95)),
+           _ocr("o3", 40.0, 43.0, "昔 昭和の夜汽車というのは"),
+           _ocr("o4", 43.0, 46.0, "こういうほのかな明かりを"),
+           _ocr("o5", 46.0, 49.0, "つけてたということで"),
+           _ocr("o6", 60.0, 62.0, "踊り食いね")]
+    asr = [{"id": "a1", "start": 10.0, "end": 17.0, "text": "日本の伝統工芸をはじめ、各地の食文化、建築まで、"},
+           {"id": "a2", "start": 40.0, "end": 49.0, "text": "昔昭和の夜汽車っていうのはこういうね、ほのかな明かりをですね、つけてたということで"},
+           {"id": "a3", "start": 60.0, "end": 62.0, "text": "ね。そう、あ、踊り食いね、うん。"}]
+    out = fuse([], ocr, asr, FUSION, ja, 100)
+    kept = {it["id"]: it for it in out["items"]}
+    assert kept["a1"]["src"] == "asr" and "o1" not in kept and "o2" not in kept
+    assert ocr[0]["dup_of"] == ["a1"] and ocr[1]["dup_of"] == ["a1"]
+    assert {"o3", "o4", "o5", "o6"} <= set(kept) and "a2" not in kept and "a3" not in kept
+
+
+def test_fuse_unrelated_speech_under_screen_text_stands_alone():
+    """标题卡挂了十几秒，旁白同时说“ぜひご覧ください”，和卡上的字一个词都对不上：是另一句话，单独成条。
+    有广播字幕（含「♬〜」）的地方、英文的话配日文画面字、只是“うん”这种应答的，照旧附为参考。"""
+    ja = lang.get("ja")
+    subs = [{"id": "c1", "start": 30.0, "end": 45.0, "text": "♬〜"}]
+    ocr = [_ocr("o1", 0.0, 12.0, "毎週 水曜 夜７時３０分放送"),
+           _ocr("o2", 20.0, 24.0, "とてもラッキーですね"),
+           _ocr("o3", 30.0, 40.0, "自分たちが育てた米を原料にして作る甘酒"),
+           _ocr("o4", 50.0, 55.0, "来年の夏頃には運転手になれるかもしれない")]
+    asr = [{"id": "a1", "start": 9.0, "end": 10.5, "text": "ぜひご覧ください。"},
+           {"id": "a2", "start": 20.5, "end": 23.0, "text": "We are very lucky."},
+           {"id": "a3", "start": 32.0, "end": 34.0, "text": "生姜蜂蜜ってのがあるから。"},
+           {"id": "a4", "start": 52.0, "end": 52.5, "text": "うん。"}]
+    out = fuse(subs, ocr, asr, FUSION, ja, 100)
+    kept = {it["id"]: it for it in out["items"]}
+    assert kept["a1"]["src"] == "asr" and not kept["o1"].get("asr_hint")
+    assert "a2" not in kept and kept["o2"]["asr_hint"] == "We are very lucky."
+    assert "a3" not in kept and "a4" not in kept and kept["o4"]["asr_hint"] == "うん。"
+
+
 def test_fuse_drops_music_only_subs():
     """只有「♬〜」的字幕不要（一挂十几秒，还会把并进来的片名拉长）；带歌词的留着；放音乐时语音认出的杂音照旧不单独成条。"""
     from nyasub.fusion.fuse import music_only
