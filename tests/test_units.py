@@ -160,6 +160,35 @@ def test_fuse_rescues_left_aligned_caption_line_from_sign_box():
     assert it["text"] == "(ワニが)ほんと好き\nお正月くらいしか食べられないから"
 
 
+def test_fuse_splits_name_super_from_caption_and_joins_typed_out_head():
+    """人名条和字幕连成一框：拆成人名条（说明）和字幕；字幕逐字出现时先认出的前半截并进完整的那条。
+    上面一行不像人名条的（两人对话错开放）不拆。"""
+    ja = lang.get("ja")
+    head = _ocr("o1138", 3176.5, 3177.7, "どこでもな", rect=(0.1867, 0.9056, 0.3531, 0.9833))
+    e = _ocr("o1141", 3177.7, 3187.3, "「ふすべ漬け」づくりの名人\n吉田和子さん\nどこでもな母ちゃんの仕事だったもんな",
+             rect=(0.19, 0.67, 0.92, 0.98), lines=3)
+    e["pieces"] = [[0.4867, 0.6708, 0.9211, 0.7597, "「ふすべ漬け」づくりの名人"], [0.6898, 0.7639, 0.9227, 0.8486, "吉田和子さん"],
+                   [0.1883, 0.9069, 0.8109, 0.9792, "どこでもな母ちゃんの仕事だったもんな"]]
+    talk = _ocr("o768", 1275.7, 1279.3, "変わんないですね\n調子どうですか？", rect=(0.137, 0.774, 0.637, 0.984), lines=2)
+    talk["pieces"] = [[0.1328, 0.7674, 0.4273, 0.8444, "変わんないですね"], [0.3633, 0.9056, 0.6391, 0.9819, "調子どうですか？"]]
+    out = fuse([], [head, e, talk], [], FUSION, ja, 4000)
+    kept = {it["id"]: it for it in out["items"]}
+    assert kept["o1141"]["text"] == "どこでもな母ちゃんの仕事だったもんな" and kept["o1141"]["start"] == 3176.5
+    assert kept["o1141n"]["text"] == "「ふすべ漬け」づくりの名人\n吉田和子さん" and kept["o1141n"]["src"] == "info"
+    assert "o1138" not in kept and head["dup_of"] == ["o1141"]
+    assert kept["o768"]["text"] == "変わんないですね\n調子どうですか？" and "o768n" not in kept
+
+
+def test_fuse_drops_model_reading_of_garbage_next_to_same_caption():
+    """本地只认出「ER」的地方，复核时模型读成了和旁边那条差不多的一整句（字幕淡出那一刻编的）：按重复去掉。"""
+    ja = lang.get("ja")
+    a = _ocr("o1035", 2702.8, 2707.9, "NHKニュース　穴水町で「クチコ」作り最盛期（2011年）", rect=(0.02, 0.93, 0.45, 0.98))
+    b = _ocr("o1036", 2706.0, 2709.7, "NHKニュース　九州で「クチコ」作り最盛期（2011年）", rect=(0.02, 0.94, 0.45, 0.98))
+    a["text_local"], b["text_local"] = a["text"], "ER"
+    out = fuse([], [a, b], [], FUSION, ja, 3000)
+    assert {it["id"] for it in out["items"]} == {"o1035"}
+
+
 def test_fuse_joins_one_caption_split_in_two():
     """同一行字幕被识别切成前后两条（背景一变跟踪就断了）：合成一条，不显示两遍；位置不同、隔得远的不合。"""
     ja = lang.get("ja")

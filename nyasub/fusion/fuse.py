@@ -263,18 +263,83 @@ def _same_place(a, b, th=0.6):
 
 def _join_split(ocr_events, gap=0.5):
     """同一行画面字被识别切成前后两条（「国連が昆虫食は世界の飢えを救う」31:16.9–20.2 和 20.2–21.3，背景一变跟踪就断了）：
-    同一个位置、字一样、前后接着的，合成一条（时间接上），后面那条按重复去掉，否则同一句会显示、翻译两遍。"""
+    同一个位置、字一样、前后接着的，合成一条（时间接上），后面那条按重复去掉，否则同一句会显示、翻译两遍。
+    逐字出现的字幕先认出前半截（「昆虫が」→「昆虫が 国とか世界を救っちゃう」、「今では」→「今では 似たような…」）：
+    前半截并进后面完整的那条（开始时间提前），否则前半截单独译一遍，“昆虫｜昆虫能拯救…”。"""
     kept = []
     for e in sorted(ocr_events, key=lambda e: e["start"]):
-        prev = next((p for p in reversed(kept) if -0.05 <= e["start"] - p["end"] <= gap
-                     and len(norm(e["text"])) >= 2 and full_sim(p["text"], e["text"]) >= 90
-                     and _same_place(p["rect"], e["rect"])), None)
+        near = [p for p in reversed(kept) if -0.05 <= e["start"] - p["end"] <= gap and _same_place(p["rect"], e["rect"])]
+        prev = next((p for p in near if len(norm(e["text"])) >= 2 and full_sim(p["text"], e["text"]) >= 90), None)
         if prev:
             prev["end"] = max(prev["end"], e["end"])
             e["dup_of"] = [prev["id"]]
             continue
+        a = norm(e["text"])
+        head = next((p for p in near if 2 <= len(norm(p["text"])) < len(a) and a.startswith(norm(p["text"]))), None)
+        if head:
+            kept.remove(head)
+            e["start"] = min(e["start"], head["start"])
+            head["dup_of"] = [e["id"]]
         kept.append(e)
     return kept
+
+
+def _caption_block(pieces):
+    """一框里的字幕那几行：底部居中的行，加上和它左边对齐、上下紧挨着的行（两行左对齐时短的那行不居中）。"""
+    lines = [p for p in pieces if p[1] >= 0.8 and abs((p[0] + p[2]) / 2 - 0.5) < 0.12]
+    grew = True
+    while lines and grew:
+        grew = False
+        for p in pieces:
+            if p not in lines and p[1] >= 0.7 and any(abs(p[0] - q[0]) <= 0.03 and max(p[1], q[1]) - min(p[3], q[3]) <= (q[3] - q[1])
+                                                      for q in lines):
+                lines.append(p)
+                grew = True
+    return lines
+
+
+def _split_supers(ocr_events, pack):
+    """识别时把人名条（「「ふすべ漬け」づくりの名人 吉田和子さん」，在字幕右上方）和下面的字幕连成了一框：
+    整框会被当成一句台词翻译（“雪菜烫腌名手 吉田和子｜以前哪儿都是…”）。字幕那几行和上面不居中的另一块字分成两条，
+    上面那块另起一条（编号加 n）。上面那块得像人名条（「…さん」「（82）」结尾）；字是模型改过的（和各块的字对不上）就不拆。"""
+    out = []
+    for e in ocr_events:
+        out.append(e)
+        pieces = e.get("pieces") or []
+        if e.get("vertical") or len(pieces) < 2 or norm(e["text"]) != norm("".join(p[4] for p in pieces)):
+            continue
+        cap = _caption_block(pieces)
+        rest = [p for p in pieces if p not in cap]
+        if not cap or not rest:
+            continue
+        top = min(p[1] for p in cap)
+        if any(p[3] > top + 0.01 or abs((p[0] + p[2]) / 2 - 0.5) < 0.12 for p in rest):
+            continue  # 另一块不全在字幕上面，或者也居中（两三行居中的字幕、标题）：是一整块
+        if not (pack.name_super and pack.name_super.search("\n".join(p[4] for p in rest))):
+            continue  # 上面那块不像人名条：多半是另一个人的话（两人对话各占一行、错开放），还是一整块
+        box = lambda ps: [round(min(p[0] for p in ps), 4), round(min(p[1] for p in ps), 4),
+                          round(max(p[2] for p in ps), 4), round(max(p[3] for p in ps), 4)]
+        cap.sort(key=lambda p: p[1])
+        rest.sort(key=lambda p: (p[1], p[0]))
+        from ..sources.ocr import _zone
+        sup = dict(e, id=e["id"] + "n", text="\n".join(p[4] for p in rest), rect=box(rest), pieces=rest, lines=len(rest))
+        sup["zone"] = _zone(sup["rect"], False)
+        e.update(text="\n".join(p[4] for p in cap), rect=box(cap), pieces=cap, lines=len(cap), zone="bottom")
+        out.append(sup)
+    return out
+
+
+def _drop_misread(ocr_events, pack, gap=0.5):
+    """本地只认出几个乱码（「ER」）的地方，模型读出了一整句、和同一位置紧挨着的另一条差不多（字幕淡出那一刻，
+    模型把正在消失的「NHKニュース 穴水町で…」编成了「NHKニュース 九州で…」）：是那一条的重复，去掉。"""
+    for e in ocr_events:
+        loc = e.get("text_local")
+        if e.get("dropped") or e.get("found_by") == "vlm" or loc is None or len(norm(e["text"])) < 6 \
+                or (pack.meaningful.search(loc) and len(norm(loc)) > 3):
+            continue
+        if any(o is not e and not o.get("dropped") and o["start"] - gap <= e["end"] and e["start"] <= o["end"] + gap
+               and _same_place(o["rect"], e["rect"]) and sim(o["text"], e["text"]) >= 70 for o in ocr_events):
+            e["dropped"] = "dup_vlm"
 
 
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
@@ -285,7 +350,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     n_caption = _caption_lines(ocr_events, asr, pack, asr_th)
     ocr_all = ocr_events
     _drop_vlm_dups(ocr_events)
-    ocr_events = _join_split([e for e in ocr_events if not e.get("dropped")])
+    _drop_misread(ocr_events, pack)
+    ocr_events = _join_split(_split_supers([e for e in ocr_events if not e.get("dropped")], pack))
 
     asr = [a for a in asr if not any(h in a["text"] for h in pack.hallucinations)
            and not (a.get("no_speech", 0) > 0.6 and a.get("logprob", 0) < -1.0)]
