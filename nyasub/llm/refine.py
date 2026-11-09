@@ -360,6 +360,32 @@ def _doubt(model, local, score, kind=None):
     return kind == "caption" and score >= 0.98 and len(fb) >= 2 and fa != fb and abs(len(fa) - len(fb)) <= 2
 
 
+TRUST_LOCAL = 0.9  # 本地 OCR 置信度到这么高，模型改字得有特写读法作证
+
+
+def _same(a, b, th=90):
+    """两种读法算一样：去掉空格、中点后全同，或者整句很像（th）。"""
+    fa, fb = _fold(a), _fold(b)
+    return bool(fa) and (fa == fb or full_sim(fa, fb) >= th)
+
+
+def _settle(first, close, local, score):
+    """字幕上模型整帧读的（first）和本地读的（local）不一样时，按特写再读的（close）定用哪个。返回 (字, 有没有证据)。
+    - 特写和整帧读得一样：两次独立读法一致，用模型的。
+    - 特写和本地读得一样：用特写读的（字和本地一样，标点、空格按模型的）。
+    - 都对不上（或者特写没读出来）：本地有把握的用本地的；本地也没把握，就没有任何一方作证，用模型读的，标上 unverified
+      （融合时没有语音、字幕对得上的就不当台词）。
+    本地有把握时，模型改字要两次读法逐字一致；本地没把握（乱码）时，整句很像就算一致。"""
+    strict = score >= TRUST_LOCAL
+    if close and (_fold(close) == _fold(first) if strict else _same(close, first)):
+        return close, True
+    if close and _same(close, local, 100 if strict else 90):
+        return close, True
+    if strict:
+        return local, True
+    return (close or first), False
+
+
 class _Frame:
     """一个画面时刻：从原视频按原分辨率截的整帧，缩小给模型看，按需截特写。"""
 
@@ -519,7 +545,8 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     read_dir = os.path.join(workdir, "crops", "read")
     os.makedirs(read_dir, exist_ok=True)
     gone, added, short = set(), [], []
-    n = {"read": 0, "matched": 0, "merged": 0, "missed": 0, "recheck": 0, "unseen": 0, "retimed": 0}
+    n = {"read": 0, "matched": 0, "merged": 0, "missed": 0, "recheck": 0, "unseen": 0, "retimed": 0, "kept_local": 0,
+         "unconfirmed": 0}
     chunk = 12  # 原分辨率的整帧一张几 MB：一次截一小批，用完就删
     try:
         _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
@@ -530,7 +557,9 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     progress(len(times), len(times), "复核")
     n["missed"] = len(added)
     log(f"  模型读到 {n['read']} 块字：对上本地 {n['matched']} 条（其中 {n['retimed']} 条本地只认出一小块、重新找了时间），"
-        f"合并本地切开的 {n['merged']} 块，补出本地漏掉的 {n['missed']} 处；模型没读到的 {n['unseen']} 条；截特写再问 {n['recheck']} 次")
+        f"合并本地切开的 {n['merged']} 块，补出本地漏掉的 {n['missed']} 处；模型没读到的 {n['unseen']} 条；截特写再问 {n['recheck']} 次"
+        + (f"；模型改的字特写没作证、保留本地读法 {n['kept_local']} 条" if n["kept_local"] else "")
+        + (f"；整帧读到、特写没读出同样字的 {n['unconfirmed']} 处不补" if n["unconfirmed"] else ""))
     if short:
         _retry_short(llm, short, workdir, video, 4, float(cfg.ocr.fps))
     events[:] = sorted([e for e in events if e["id"] not in gone] + added, key=lambda e: (e["start"], e["rect"][1]))
@@ -602,7 +631,19 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 text = "\n".join(it["text"] for it in its)
                 kind = max(its, key=lambda it: _area(it["box"]))["kind"]
                 box = _union([it["box"] for it in its])
-                if _differs(text, local) or _doubt(text, local, max(e.get("score", 0) for e in evs), kind) \
+                score = max(e.get("score", 0) for e in evs)
+                if kind == "caption" and _fold(text) != _fold(local) and (score >= TRUST_LOCAL or full_sim(text, local) < 90):
+                    # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）
+                    g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
+                    n["recheck"] += bool(g)
+                    close = g.get("text") if g.get("text") and not logo_text(g["text"], local, logo) else ""
+                    kind = g.get("kind", kind)
+                    text, sure = _settle(text, close, local, score)
+                    if not sure:
+                        keep["unverified"] = True
+                    elif text == local and _fold(local) != _fold(close):
+                        n["kept_local"] += 1
+                elif _differs(text, local) or _doubt(text, local, score, kind) \
                         or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
                     g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
@@ -653,7 +694,17 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                     continue
                 vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
                 text, kind = it["text"], it["kind"]
-                if _line_px(b, text, vertical, aspect) < SMALL_LINE:
+                if kind == "caption":
+                    # 有证据才补：本地一个字都没认出的地方，整帧读到的字幕要截特写再读一遍、读得一样才补
+                    # （字幕淡出那一刻、满是纹理的背景上，模型整帧读时会编出一句）
+                    g = _recheck(llm, frame, b, [text], f"{key}_m{len(added)}")
+                    n["recheck"] += bool(g)
+                    if not (g.get("text") and _same(g["text"], text) and g.get("kind", kind) == "caption"):
+                        n["unconfirmed"] += 1
+                        log(f"  {t:.1f}s 整帧读到「{text.replace(chr(10), ' / ')}」，特写读成「{(g.get('text') or '').replace(chr(10), ' / ')}」，不补")
+                        continue
+                    text = g["text"]
+                elif _line_px(b, text, vertical, aspect) < SMALL_LINE:
                     g = _recheck(llm, frame, b, [text], f"{key}_m{len(added)}")
                     n["recheck"] += bool(g)
                     text, kind = g.get("text") or text, g.get("kind", kind)

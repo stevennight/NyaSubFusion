@@ -24,7 +24,7 @@ const ROW_H = 22;      // 展开的参考轨每行的高度
 const OPEN_ROWS = 8;   // 展开的抽屉最多这么高，再多的在抽屉里上下滚动
 type RefLane = "sc" | "so" | "sa";
 const OPEN_KEY = "nyasub.tl.open";
-const DROP_LBL: Record<string, string> = { junk: "杂讯", logo: "台标", scene: "实物上的字", ruby: "振假名" };
+const DROP_LBL: Record<string, string> = { junk: "杂讯", logo: "台标", scene: "实物上的字", ruby: "振假名", unverified: "没有来源作证", dup_vlm: "重复" };
 
 type Span = [number, number];
 /** 「译文」条的新时间：和审校面板里改时间同一个接口（editCue 的 start / end / parts） */

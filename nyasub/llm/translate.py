@@ -122,6 +122,9 @@ def apply_result(chunk, result, tgt, src_lang):
             continue
         srcs = [by_id[s] for s in src]
         orig = (c.get("orig") or c.get("ja") or "").strip().replace(" / ", "\n") or "\n".join(s["text"] for s in srcs)  # “ / ”是提示词里的换行
+        if invented(srcs, orig):
+            log(f"  {'、'.join(src)}：画面上认出的是「{srcs[0]['text'][:20]}」，整理成了「{orig[:20]}」，没有来源作证，不要")
+            continue
         orig = keep_subs_wording(srcs, orig)
         tr = (c.get("tr") or c.get("zh") or "").strip()
         srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
@@ -232,6 +235,15 @@ def split_orphans(srcs, orig):
     if not loose:
         return srcs, []
     return [s for s in srcs if s not in loose], loose
+
+
+def invented(srcs, orig):
+    """整理只该合并、纠正错字，不该编：只有画面字（没有广播字幕、语音）的一条，整理后的原文和画面上认出的字、
+    附带的语音参考连一半都对不上，就是模型自己编的（乱码「加他用のbに」被“纠正”成「三が日用の分に」，还当成了台词）。"""
+    if not srcs or any(s["src"] in SPEECH for s in srcs):
+        return False
+    support = "\n".join(s["text"] + "\n" + s.get("asr_hint", "") for s in srcs)
+    return covered(orig.replace("｜", ""), support) < 0.5
 
 
 def split_labels(srcs, kind):

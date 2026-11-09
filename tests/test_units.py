@@ -316,3 +316,20 @@ def test_layout_missing_translation_falls_back_to_original():
     # 有中文、没有英文：英文层留空，不拿原文顶替
     items = layout.build([_cue(tr={"zh-Hans": {"text": "有译文"}})], prof, cfg, "ja")
     assert [(code, _txt(lines)) for _, code, lines in items[0]["layers"]] == [("zh-Hans", ["有译文"])]
+
+
+def test_fuse_drops_unconfirmed_screen_lines_nobody_says():
+    """有证据才用：复核时两次读法对不上、本地也没把握的（unverified），或者没复核过、本地也没把握的台词，
+    语音又对不上：不要。语音对得上的、本地有把握的、说明类的照旧。"""
+    ja = lang.get("ja")
+    ocr = [dict(_ocr("o245", 672.0, 673.6, "加他用のbに", rect=(0.84, 0.77, 0.88, 0.8), score=0.709)),
+           dict(_ocr("o1036", 2706.0, 2709.7, "NHKニュース 九州で作り最盛期", rect=(0.02, 0.94, 0.45, 0.98)), unverified=True, text_local="ER"),
+           dict(_ocr("o244", 671.9, 675.4, "お正月用と年末用"), text_local="お正月用と年末用"),
+           dict(_ocr("o300", 700.0, 703.0, "ちょっと待って", score=0.7)),
+           dict(_ocr("o301", 710.0, 713.0, "中村昭彦", rect=(0.05, 0.6, 0.2, 0.66), zone="middle", score=0.82))]
+    asr = [{"id": "a0", "start": 671.9, "end": 675.4, "text": "お正月用と年末用。"},
+           {"id": "a1", "start": 700.0, "end": 703.0, "text": "ちょっと待って。"}]
+    out = fuse([], ocr, asr, FUSION, ja, 3000)
+    kept = {it["id"] for it in out["items"]}
+    assert {"o244", "o300", "o301"} <= kept and "o245" not in kept and "o1036" not in kept
+    assert ocr[0]["dropped"] == ocr[1]["dropped"] == "unverified" and out["stats"]["ocr_unverified"] == 2

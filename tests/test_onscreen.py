@@ -866,6 +866,8 @@ def test_refine_miss_found_by_local_a_moment_later_not_added(tmp_path, monkeypat
             if system == refine.READ_SYSTEM:
                 return {"items": [{"text": "BACARDI", "kind": "scene", "bbox": [285, 772, 325, 804]},
                                   {"text": said, "kind": "caption", "bbox": [363, 844, 635, 975]}]}
+            if "ここがないと" in user:  # 补出的字幕要特写再读一遍作证
+                return {"text": said, "kind": "caption"}
             return {"text": "BACARDI", "kind": "scene"}
 
     import nyasub.llm.client as client
@@ -1035,3 +1037,29 @@ def test_terms_and_translations_with_kana_are_fixed_into_chinese():
     fix_leftover(llm, cues, terms, ja, zh, "zh-Hans", SimpleNamespace(project=SimpleNamespace(context="")))
     assert "q3" not in llm.calls[0][1] and "天竜川 → 天龙川" in llm.calls[0][1]
     assert [c["tr"]["zh-Hans"]["text"] for c in cues] == ["为扎扎虫干杯！", "天龙川的｜ざざ虫", "怎么样"]  # 分段对不上的不收
+
+
+def test_settle_needs_two_reads_to_change_confident_text():
+    """有证据才用：本地有把握的字，模型整帧读和特写读得逐字一样才改；特写和本地一样、或者都对不上，用本地的。
+    本地没把握（乱码）时，两次读法整句很像就用模型的；都对不上标为没证据。"""
+    from nyasub.llm.refine import _settle
+
+    assert _settle("鮭とは", "鮭とば", "鮭とば", 0.987) == ("鮭とば", True)
+    assert _settle("蓬間 正樹さん", "蓬間 正樹さん", "差間正樹さん", 0.998) == ("蓬間 正樹さん", True)
+    assert _settle("ナマコ作り", "クチコの作り", "クチコ作り", 0.985) == ("クチコ作り", True)
+    assert _settle("カーブを曲がった", "カーブを曲がった", "カ一ブを曲がった", 0.984) == ("カーブを曲がった", True)
+    assert _settle("NHKニュース 九州で", "", "ER", 0.959) == ("ER", True)
+    assert _settle("サヨナラまでの日々", "サヨナラまでの日々", "サヨナラ", 0.7) == ("サヨナラまでの日々", True)
+    assert _settle("三が日用の分に", "加熱用のわに", "加他用のbに", 0.709) == ("加熱用のわに", False)
+
+
+def test_organize_drops_lines_its_sources_do_not_support():
+    """整理把乱码“纠正”成一句台词（「加他用のbに」→「三が日用の分に」）：画面字里一半都对不上，不要；只是改了错字的照旧。"""
+    items = [{"id": "o245", "src": "telop", "start": 672.0, "end": 673.6, "text": "加他用のbに"},
+             {"id": "o244", "src": "telop", "start": 671.9, "end": 675.4, "text": "お正月用と年末用"},
+             {"id": "o559", "src": "info", "start": 1165.0, "end": 1170.4, "text": "西和箕町の良さを\n全国に発信しよう"}]
+    res = {"cues": [{"src": ["o245"], "type": "dialogue", "orig": "三が日用の分に"},
+                    {"src": ["o244"], "type": "dialogue", "orig": "お正月用と年末用"},
+                    {"src": ["o559"], "type": "info", "orig": "西和賀の良さを\n全国に発信しよう"}]}
+    cues, missing = apply_result(items, res, "zh-Hans", "ja")
+    assert not missing and [c["sources"] for c in cues] == [["o244"], ["o559"]]

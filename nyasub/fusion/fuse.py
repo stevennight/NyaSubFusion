@@ -357,6 +357,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
            and not (a.get("no_speech", 0) > 0.6 and a.get("logprob", 0) < -1.0)]
 
     # 1. 画面字分类
+    reviewed = any("text_local" in e for e in ocr_all)  # 做过视觉复核（没复核过的条目才值得怀疑）
     ocr_items = []
     for e in ocr_events:
         e.pop("dup_of", None)
@@ -388,6 +389,12 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
             kind = "telop"
         else:
             kind = "info"
+        # 有证据才用：复核时两次读法对不上、本地也没把握的（unverified），或者从没复核过、本地也没把握的台词，
+        # 语音又对不上：没有任何一方作证，多半是背景上的字读成了乱码（海报小字「加熱用のわに」读成「加他用のbに」），不要
+        if s < asr_th and (e.get("unverified") or (kind == "telop" and reviewed and "text_local" not in e
+                                                   and e.get("score", 1.0) < 0.8)):
+            e["dropped"] = "unverified"
+            continue
         item = {"id": e["id"], "src": kind, "start": e["start"], "end": e["end"], "text": e["text"],
                 "zone": e["zone"], "rect": e["rect"], "ocr_score": e["score"]}
         if e.get("crop"):
@@ -458,6 +465,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         "ocr_logo": sum(1 for e in ocr_all if e.get("dropped") == "logo"),
         "ocr_junk": sum(1 for e in ocr_all if e.get("dropped") == "junk"),
         "ocr_scene": sum(1 for e in ocr_all if e.get("dropped") == "scene"),
+        "ocr_unverified": sum(1 for e in ocr_all if e.get("dropped") == "unverified"),
         "ocr_ruby": sum(1 for e in ocr_all if e.get("dropped") == "ruby"),
         "ocr_dup": sum(1 for e in ocr_events if e.get("dup_of")),
         "ocr_caption": n_caption,
