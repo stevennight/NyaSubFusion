@@ -375,6 +375,41 @@ def test_refine_rechecks_when_confident_local_reading_differs(tmp_path, monkeypa
     assert (e["text"], e["kind"]) == ("西和賀の良さを\n全国に発信しよう", "scene")
 
 
+def test_refine_keeps_confident_local_text_when_model_calls_it_scene(tmp_path, monkeypatch):
+    """模型把两行字幕的大块判成背景字（scene），两次都只读出「「失敗したかな」とか」，漏了本地读清楚的「言う時ある」：
+    本地有把握的照留，模型补的那行（特写里也有）加上。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (t - 2, t + 3))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o1215", "start": 3306.5, "end": 3310.5, "snap_t": 3308.5, "rect": [0.2359, 0.9042, 0.7664, 0.9833],
+               "text": "「失敗したかな」とか言う時ある", "lines": 1, "score": 0.999, "crop": "crops/o1215.jpg",
+               "pieces": [[0.2359, 0.9042, 0.7664, 0.9833, "「失敗したかな」とか言う時ある"]]}]
+    two = "部長とか課長とかになったり\n「失敗したかな」とか"
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": two.replace("\n", " / "), "kind": "scene", "bbox": [236, 880, 766, 983]}]}
+            return {"text": two, "kind": "scene"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    e = next(e for e in out if e["id"] == "o1215")
+    assert e["text"] == "部長とか課長とかになったり\n「失敗したかな」とか言う時ある"
+
+
 def test_refine_rechecks_small_changes_to_confident_caption_and_caps_retime(tmp_path, monkeypatch):
     """字幕本地读得很准（0.98 以上），模型只改了一个字（「鮭とば」→「鮭とは」）：截特写再问，按特写定。
     本地只认出一小块、按模型的框找时间的，最多往前后各放宽 RETIME_MAX 秒（雪景背景里找过头，标题早出来 7 秒）。"""
@@ -1039,16 +1074,39 @@ def test_terms_and_translations_with_kana_are_fixed_into_chinese():
     assert [c["tr"]["zh-Hans"]["text"] for c in cues] == ["为扎扎虫干杯！", "天龙川的｜ざざ虫", "怎么样"]  # 分段对不上的不收
 
 
-def test_settle_needs_two_reads_to_change_confident_text():
-    """有证据才用：本地有把握的字，模型整帧读和特写读得逐字一样才改；特写和本地一样、或者都对不上，用本地的。
+def test_settle_keeps_confident_local_text():
+    """有证据才用：本地有把握的字幕，本地读出的字照留（同一个模型整帧、特写两次都读错，「冬を食べる」里的真实例子）；
+    模型只能补本地没读到的整行、行头行尾，或改本地常认混的形近字，而且特写里也得有。
     本地没把握（乱码）时，两次读法整句很像就用模型的；都对不上标为没证据。"""
     from nyasub.llm.refine import _settle
 
-    assert _settle("鮭とは", "鮭とば", "鮭とば", 0.987) == ("鮭とば", True)
-    assert _settle("蓬間 正樹さん", "蓬間 正樹さん", "差間正樹さん", 0.998) == ("蓬間 正樹さん", True)
+    # 模型两次都改了本地读清楚的字：用本地的
+    assert _settle("鮭とは", "鮭とは", "鮭とば", 0.987) == ("鮭とば", True)
+    assert _settle("蓬間 正樹さん", "蓬間 正樹さん", "差間正樹さん", 0.998) == ("差間正樹さん", True)
+    two = "中嶋さんは凍みこんにゃくを作り続ける\n数少ない農家"
+    assert _settle(two, two, "中嶋さんは凍みこんにゃく作りを守る\n数少ない農家", 0.997) == \
+        ("中嶋さんは凍みこんにゃく作りを守る\n数少ない農家", True)
+    assert _settle("よう泳いできてくれたと思いました", "よう泳いできてくれたと思いました",
+                   "よう泳いできてくれた思いました", 0.999) == ("よう泳いできてくれた思いました", True)
+    assert _settle("ひとり", "ひとり", "ひとり独身", 0.998) == ("ひとり独身", True)
     assert _settle("ナマコ作り", "クチコの作り", "クチコ作り", 0.985) == ("クチコ作り", True)
+    # 模型补本地没读到的整行、行尾：特写里也有才补；本地那行照留
+    m = "こんなんありますよ\n世の中に知らせたい"
+    assert _settle(m, m, "世の中に知らしめたい", 1.0) == ("こんなんありますよ\n世の中に知らしめたい", True)
+    assert _settle(m, "世の中に知らせたい", "世の中に知らしめたい", 1.0) == ("世の中に知らしめたい", True)  # 特写里没有那行
+    m = "部長とか課長とかになったり\n「失敗したかな」とか"
+    assert _settle(m, m, "「失敗したかな」とか言う時ある", 0.999) == ("部長とか課長とかになったり\n「失敗したかな」とか言う時ある", True)
+    assert _settle("これ以上のことはないべ", "これ以上のことはないべ", "これ以上のことはない", 0.992) == ("これ以上のことはないべ", True)
+    assert _settle("これ以上のことはないべ", "", "これ以上のことはない", 0.992) == ("これ以上のことはない", True)
+    # 形近字：本地认混的用模型的
     assert _settle("カーブを曲がった", "カーブを曲がった", "カ一ブを曲がった", 0.984) == ("カーブを曲がった", True)
+    assert _settle("2019年 アイヌ施策推進法", "2019年 アイヌ施策推進法", "2019年アイ又施策推進法", 0.966) == ("2019年 アイヌ施策推進法", True)
     assert _settle("NHKニュース 九州で", "", "ER", 0.959) == ("ER", True)
+    # 滚动的片尾字幕：本地是各帧拼的，两次读法一致就用模型的
+    m = "映像技術　西田 彩華\n音響効果　河原 久美子"
+    assert _settle(m, m, "西田彩華映像技術\n音響効果　河原 久美子", 0.997, moving=True) == (m, True)
+    assert _settle(m, "映像技術", "西田彩華映像技術", 0.997, moving=True) == ("西田彩華映像技術", True)
+    # 本地没把握
     assert _settle("サヨナラまでの日々", "サヨナラまでの日々", "サヨナラ", 0.7) == ("サヨナラまでの日々", True)
     assert _settle("三が日用の分に", "加熱用のわに", "加他用のbに", 0.709) == ("加熱用のわに", False)
 

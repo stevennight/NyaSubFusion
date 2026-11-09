@@ -369,20 +369,72 @@ def _same(a, b, th=90):
     return bool(fa) and (fa == fb or full_sim(fa, fb) >= th)
 
 
-def _settle(first, close, local, score):
+# 本地 OCR 常认混的形近字（汉字、片假名、长音、破折号）：本地有把握的行里只差这些字时，用模型读的
+_LOOKALIKE = [set("一ー－―‐-"), set("又ヌ"), set("口ロ"), set("力カ"), set("工エ"), set("夕タ"), set("二ニ"), set("八ハ"),
+              set("卜ト"), set("〇○Oo0"), set("へヘ"), set("べベ"), set("ぺペ"), set("り リ"), set("七セ"), set("干千于")]
+
+
+def _raw(text):
+    """比形近字用：只去掉空格、中点，统一全角半角（_fold 会把片假名转成平假名、去掉长音，比不出「一」「ー」）。"""
+    return re.sub(r"[\s·・･]", "", unicodedata.normalize("NFKC", text))
+
+
+def _lookalike(a, b):
+    """a、b 只差本地常认混的形近字（「カ一ブ」「カーブ」、「アイ又」「アイヌ」）。"""
+    return a != b and len(a) == len(b) and all(x == y or any(x in g and y in g for g in _LOOKALIKE) for x, y in zip(a, b))
+
+
+def _keep_local(first, close, local):
+    """本地读得很有把握的字幕：本地读出的字一律保留，模型只能补本地没读到的——整行（「こんなんありますよ」）、
+    行头行尾（「これ以上のことはない」→「…ないべ」），或者改本地常认混的形近字（「カ一ブ」→「カーブ」）。
+    模型改本地读出来的字（「鮭とば」→「鮭とは」、「作りを守る」→「作り続ける」、「くれた思いました」→「くれたと思いました」、
+    「知らしめたい」→「知らせたい」）、删本地读出来的字（「ひとり 独身」→「ひとり」）都不算：同一个模型整帧、特写读两次，
+    常常两次都把少见的说法读成常见的，两次一致也不是证据。模型补的字要特写（close）里也有才用。"""
+    seen = _fold(close or "")
+    ok = lambda m: bool(seen) and _fold(m) in seen
+    lines = [ln for ln in local.split("\n") if ln.strip()]
+    folded = [_fold(ln) for ln in lines]
+    out, used, at = [], set(), -0.5
+    for m in [ln for ln in first.split("\n") if ln.strip()]:
+        fm, j, how = _fold(m), None, None
+        for k, fl in enumerate(folded):
+            if k in used or not fl:
+                continue
+            if fl in fm:
+                j, how = k, "extend"
+            elif _lookalike(_raw(m), _raw(lines[k])):
+                j, how = k, "lookalike"
+            elif fm in fl or full_sim(fm, fl) >= 50:
+                j, how = k, "local"
+            if j is not None:
+                break
+        if j is None:  # 本地没读到的一整行
+            if ok(m):
+                out.append((at + 0.1, m))
+                at += 0.1
+            continue
+        used.add(j)
+        at = j
+        out.append((j, m if how != "local" and ok(m) else lines[j]))
+    out += [(k, ln) for k, ln in enumerate(lines) if k not in used]  # 模型没读到的本地行照留
+    return "\n".join(t for _, t in sorted(out, key=lambda x: x[0]))
+
+
+def _settle(first, close, local, score, moving=False):
     """字幕上模型整帧读的（first）和本地读的（local）不一样时，按特写再读的（close）定用哪个。返回 (字, 有没有证据)。
-    - 特写和整帧读得一样：两次独立读法一致，用模型的。
-    - 特写和本地读得一样：用特写读的（字和本地一样，标点、空格按模型的）。
-    - 都对不上（或者特写没读出来）：本地有把握的用本地的；本地也没把握，就没有任何一方作证，用模型读的，标上 unverified
-      （融合时没有语音、字幕对得上的就不当台词）。
-    本地有把握时，模型改字要两次读法逐字一致；本地没把握（乱码）时，整句很像就算一致。"""
-    strict = score >= TRUST_LOCAL
-    if close and (_fold(close) == _fold(first) if strict else _same(close, first)):
-        return close, True
-    if close and _same(close, local, 100 if strict else 90):
-        return close, True
-    if strict:
+    - 本地有把握：本地读出的字照留，模型只能补本地没读到的（_keep_local）。
+    - 滚动的字（片尾字幕）：本地读的是跟着字走、各帧拼出来的，置信度高也常常词序乱、混进背景上的字
+      （「西田彩華映像技術」、纸箱上的「自然の雪室で育った…」）：特写和整帧逐字一样用模型的，否则用本地的。
+    - 本地没把握（乱码）：特写和整帧读得很像，或者特写和本地读得一样，用特写读的；都对不上（或者特写没读出来），
+      没有任何一方作证，用模型读的，标上 unverified（融合时没有语音、字幕对得上的就不当台词）。"""
+    if score >= TRUST_LOCAL and moving:
+        if close and (_fold(close) == _fold(first) or _same(close, local, 100)):
+            return close, True
         return local, True
+    if score >= TRUST_LOCAL:
+        return _keep_local(first, close, local), True
+    if close and (_same(close, first) or _same(close, local)):
+        return close, True
     return (close or first), False
 
 
@@ -624,6 +676,8 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                     if truncated(g.get("text") or "", local):
                         short.append(keep)
                         g = {"kind": g["kind"]} if g.get("kind") else {}
+                    if g.get("text") and max(e.get("score", 0) for e in evs) >= TRUST_LOCAL:
+                        g["text"] = _keep_local(g["text"], "", local)  # 只有特写一次读法，本地有把握的字照留
                     _apply(keep, g)
                     continue
                 n["matched"] += 1
@@ -632,13 +686,15 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 kind = max(its, key=lambda it: _area(it["box"]))["kind"]
                 box = _union([it["box"] for it in its])
                 score = max(e.get("score", 0) for e in evs)
-                if kind == "caption" and _fold(text) != _fold(local) and (score >= TRUST_LOCAL or full_sim(text, local) < 90):
-                    # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）
+                if _fold(text) != _fold(local) and (score >= TRUST_LOCAL or (kind == "caption" and full_sim(text, local) < 90)):
+                    # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）。
+                    # 本地有把握的不管模型说是字幕还是背景字都这样定：模型把两行字幕的大块判成背景字时，
+                    # 走下面那条路会照用特写读的，丢了本地读清楚的「言う時ある」
                     g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
                     close = g.get("text") if g.get("text") and not logo_text(g["text"], local, logo) else ""
                     kind = g.get("kind", kind)
-                    text, sure = _settle(text, close, local, score)
+                    text, sure = _settle(text, close, local, score, keep.get("moving"))
                     if not sure:
                         keep["unverified"] = True
                     elif text == local and _fold(local) != _fold(close):
