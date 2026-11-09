@@ -85,6 +85,25 @@ def test_orphan_caption_split_out():
     assert cues[1]["orig"]["text"] == "収穫して出荷したらいいのでは？" and cues[1]["type"] == "info"
 
 
+def test_labels_at_separate_places_stay_separate():
+    # 老照片上分别标在两个人身上的「父」「啓全さん」：大模型合成了一条“父\n啓全さん”（译成“父亲 启全”像是父亲叫启全），拆回两条。
+    # 同一块字的上下两行（人名条）、滚动的片尾字幕（同一行字换了位置）不拆
+    items = [{"id": "o939", "src": "info", "start": 2166.0, "end": 2171.4, "text": "父", "rect": [0.55, 0.23, 0.59, 0.3]},
+             {"id": "o940", "src": "info", "start": 2166.0, "end": 2171.4, "text": "啓全さん", "rect": [0.32, 0.62, 0.46, 0.69]},
+             {"id": "o1229", "src": "info", "start": 3348.0, "end": 3353.6, "text": "清志さんの妻", "rect": [0.12, 0.62, 0.4, 0.68]},
+             {"id": "o1230", "src": "info", "start": 3348.0, "end": 3353.6, "text": "吉田 貴美子 さん", "rect": [0.12, 0.68, 0.4, 0.74]},
+             {"id": "o1347", "src": "telop", "start": 3494.9, "end": 3497.0, "text": "ディレクター 佐野 達也", "rect": [0.72, 0.83, 0.99, 0.98]},
+             {"id": "v158", "src": "telop", "start": 3494.9, "end": 3497.0, "text": "レクター 佐野 達也\n田才 孝子", "rect": [0.0, 0.83, 0.23, 0.96]}]
+    res = {"cues": [{"src": ["o939", "o940"], "type": "info", "orig": "父\n啓全さん"},
+                    {"src": ["o1229", "o1230"], "type": "info", "orig": "清志さんの妻\n吉田 貴美子 さん"},
+                    {"src": ["o1347", "v158"], "type": "info", "orig": "ディレクター 佐野達也\n田才孝子"}]}
+    cues, missing = apply_result(items, res, "zh-Hans", "ja")
+    assert not missing
+    assert [(c["sources"], c["orig"]["text"]) for c in cues] == [
+        (["o939"], "父"), (["o940"], "啓全さん"), (["o1229", "o1230"], "清志さんの妻\n吉田 貴美子 さん"),
+        (["o1347", "v158"], "ディレクター 佐野達也\n田才孝子")]
+
+
 def test_split_label_partly_kept_and_multi_part():
     # 大模型只保留了画面字的一部分（“冬を食べる／坂網鴨”只留“坂網鴨”）
     items = [{"id": "c20", "src": "subs", "start": 148.1, "end": 156.0, "text": "３００年続く伝統の猟でとられた\n極上　かつレアな鴨肉です。"},
@@ -354,6 +373,47 @@ def test_refine_rechecks_when_confident_local_reading_differs(tmp_path, monkeypa
     e = next(e for e in out if e["id"] == "o559")
     assert asked.count(refine.RECHECK_SYSTEM) == 1
     assert (e["text"], e["kind"]) == ("西和賀の良さを\n全国に発信しよう", "scene")
+
+
+def test_refine_rechecks_small_changes_to_confident_caption_and_caps_retime(tmp_path, monkeypatch):
+    """字幕本地读得很准（0.98 以上），模型只改了一个字（「鮭とば」→「鮭とは」）：截特写再问，按特写定。
+    本地只认出一小块、按模型的框找时间的，最多往前后各放宽 RETIME_MAX 秒（雪景背景里找过头，标题早出来 7 秒）。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (t - 7, t + 3))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o858", "start": 1973.9, "end": 1980.5, "snap_t": 1974.0, "rect": [0.06, 0.85, 0.27, 0.98], "text": "鮭とば",
+               "vertical": False, "lines": 1, "score": 0.987, "crop": "crops/o858.jpg", "pieces": [[0.06, 0.85, 0.27, 0.98, "鮭とば"]]},
+              {"id": "o1360", "start": 3538.4, "end": 3541.2, "snap_t": 3538.5, "rect": [0.53, 0.68, 0.92, 1.0], "text": "新日本風土記",
+               "vertical": False, "lines": 1, "score": 0.878, "crop": "crops/o1360.jpg",
+               "pieces": [[0.53, 0.68, 0.92, 1.0, "新日本風土記"]]}]
+    asked = []
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            asked.append((system, user))
+            if system == refine.READ_SYSTEM:
+                if "1974" in str(images):
+                    return {"items": [{"text": "鮭とは", "kind": "caption", "bbox": [60, 850, 270, 980]}]}
+                return {"items": [{"text": "新日本風土記", "kind": "caption", "bbox": [300, 400, 950, 1000]}]}
+            return {"text": "鮭とば", "kind": "caption"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = {e["id"]: e for e in refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))}
+    assert out["o858"]["text"] == "鮭とば"
+    assert sum(1 for s, _ in asked if s == refine.RECHECK_SYSTEM) == 1
+    assert out["o1360"]["start"] == round(3538.4 - refine.RETIME_MAX, 3)
 
 
 def test_unread_boxes_tracked_into_hints():

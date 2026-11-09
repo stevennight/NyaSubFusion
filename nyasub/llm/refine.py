@@ -11,6 +11,7 @@
 import os
 import re
 import shutil
+import unicodedata
 from difflib import SequenceMatcher
 
 from ..env import Cancelled, check_cancel, log, progress
@@ -59,6 +60,7 @@ VLM_SYSTEM = """你是影视节目的画面文字校对员。会给你若干张�
 
 MATCH = 0.3        # 两个框重叠部分占小的那个的比例，到这么多算同一处字
 SMALL_LINE = 0.035  # 每行字高不到画面高的这么多（720p 约 25 像素）：整帧画面上看不清，截特写再问
+RETIME_MAX = 2.0  # 按模型的框找字待了多久时，最多比本地认出的时间往前、往后各放宽这么多秒
 TINY_MISS = 0.04   # 本地漏掉的字，框的长边不到画面的这么多（车牌、远处的小标签）：不补
 NEAR_T = 1.0       # 模型在某一刻读到、本地这块字前后这么多秒内才有的：是同一块字（本地晚一点 / 早一点认出来）
 CROP_MAX_W = 1600  # 特写太宽就缩到这么宽（再宽只是多花 token）
@@ -339,12 +341,23 @@ def _differs(model, local):
     return len(b) >= 3 and b not in a and sim(model, local) < 50
 
 
-def _doubt(model, local, score):
-    """本地读得很有把握（置信度 0.95 以上），模型整帧读出来的却和它整体差很多：多半是模型看整帧时编的
-    （竖排海报「西和賀の良さを 全国に発信しよう」读成「冬の食と手に発信しよう」）。只是结尾几个字一样，
-    _differs 按片段比觉得像，不会再问；这里看本地读的字有多少在模型读的里面。本地只认出一部分的（字在模型读的里面）不算。"""
+def _fold(text):
+    """比字用：去掉空格、中点，全角半角统一（「制作·著作」和「制作・著作」算一样）。"""
+    return re.sub(r"[\s·・･]", "", unicodedata.normalize("NFKC", norm(text)))
+
+
+def _doubt(model, local, score, kind=None):
+    """本地读得很有把握，模型整帧读的却不一样，截特写再问（两种读法都给它，让它对着特写定）：
+    - 置信度 0.95 以上，模型读的和它整体差很多：多半是模型看整帧时编的（竖排海报「西和賀の良さを 全国に発信しよう」
+      读成「冬の食と手に発信しよう」）。只是结尾几个字一样，_differs 按片段比觉得像，不会再问；这里看本地读的字有多少在
+      模型读的里面。本地只认出一部分的（字在模型读的里面）不算。
+    - 字幕（caption），置信度 0.98 以上，模型只改了一两个字：模型常把清清楚楚的字改错（「鮭とば」→「鮭とは」、
+      「差間正樹さん」→「蓬間 正樹さん」、「クチコ」→「ナマコ」），也有本地真读错的（「カ一ブ」→「カーブ」），对着特写定。"""
     a, b = norm(model), norm(local)
-    return score >= 0.95 and len(b) >= 3 and b not in a and covered(local, model) < 0.6
+    if score >= 0.95 and len(b) >= 3 and b not in a and covered(local, model) < 0.6:
+        return True
+    fa, fb = _fold(model), _fold(local)
+    return kind == "caption" and score >= 0.98 and len(fb) >= 2 and fa != fb and abs(len(fa) - len(fb)) <= 2
 
 
 class _Frame:
@@ -589,7 +602,7 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 text = "\n".join(it["text"] for it in its)
                 kind = max(its, key=lambda it: _area(it["box"]))["kind"]
                 box = _union([it["box"] for it in its])
-                if _differs(text, local) or _doubt(text, local, max(e.get("score", 0) for e in evs)) \
+                if _differs(text, local) or _doubt(text, local, max(e.get("score", 0) for e in evs), kind) \
                         or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
                     g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
@@ -610,7 +623,10 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                     if _covered(mine_box, box) < 0.6:
                         # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
                         # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
+                        # 最多往前后各放宽 RETIME_MAX 秒：背景满是边缘时（雪中的树林）按边缘找会找过头，
+                        # 片尾的「新日本風土記」本地 58:58 才认出，按框找成了 58:51，比字出现早了 7 秒，盖住旁白
                         start, end = track_region(str(video), t, box, aspect)
+                        start, end = max(start, keep["start"] - RETIME_MAX), min(end, keep["end"] + RETIME_MAX)
                         keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
                         n["retimed"] += 1
                     keep["rect_local"] = keep["rect"]

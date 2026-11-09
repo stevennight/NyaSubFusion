@@ -126,6 +126,10 @@ def apply_result(chunk, result, tgt, src_lang):
         tr = (c.get("tr") or c.get("zh") or "").strip()
         srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
         srcs, loose = split_orphans(srcs, orig)
+        labels = split_labels(srcs, c.get("type"))
+        if labels:
+            cues += [make_cue([it], it["text"], "", tgt, c.get("type"), src_lang) for it in labels]
+            continue
         cues.append(make_cue(srcs, orig, tr, tgt, c.get("type"), src_lang))
         cues += [make_cue([it], o, t, tgt, "info", src_lang) for it, o, t in split]
         # 内容没用进这条字幕的画面字：单独成一条说明（译文之后补翻），不再把台词的时间拉长
@@ -228,6 +232,27 @@ def split_orphans(srcs, orig):
     if not loose:
         return srcs, []
     return [s for s in srcs if s not in loose], loose
+
+
+def split_labels(srcs, kind):
+    """大模型把同一时间、画面上不同地方的几个标签合成了一条说明（老照片上分别标在两个人身上的「父」「啓全さん」，
+    合起来成了“父亲 启全”，像是在说父亲叫启全）：各自单独一条。
+    只拆说明类、各块字不挨着（不是同一块字的上下两行）、字互不相干（滚动的片尾字幕是同一行字换了位置，不拆）、
+    同时在画面上的。返回拆开的各块；不用拆返回 None。"""
+    if kind not in ("info", "name", "title") or len(srcs) < 2 or any(s["src"] not in SCREEN or not s.get("rect") for s in srcs):
+        return None
+
+    def apart(a, b):
+        ix, iy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+        if ix > 0 and iy > 0:
+            return False
+        return not (ix > -0.02 and -iy <= min(a[3] - a[1], b[3] - b[1]))  # 左右有重合、上下紧挨着：同一块的两行
+
+    pairs = [(a, b) for i, a in enumerate(srcs) for b in srcs[i + 1:]]
+    together = lambda a, b: min(a["end"], b["end"]) - max(a["start"], b["start"]) >= 0.5 * min(a["end"] - a["start"], b["end"] - b["start"])
+    if all(apart(a["rect"], b["rect"]) and sim(a["text"], b["text"]) < 50 and together(a, b) for a, b in pairs):
+        return sorted(srcs, key=lambda s: (s["start"], s["rect"][1], s["rect"][0]))
+    return None
 
 
 def fallback(chunk, missing, tgt, src_lang):
