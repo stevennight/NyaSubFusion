@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口：启动页（本地）和内核提供的界面（127.0.0.1）都可以用对话框、拖入文件、打开文件夹、调界面缩放",
+  "description": "主窗口：启动页（本地）和内核提供的界面（127.0.0.1）都可以用对话框、拖入文件、打开文件夹、调界面缩放；没有系统标题栏，拖动窗口、最小化 / 最大化 / 关闭都由界面自己的标题栏调用",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
@@ -9,6 +9,11 @@
   "permissions": [
     "core:default",
     "core:webview:allow-set-webview-zoom",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
     "dialog:allow-open",
     "opener:allow-open-path",
     "opener:allow-reveal-item-in-dir"

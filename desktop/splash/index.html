@@ -13,9 +13,18 @@
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #b49cff; margin: 0 3px; animation: p 1.2s infinite }
   .dot:nth-child(2) { animation-delay: .2s } .dot:nth-child(3) { animation-delay: .4s }
   @keyframes p { 50% { opacity: .2 } }
+  /* 没有系统标题栏：顶上一条可拖动，右上角最小化 / 关闭（内核起不来时也能关掉） */
+  .bar { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; justify-content: flex-end }
+  .bar button { width: 46px; border: 0; background: none; color: #a9a9b8; display: grid; place-items: center; padding: 0 }
+  .bar button:hover { background: #272733; color: #e9e9f0 } .bar button.x:hover { background: #e81123; color: #fff }
+  .bar svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; shape-rendering: crispEdges }
 </style>
 </head>
 <body>
+<div class="bar" data-tauri-drag-region>
+  <button onclick="win() && win().minimize()" title="最小化"><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></button>
+  <button class="x" onclick="win() && win().close()" title="关闭"><svg viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9"/></svg></button>
+</div>
 <div class="box">
   <svg width="64" height="64" viewBox="0 0 32 32"><path d="M5 8 L9 3 L13 9 Q16 8 19 9 L23 3 L27 8 Q29 13 28 19 Q26 28 16 28 Q6 28 4 19 Q3 13 5 8Z" fill="#ff7aa8"/><circle cx="11.5" cy="16" r="2" fill="#2a0d18"/><circle cx="20.5" cy="16" r="2" fill="#2a0d18"/><path d="M14 21 Q16 23 18 21" stroke="#2a0d18" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="7" y="23.5" width="18" height="2.2" rx="1.1" fill="#fff" opacity=".85"/></svg>
   <div class="logo">Nya<b>Sub</b>Fusion</div>
@@ -23,6 +32,7 @@
   <div class="err" id="err"></div>
 </div>
 <script>
+  const win = () => window.__TAURI__ && window.__TAURI__.window.getCurrentWindow();
   window.showError = (m) => {
     document.getElementById("msg").textContent = "启动失败";
     document.getElementById("err").textContent = m;
