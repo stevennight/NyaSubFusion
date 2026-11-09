@@ -95,7 +95,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
         <div className="series-card">
           <div className="sh plain"><b>未归入作品</b><span className="chip">{loose.length} 个</span><span className="sp" /><span className="dim">每个项目独立设置、独立术语表</span></div>
           {loose.map((p) => <EpRow key={p.id} p={p} current={s.pid === p.id} onOpen={() => ov.open(p.video)} onChanged={load} />)}
-          {loose.length === 0 && <div className="eprow dim">还没有项目。打开一个视频就会出现在这里。</div>}
+          {loose.length === 0 && <div className="eprow empty dim">还没有项目。打开一个视频就会出现在这里。</div>}
         </div>
       )}
       {ov.ui}
