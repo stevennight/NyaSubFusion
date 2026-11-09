@@ -286,6 +286,39 @@ def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     assert not (tmp_path / "crops" / "read").exists()
 
 
+def test_refine_frames_also_checks_events_without_a_saved_crop(tmp_path, monkeypatch):
+    """识别时没存下截图的框（「加熱用のわに」读成乱码「加他用のbに」）：按画面复核时照样看，模型认出是实物上的字。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (t - 2, t + 3))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o245", "start": 672.1, "end": 673.6, "snap_t": None, "rect": [0.8441, 0.7681, 0.8828, 0.7979],
+               "text": "加他用のbに", "vertical": False, "lines": 1, "score": 0.709,
+               "pieces": [[0.8441, 0.7681, 0.8828, 0.7979, "加他用のbに"]]}]
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": "加熱用のわに", "kind": "scene", "bbox": [844, 768, 883, 798]}]}
+            return {"text": "加熱用のわに", "kind": "scene"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    e = next(e for e in out if e["id"] == "o245")
+    assert (e["text"], e["text_local"], e["kind"]) == ("加熱用のわに", "加他用のbに", "scene")
+
+
 def test_unread_boxes_tracked_into_hints():
     """书法片名：本地只认出「新」，下面那块找到了位置但没认出字。停留够久、没被别的字盖住的才交给复核。"""
     import numpy as np

@@ -441,8 +441,10 @@ def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, 
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir)
-    todo = [e for e in events if e.get("crop") and "text_local" not in e]
     frames = bool(video and os.path.exists(str(video)) and size)
+    # 按画面复核时从原视频重新截画面，用不着识别时存的截图：没存下截图的（跟踪时拆开 / 合并的轨迹偶尔会丢）也要看，
+    # 否则它们整个跳过复核，乱码直接进字幕（「加熱用のわに」读成「加他用のbに」，整理时还被编成了一句台词）
+    todo = [e for e in events if (frames or e.get("crop")) and "text_local" not in e]
     # 台标、振假名不用复核。按画面复核时，判成杂讯的（很短、一闪而过）也看：本地常常只认出花字标题的一小块
     # （「森のなかのふたり」只认出「たり」、只闪了半秒），模型看整帧能读出整个标题；看不出字的照旧当杂讯，不再追问
     todo = [e for e in todo if not e.get("prefiltered") or (frames and e.get("dropped") == "junk")]
