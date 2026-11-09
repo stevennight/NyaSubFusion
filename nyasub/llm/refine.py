@@ -14,7 +14,7 @@ import shutil
 from difflib import SequenceMatcher
 
 from ..env import Cancelled, check_cancel, log, progress
-from ..textutil import full_sim, norm, sim
+from ..textutil import covered, full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
@@ -339,6 +339,14 @@ def _differs(model, local):
     return len(b) >= 3 and b not in a and sim(model, local) < 50
 
 
+def _doubt(model, local, score):
+    """本地读得很有把握（置信度 0.95 以上），模型整帧读出来的却和它整体差很多：多半是模型看整帧时编的
+    （竖排海报「西和賀の良さを 全国に発信しよう」读成「冬の食と手に発信しよう」）。只是结尾几个字一样，
+    _differs 按片段比觉得像，不会再问；这里看本地读的字有多少在模型读的里面。本地只认出一部分的（字在模型读的里面）不算。"""
+    a, b = norm(model), norm(local)
+    return score >= 0.95 and len(b) >= 3 and b not in a and covered(local, model) < 0.6
+
+
 class _Frame:
     """一个画面时刻：从原视频按原分辨率截的整帧，缩小给模型看，按需截特写。"""
 
@@ -581,7 +589,8 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 text = "\n".join(it["text"] for it in its)
                 kind = max(its, key=lambda it: _area(it["box"]))["kind"]
                 box = _union([it["box"] for it in its])
-                if _differs(text, local) or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
+                if _differs(text, local) or _doubt(text, local, max(e.get("score", 0) for e in evs)) \
+                        or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
                     g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
                     n["recheck"] += bool(g)
                     if g.get("text") and not logo_text(g["text"], local, logo):

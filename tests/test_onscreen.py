@@ -319,6 +319,43 @@ def test_refine_frames_also_checks_events_without_a_saved_crop(tmp_path, monkeyp
     assert (e["text"], e["text_local"], e["kind"]) == ("加熱用のわに", "加他用のbに", "scene")
 
 
+def test_refine_rechecks_when_confident_local_reading_differs(tmp_path, monkeypatch):
+    """本地读得很有把握，模型整帧读出来的只有结尾几个字一样（竖排海报「西和賀の良さを 全国に発信しよう」读成
+    「冬の食と手に発信しよう」）：截特写再问，按特写读的来。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((2160, 3840, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (t - 2, t + 3))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+    events = [{"id": "o559", "start": 1165.0, "end": 1170.4, "snap_t": 1165.26, "rect": [0.5859, 0.0125, 0.6922, 0.8583],
+               "text": "西和賀の良さを\n全国に発信しよう", "vertical": True, "lines": 2, "score": 0.981, "crop": "crops/o559.jpg",
+               "pieces": [[0.6344, 0.0125, 0.6922, 0.5958, "西和賀の良さを"], [0.5859, 0.1903, 0.6492, 0.8583, "全国に発信しよう"]]}]
+    asked = []
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            asked.append(system)
+            if system == refine.READ_SYSTEM:
+                return {"items": [{"text": "冬の食と手に発信しよう", "kind": "caption", "bbox": [590, 0, 685, 846]}]}
+            return {"text": "西和賀の良さを\n全国に発信しよう", "kind": "scene"}
+
+    import nyasub.llm.client as client
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))
+    e = next(e for e in out if e["id"] == "o559")
+    assert asked.count(refine.RECHECK_SYSTEM) == 1
+    assert (e["text"], e["kind"]) == ("西和賀の良さを\n全国に発信しよう", "scene")
+
+
 def test_unread_boxes_tracked_into_hints():
     """书法片名：本地只认出「新」，下面那块找到了位置但没认出字。停留够久、没被别的字盖住的才交给复核。"""
     import numpy as np

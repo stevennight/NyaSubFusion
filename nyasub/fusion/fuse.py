@@ -131,8 +131,19 @@ def _caption_lines(ocr_events, asr, pack, asr_th):
         a_hit, a_text = _concat(asr, e["start"], e["end"])
         if not a_text:
             continue
-        lines = [p for p in pieces if p[1] >= 0.7 and abs((p[0] + p[2]) / 2 - 0.5) < 0.12
-                 and len(norm(p[4])) >= 3 and pack.meaningful.search(p[4]) and sim(p[4], a_text) >= asr_th]
+        said_line = [p for p in pieces if p[1] >= 0.7 and len(norm(p[4])) >= 3 and pack.meaningful.search(p[4])
+                     and sim(p[4], a_text) >= asr_th]
+        lines = [p for p in said_line if abs((p[0] + p[2]) / 2 - 0.5) < 0.12]
+        # 两行字幕左对齐时，短的那行不居中（「(ワニが)ほんと好き」在「お正月くらいしか食べられないから」上面）：
+        # 和留下的某行左边对齐、上下紧挨着的也是这条字幕
+        grew = True
+        while lines and grew:
+            grew = False
+            for p in said_line:
+                if p not in lines and any(abs(p[0] - q[0]) <= 0.03 and max(p[1], q[1]) - min(p[3], q[3]) <= (q[3] - q[1])
+                                          for q in lines):
+                    lines.append(p)
+                    grew = True
         if not lines or len(lines) == len(pieces):
             continue
         lines.sort(key=lambda p: p[1])

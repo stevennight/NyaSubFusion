@@ -145,6 +145,21 @@ def test_fuse_keeps_bottom_interview_caption_shorter_than_speech():
     assert "o632" in kept and "a281" not in kept and not ocr[0].get("dup_of")
 
 
+def test_fuse_rescues_left_aligned_caption_line_from_sign_box():
+    """字幕和旁边的价格牌连成一框、整框判成实物上的字：两行字幕左对齐，短的那行不居中，也要一起救回来；牌子上的字不要。"""
+    ja = lang.get("ja")
+    e = _ocr("o268", 688.7, 694.1, "わにで\n(ワニが)ほんと好き590油\nお正月くらいしか食べられないからかんす",
+             rect=(0.22, 0.64, 0.92, 0.98), lines=3)
+    e.update(kind="scene", pieces=[[0.8047, 0.6389, 0.9187, 0.7493, "わにで"], [0.6687, 0.7972, 0.7773, 0.9292, "590"],
+                                      [0.2234, 0.8361, 0.5344, 0.9083, "(ワニが)ほんと好き"],
+                                      [0.807, 0.8653, 0.9152, 0.9715, "かんす"],
+                                      [0.2211, 0.9028, 0.7781, 0.9833, "お正月くらいしか食べられないから"]])
+    asr = [{"id": "a1", "start": 688.0, "end": 694.0, "text": "美味しいんですよ。美味しい。 ほんと好き。ほんとお正月ぐらいしか食べれない。"}]
+    out = fuse([], [e], asr, FUSION, ja, 1000)
+    it = next(it for it in out["items"] if it["id"] == "o268")
+    assert it["text"] == "(ワニが)ほんと好き\nお正月くらいしか食べられないから"
+
+
 def test_fuse_joins_one_caption_split_in_two():
     """同一行字幕被识别切成前后两条（背景一变跟踪就断了）：合成一条，不显示两遍；位置不同、隔得远的不合。"""
     ja = lang.get("ja")
