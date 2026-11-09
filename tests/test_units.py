@@ -134,6 +134,30 @@ def test_fuse_keeps_speech_when_screen_only_quotes_a_few_words():
     assert {"o3", "o4", "o5", "o6"} <= set(kept) and "a2" not in kept and "a3" not in kept
 
 
+def test_fuse_keeps_bottom_interview_caption_shorter_than_speech():
+    """采访硬字幕把话缩短了（语音还多说了两句）：底部居中的是这句话的字幕，不是摘出的几个字，照旧用字幕，语音附为参考。"""
+    ja = lang.get("ja")
+    ocr = [_ocr("o632", 1378.7, 1385.6, "豆を煮た弁当も何も\n雪の中に迷い込んでしまった", rect=(0.27, 0.83, 0.73, 0.98), lines=2)]
+    asr = [{"id": "a281", "start": 1378.9, "end": 1385.2,
+            "text": "豆を煮た弁当もなにも雪の中さ舞い込んでしまって、どこに置いたか忘れてしまって、見えないくなってしまって、"}]
+    out = fuse([], ocr, asr, FUSION, ja, 2000)
+    kept = {it["id"]: it for it in out["items"]}
+    assert "o632" in kept and "a281" not in kept and not ocr[0].get("dup_of")
+
+
+def test_fuse_joins_one_caption_split_in_two():
+    """同一行字幕被识别切成前后两条（背景一变跟踪就断了）：合成一条，不显示两遍；位置不同、隔得远的不合。"""
+    ja = lang.get("ja")
+    ocr = [_ocr("o842", 1876.9, 1880.2, "国連が昆虫食は世界の飢えを救う", rect=(0.16, 0.89, 0.84, 0.99)),
+           _ocr("o844", 1880.2, 1881.3, "国連が 昆虫食は 世界の飢えを救う", rect=(0.17, 0.9, 0.84, 0.98)),
+           _ocr("o900", 1900.0, 1902.0, "ありがとう"),
+           _ocr("o901", 1905.0, 1907.0, "ありがとう")]
+    out = fuse([], ocr, [], FUSION, ja, 2000)
+    kept = {it["id"]: it for it in out["items"]}
+    assert "o844" not in kept and kept["o842"]["end"] == 1881.3 and ocr[1]["dup_of"] == ["o842"]
+    assert {"o900", "o901"} <= set(kept)
+
+
 def test_fuse_unrelated_speech_under_screen_text_stands_alone():
     """标题卡挂了十几秒，旁白同时说“ぜひご覧ください”，和卡上的字一个词都对不上：是另一句话，单独成条。
     有广播字幕（含「♬〜」）的地方、英文的话配日文画面字、只是“うん”这种应答的，照旧附为参考。"""

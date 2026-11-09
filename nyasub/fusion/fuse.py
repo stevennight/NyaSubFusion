@@ -242,6 +242,30 @@ def _drop_vlm_dups(ocr_events, gap=1.0):
             e["dropped"] = "dup_vlm"
 
 
+def _same_place(a, b, th=0.6):
+    """两个框大半重合（交集占小的那个的 th 以上）。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return small > 0 and ix * iy >= th * small
+
+
+def _join_split(ocr_events, gap=0.5):
+    """同一行画面字被识别切成前后两条（「国連が昆虫食は世界の飢えを救う」31:16.9–20.2 和 20.2–21.3，背景一变跟踪就断了）：
+    同一个位置、字一样、前后接着的，合成一条（时间接上），后面那条按重复去掉，否则同一句会显示、翻译两遍。"""
+    kept = []
+    for e in sorted(ocr_events, key=lambda e: e["start"]):
+        prev = next((p for p in reversed(kept) if -0.05 <= e["start"] - p["end"] <= gap
+                     and len(norm(e["text"])) >= 2 and full_sim(p["text"], e["text"]) >= 90
+                     and _same_place(p["rect"], e["rect"])), None)
+        if prev:
+            prev["end"] = max(prev["end"], e["end"])
+            e["dup_of"] = [prev["id"]]
+            continue
+        kept.append(e)
+    return kept
+
+
 def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     """m 是 FusionCfg 的 dict，pack 是源语言的语言包。"""
     dup_th, asr_th = m["dup_similarity"], m["asr_match_similarity"]
@@ -250,7 +274,7 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
     n_caption = _caption_lines(ocr_events, asr, pack, asr_th)
     ocr_all = ocr_events
     _drop_vlm_dups(ocr_events)
-    ocr_events = [e for e in ocr_events if not e.get("dropped")]
+    ocr_events = _join_split([e for e in ocr_events if not e.get("dropped")])
 
     asr = [a for a in asr if not any(h in a["text"] for h in pack.hallucinations)
            and not (a.get("no_speech", 0) > 0.6 and a.get("logprob", 0) < -1.0)]
@@ -310,7 +334,11 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         # 画面上只是从这句话里摘出来的几个字（旁白“日本の伝統工芸をはじめ、各地の食文化、建築まで”时的「伝統工芸」「建築」），
         # 同时的画面字合起来也没说到这句话的一半：不算“画面字已经有了”，这句话单独成条，否则整句被丢掉 / 附到那两个字上，
         # 翻译出来只剩“传统工艺”。一句长话配好几行采访硬字幕的，每行也是这句话的一段，但合起来说到了大半，不算
-        quotes = [x for x in hit if x["src"] == "telop" and _quoted(x["text"], a["text"])]
+        # 底部居中的一整句是这句话的字幕（采访硬字幕常把话缩短：「豆を煮た弁当も何も 雪の中に迷い込んでしまった」之于
+        # “…舞い込んでしまって、どこに置いたか忘れてしまって、見えないくなってしまって”），不是摘出的几个字，照旧用它；
+        # 底部只打出一个词的（“ぜいたくな食べ物だ”时的「ぜいたく」）还是摘出的字
+        sentence = lambda x: _bottom_center(x) and len(norm(x["text"])) >= 6
+        quotes = [x for x in hit if x["src"] == "telop" and not sentence(x) and _quoted(x["text"], a["text"])]
         if quotes and not any(x["src"] == "subs" for x in hit) and _share(_content(a["text"]), [x["text"] for x in hit]) < 0.5:
             asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
                               "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
