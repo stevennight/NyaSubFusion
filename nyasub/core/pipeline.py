@@ -875,10 +875,14 @@ class Run:
         log(f"翻译参考画面：{len(set(out.values()))} 张截图（用时 {time.time() - t0:.0f}s）")
         return out
 
+    def _own_auto(self, t):
+        """这一集自己整理出来、没人改过的术语：重新翻译时换成新整理的。改过的（edited）当成确认过的，留着、照它翻。"""
+        return t.get("from") == self.proj.stem and not t.get("edited")
+
     def _series_terms(self):
-        """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍）。"""
+        """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍），改过的除外。"""
         terms = load_json(self.glossary_path(), {"terms": []})["terms"]
-        return [t for t in terms if t.get("from") != self.proj.stem]
+        return [t for t in terms if not self._own_auto(t)]
 
     def _user_terms(self):
         """术语表里人工给的（手动加的、导入的）：语音识别（多模态大模型）照这些写人名。自动整理的可能带着识别错字，不给。"""
@@ -944,10 +948,10 @@ class Run:
         return {"cues": cues, "glossary": glossary}
 
     def _save_series_terms(self, glossary):
-        """把这一集新发现的术语存回术语表（记上来自哪一集）。"""
+        """把这一集新发现的术语存回术语表（记上来自哪一集）。这一集以前整理的换成这次的；改过的留着。"""
         path = self.glossary_path()
         saved = load_json(path, {"terms": []})["terms"]
-        keep = [t for t in saved if t.get("from") != self.proj.stem]
+        keep = [t for t in saved if not self._own_auto(t)]
         known = {t.get("src") for t in keep}
         new = [dict(t, **{"from": self.proj.stem}) for t in glossary.get("terms", []) if t.get("src") not in known]
         if not new and len(keep) == len(saved):

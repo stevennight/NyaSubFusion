@@ -11,6 +11,8 @@ const TYPES = ["地名", "人名", "团体", "场所", "物品", "方言", "其�
 type Scope = "all" | "series" | "episode";
 /** 人工给的术语（手动加的、导入的）：大模型听音频识别时也参考它们的写法；自动整理的（可能带着识别错字）不参考 */
 const userTerm = (t: Term) => t.from === "manual" || t.from === "import";
+/** 人工确认过的：手动加的、导入的，加上自动整理后人改过的（重新翻译时不会被新整理的换掉） */
+const keptTerm = (t: Term) => userTerm(t) || !!t.edited;
 
 /** 节目说明写什么（各集、作品共用的说明） */
 const CONTEXT_HINT = "写节目类型、故事背景、简介、说话的特点；也写会影响称呼的设定（谁小时候被当成女孩养大、谁管谁叫什么），"
@@ -39,7 +41,7 @@ export function formatTerms(terms: Term[]): string {
 
 /** 导入：同一个原文已经有的，用导入的覆盖（空着的项保留原来的）；clearAuto：先删掉自动整理的 */
 export function importTerms(cur: Term[], add: Term[], clearAuto: boolean): Term[] {
-  const base = clearAuto ? cur.filter(userTerm) : [...cur];
+  const base = clearAuto ? cur.filter(keptTerm) : [...cur];
   const idx = new Map(base.map((t, i) => [t.src, i] as const));
   const fresh: Term[] = [];
   for (const t of add) {
@@ -55,14 +57,14 @@ function ImportTerms({ terms, onImport, onClose }: { terms: Term[]; onImport: (t
   const [clearAuto, setClearAuto] = useState(false);
   const parsed = parseTerms(text);
   const known = new Set(terms.map((t) => t.src));
-  const auto = terms.filter((t) => !userTerm(t)).length;
+  const auto = terms.filter((t) => !keptTerm(t)).length;
   return (
     <Modal onClose={onClose} width={720}>
       <h3 style={{ marginTop: 0 }}>导入术语</h3>
       <div className="hint" style={{ marginBottom: 6 }}>{TERMS_FORMAT}。比如：<span className="ja">山田太郎 | やまだ たろう | 山田太郎 | 人名 | 主人公的哥哥，说话爱用自己的名字自称</span></div>
       <textarea className="inp ja" rows={14} style={{ width: "100%" }} placeholder="把名单粘贴到这里" value={text} onChange={(e) => setText(e.target.value)} />
       <label className="row" style={{ marginTop: 8 }}><input type="checkbox" checked={clearAuto} onChange={(e) => setClearAuto(e.target.checked)} />
-        先删掉自动整理的术语（{auto} 条，只留手动加的、导入的）</label>
+        先删掉自动整理的术语（{auto} 条，只留手动加的、导入的、改过的）</label>
       <div className="hint">导入的和手动加的术语：翻译时统一译名，备注（是谁、和谁什么关系、说话习惯）也给翻译参考；选“多模态大模型”识别语音时照这里的写法写人名（只用原文和读音）。自动整理的只用来统一译名。备注写人物本身的情况，不要写某一集的台词。</div>
       <div className="row" style={{ marginTop: 10 }}>
         <span className="dim">读到 {parsed.length} 条（新增 {parsed.filter((t) => !known.has(t.src)).length}，覆盖 {parsed.filter((t) => known.has(t.src)).length}）</span>
@@ -130,10 +132,15 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
   const mine = (t: Term) => t.from === g.episode || (!series && userTerm(t));
   // 来源：哪一集整理出来的（集名只取「」里的标题，全名在提示里）
   const origin = (t: Term) => (t.from === "manual" ? "手动" : t.from === "import" ? "导入" : t.from ? (t.from.match(/「([^」]+)」/)?.[1] ?? t.from) : "—");
+  const originTip = (t: Term) => t.from === "manual" ? "手动加的" : t.from === "import" ? "导入的"
+    : (t.from ? `${t.from} 这一集整理出来的` : "以前的，没有记录")
+      + (t.edited ? "，你改过：重新翻译时不会被换掉，翻译照它来" : "；没改过的，这一集重新翻译时换成新整理的");
   const terms = g.terms.map((t, i) => [t, i] as const)
     .filter(([t]) => scope === "all" || (scope === "episode" ? mine(t) : !mine(t)))
     .filter(([t]) => !filter || [t.src, t.tr, t.reading].some((x) => x?.includes(filter)));
-  const updTerm = (i: number, patch: Partial<Term>) => gl.update((x) => ({ ...x, terms: x.terms.map((t, k) => (k === i ? { ...t, ...patch } : t)) }));
+  // 改了自动整理的条目：记成“改过”，重新翻译时留着、照它翻
+  const updTerm = (i: number, patch: Partial<Term>) => gl.update((x) => ({ ...x, terms: x.terms.map((t, k) =>
+    (k === i ? { ...t, ...patch, ...(userTerm(t) ? {} : { edited: true }) } : t)) }));
   const readings = Object.entries(rd.v).flatMap(([sc, list]) => list.map((e, i) => ({ sc, i, e })))
     .filter(({ e }) => !filter || [e.src, e.reading].some((x) => x?.includes(filter)));
   const updReading = (sc: string, i: number, patch: Partial<Reading>) => rd.update((x) => ({ ...x, [sc]: x[sc].map((e, k) => (k === i ? { ...e, ...patch } : e)) }));
@@ -191,14 +198,15 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
                     <td><input className="inp" value={t.tr ?? ""} onChange={(e) => updTerm(i, { tr: e.target.value })} /></td>
                     <td><select className="inp" value={t.type ?? "其他"} onChange={(e) => updTerm(i, { type: e.target.value })}>{TYPES.map((x) => <option key={x}>{x}</option>)}</select></td>
                     <td><span className={`scope ${series && !mine(t) ? "s" : "e"}`}>{mine(t) ? "本集" : series ? "作品" : "继承"}</span></td>
-                    <td><span className="origin selectable" title={t.from === "manual" ? "手动加的" : t.from === "import" ? "导入的" : t.from ? `${t.from} 这一集整理出来的` : "以前的，没有记录"}>{origin(t)}</span></td>
+                    <td><span className="origin selectable" title={originTip(t)}>{origin(t)}</span>
+                      {t.edited && !userTerm(t) && <span className="scope g" style={{ marginLeft: 4 }} title={originTip(t)}>改过</span>}</td>
                     <td><button className="btn sm ghost" onClick={() => gl.update((x) => ({ ...x, terms: x.terms.filter((_, k) => k !== i) }))}>×</button></td>
                   </tr>
                 ))}
               </tbody></table>
               {g.terms.length === 0 && <div className="dim" style={{ padding: 12 }}>还没有术语。翻译时大模型会自动整理，也可以手动新增。</div>}
             </div>
-            <div className="hint" style={{ marginTop: 6 }}>保存在 {g.path}；改了下次运行会重新翻译。手动加的、导入的术语，备注也给翻译参考；选“多模态大模型”识别语音时也会参考名字的写法（改了原文、读音会重新识别）。</div>
+            <div className="hint" style={{ marginTop: 6 }}>保存在 {g.path}；改了下次运行会重新翻译。自动整理的条目改过一次就记成“改过”，以后重新翻译不会被换掉。手动加的、导入的术语，备注也给翻译参考；选“多模态大模型”识别语音时也会参考名字的写法（改了原文、读音会重新识别）。</div>
             {dialog === "import" && <ImportTerms terms={g.terms} onClose={() => setDialog("")}
               onImport={(add, clearAuto) => { gl.update((x) => ({ ...x, terms: importTerms(x.terms, add, clearAuto) })); s.toast(`已导入 ${add.length} 条术语`); }} />}
             {dialog === "export" && <ExportTerms terms={g.terms} onClose={() => setDialog("")} />}

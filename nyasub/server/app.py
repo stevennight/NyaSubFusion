@@ -795,7 +795,7 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.put("/api/series/{name}/glossary")
     def put_series_glossary(name: str, body: dict = Body(...)):
-        terms = [{k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from") and v not in (None, "")}
+        terms = [{k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from", "edited") and v not in (None, "", False)}
                  | {"from": t.get("from") or "manual"} for t in body.get("terms") or [] if (t.get("src") or "").strip()]
         save_json(config_mod.series_dir(name) / "glossary.json", {"terms": terms})
         return {"terms": terms}
@@ -1419,7 +1419,7 @@ def create_app(token: str | None = None) -> FastAPI:
         terms = []
         for t in body.get("terms") or []:
             if (t.get("src") or "").strip():
-                terms.append({k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from") and v not in (None, "")}
+                terms.append({k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from", "edited") and v not in (None, "", False)}
                              | {"from": t.get("from") or "manual"})
         save_json(run.glossary_path(), {"terms": terms})
         return {"terms": terms, "plan": run.plan()}

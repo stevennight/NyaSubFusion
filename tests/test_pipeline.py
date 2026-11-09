@@ -130,6 +130,24 @@ def test_saving_new_terms_does_not_retrigger_translation(sample, api_config, fak
     assert len(fake.CALLS) == calls
 
 
+def test_edited_own_terms_are_kept_and_used(sample, api_config, fake, isolated_home):
+    """这一集自己整理的术语，人改过（edited）就留着：重新翻译时照它翻，存术语表时不被新整理的换掉。"""
+    args = (sample, "--no-asr", "--no-ocr", "--config", api_config, "--series", "海辺")
+    assert run(*args) == 0
+    gl = isolated_home / "series" / "海辺" / "glossary.json"
+    data = json.loads(gl.read_text(encoding="utf-8"))
+    assert data["terms"][0]["src"] == "深浦町" and data["terms"][0]["from"] == "sample"
+    data["terms"][0].update(tr="深浦镇（改过）", edited=True)
+    gl.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    calls = len(fake.CALLS)
+    assert run(*args) == 0
+    assert len(fake.CALLS) > calls  # 改了就重新翻译
+    assert any("深浦镇（改过）" in user for _, user in fake.CALLS[calls:])
+    terms = json.loads(gl.read_text(encoding="utf-8"))["terms"]
+    mine = [t for t in terms if t["src"] == "深浦町"]
+    assert len(mine) == 1 and mine[0]["tr"] == "深浦镇（改过）" and mine[0]["edited"]
+
+
 def test_project_glossary_without_series(sample, api_config, fake):
     assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
     gl = sample.with_name("sample.nyasub") / "glossary.json"
