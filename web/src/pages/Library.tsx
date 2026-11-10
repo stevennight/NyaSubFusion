@@ -60,7 +60,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
     .filter((n) => !q || n.toLowerCase().includes(q.toLowerCase()) || shown.some((p) => p.series === n));
   const loose = shown.filter((p) => !p.series);
   return (
-    <div className="page"><div className="wide">
+    <div className="page split"><div className="wide">
       <div className="row" style={{ marginBottom: 14 }}>
         <h2 style={{ margin: 0 }}>库</h2><span className="dim">{groups.length} 部作品 · {list.length} 集</span><span className="sp" />
         <input className="inp" style={{ width: 220 }} placeholder="搜索作品、集…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -75,6 +75,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
           <button className="btn" disabled={!path || ov.busy} onClick={() => ov.open(path)}>{ov.busy ? "打开中…" : "打开"}</button>
         </div>
       </div>
+      <div className="split-body">
       {groups.map((name) => {
         const info = series.find((x) => x.name === name);
         const eps = shown.filter((p) => p.series === name);
@@ -98,6 +99,7 @@ export function LibraryPage({ onOpened, onSeries, onQueue }: { onOpened: () => v
           {loose.length === 0 && <div className="eprow empty dim">还没有项目。打开一个视频就会出现在这里。</div>}
         </div>
       )}
+      </div>
       {ov.ui}
     </div></div>
   );

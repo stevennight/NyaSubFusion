@@ -9,7 +9,7 @@ import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc 
 import { showVal, stepOf } from "../settingLabels";
 import { useStore } from "../store";
 import type { Cfg, Change, Provider, StageStatus } from "../types";
-import { deepGet, langName, pct, setIn, STAGE_LBL } from "../util";
+import { briefError, deepGet, langName, pct, setIn, STAGE_LBL } from "../util";
 
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "要重做", missing: "未运行", running: "运行中",
   failed: "失败", waiting: "等外部翻译", cancelled: "已取消", off: "关", empty: "没有内容" };
@@ -501,14 +501,14 @@ function LastRun({ stage, ctx }: { stage: string; ctx: StepCtx }) {
         <span className="sp" /><button className="btn sm ghost" onClick={() => setAll(true)}>全部日志</button>
       </div>
       {st === "failed" && job?.error ? <div className="run-err">{job.error}</div>
-        : s.summary?.failed?.stage === stage && !s.running && <div className="run-err">上次运行在这一步失败：{s.summary.failed.error}</div>}
+        : s.summary?.failed?.stage === stage && !s.running && <div className="run-err" title={s.summary.failed.error ?? ""}>上次运行在这一步失败：{briefError(s.summary.failed.error)}</div>}
       <LogView lines={lines} empty={st === "pending" ? "这一轮还没运行到这一步" : st === "running" ? "运行中…" : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
       {all && <AllLogs onClose={() => setAll(false)} />}
     </div>
   );
 }
 
-function AllLogs({ onClose }: { onClose: () => void }) {
+export function AllLogs({ onClose }: { onClose: () => void }) {
   const s = useStore();
   // 这次打开以后没运行过（或程序重启过）：按步骤顺序把每一步上次的日志拼起来，不用一步步点开看
   const [saved, setSaved] = useState<string[] | null>(null);

@@ -9,6 +9,7 @@ import { ProcessPage } from "../pages/Process";
 import { useStore } from "../store";
 import type { TemplateInfo } from "../types";
 import { langName } from "../util";
+import { FailBanner } from "./FailBanner";
 import { PageGuard } from "./PageGuard";
 import { RunBar } from "./RunBar";
 import { SavePresetDialog, TemplateDialog, templateTitle } from "./TemplateDialogs";
@@ -64,6 +65,7 @@ export function EpisodeShell({ tab, setTab, onSeries }: { tab: EpTab; setTab: (t
         <span className="sp" />
         <RunBar />
       </div>
+      <FailBanner />
       <div className="tabs eptabs">
         {TABS.map(([t, label, sub]) => (
           <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{label}{sub && <small>{sub}</small>}</button>

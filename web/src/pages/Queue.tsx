@@ -81,7 +81,7 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
   const page = Math.min(pageSel, pages - 1);   // 移除、清除以后页数变少
 
   return (
-    <div className="page"><div className="wide">
+    <div className="page split"><div className="wide">
       <div className="row" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>任务</h2>
         <span className="dim">{q.items.length} 项 · 待处理 {counts.pending ?? 0} · 完成 {counts.done ?? 0}{counts.failed ? ` · 失败 ${counts.failed}` : ""}</span>
@@ -92,13 +92,14 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
         <button className="btn pri" onClick={() => setAdding(true)}>＋ 加入…</button>
       </div>
 
-      <div className="card">
+      <div className="card split-card">
         <div className="row" style={{ marginBottom: 8, gap: 4 }}>
           {FILTERS.map(([k, label]) => {
             const n = q.items.filter((i) => inFilter(i, k)).length;
             return <button key={k} className={`btn sm${filter === k ? " pri" : " ghost"}`} onClick={() => { setFilter(k); setPage(0); }}>{label} {n}</button>;
           })}
         </div>
+        <div className="split-body">
         {shown.length === 0 ? <div className="dim">{q.items.length === 0 ? "队列是空的。点右上角“加入…”一次加入多个视频或文件夹。" : "没有这一类的任务。"}</div> : (
           <table className="tb"><thead><tr><th>文件</th><th>状态</th><th>时间</th><th>说明</th><th /></tr></thead><tbody>
             {shown.slice(page * PAGE, (page + 1) * PAGE).map((it) => {
@@ -127,6 +128,7 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
             })}
           </tbody></table>
         )}
+        </div>
         {pages > 1 && <div className="row" style={{ marginTop: 8, justifyContent: "center" }}>
           <button className="btn sm ghost" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</button>
           <span className="dim">{page + 1} / {pages}</span>
