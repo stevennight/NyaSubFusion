@@ -28,6 +28,15 @@ export const STAGE_LBL: Record<string, string> = {
   mux: "封装 MKV", burn: "压制硬字幕",
 };
 
+/** 报错压成一句：我们写的中文说明 + 接口返回 JSON 里的 message（整串 JSON 放在悬停提示里） */
+export function briefError(err: string | null | undefined) {
+  if (!err) return "";
+  const i = err.indexOf("{");
+  const m = i < 0 ? null : err.slice(i).match(/"message"\s*:\s*"([^"]{1,200})/);
+  if (!m) return err.length > 160 ? err.slice(0, 160) + "…" : err;
+  return err.slice(0, i).replace(/[\s:：]+$/, "") + `：${m[1]}`;
+}
+
 export function pct(p: { done: number; total: number } | null | undefined) {
   return p && p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
 }

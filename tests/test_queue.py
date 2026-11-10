@@ -189,3 +189,29 @@ def test_same_task_waiting_is_updated_not_repeated(isolated_home, sample):
     c = q.submit("p1", str(sample), "burn", {})
     assert c is not a and [i["id"] for i in q.items] == ["busy", a["id"], c["id"]]
     assert q.unqueue("p1") and q.waiting("p1") is None and [i["id"] for i in q.items] == ["busy"]
+
+
+def test_last_failure_shown_and_move_skips_finished(isolated_home, sample):
+    """最近一次任务失败：一集的页头、库里能拿到在哪一步、为什么（程序重启过也有）；调顺序越过已经做完的项。"""
+    from nyasub.server.queue import Queue
+
+    item = lambda i, pid, status, finished=None, **kw: {"id": i, "pid": pid, "video": str(sample), "name": "s.mp4", "status": status,
+                                                         "options": {}, "added": 0, "finished": finished, **kw}
+    (isolated_home / "queue.json").write_text(json.dumps({"paused": True, "items": [
+        item("a", "p1", "pending"), item("old", "p2", "failed", 10, stage="asr", error="402"), item("b", "p1", "pending"),
+        item("ok", "p2", "done", 5), item("f", "p3", "failed", 20, stage="asr", error="语音识别接口报错（402，账户余额不足）"),
+        item("c", "p4", "pending")]}), encoding="utf-8")
+
+    class Hub:
+        def publish(self, *a):
+            pass
+
+    q = Queue(Hub(), None, None, None, None)
+    assert q.last_failed("p2") == {"item": "old", "kind": "run", "stage": "asr", "error": "402", "finished": 10}
+    assert q.last_failed("p3")["error"].startswith("语音识别接口报错") and q.last_failed("p1") is None
+    q.items[3]["finished"] = 30  # p2 后来又跑成功了
+    assert q.last_failed("p2") is None
+    q.move("c", -1)
+    assert [i["id"] for i in q.items if i["status"] == "pending"] == ["a", "c", "b"]
+    q.move("a", -1)  # 已经是第一个
+    assert [i["id"] for i in q.items if i["status"] == "pending"] == ["a", "c", "b"]

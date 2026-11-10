@@ -75,6 +75,17 @@ class Queue:
                     return {"item": it["id"], "kind": it.get("kind", "run"), "ahead": ahead}
         return None
 
+    def last_failed(self, pid):
+        """这一集最近一次做完的任务失败了：{"item", "kind", "stage", "error", "finished"}；最近一次成功、取消了或没有返回 None。
+        一集的页头、库、作品列表都显示（不用去任务页找）。"""
+        with self.lock:
+            done = [i for i in self.items if i["pid"] == pid and i["status"] in ("done", "failed", "cancelled")]
+            it = max(done, key=lambda i: i.get("finished") or 0, default=None)
+            if not it or it["status"] != "failed":
+                return None
+            return {"item": it["id"], "kind": it.get("kind", "run"), "stage": it.get("stage"), "error": it.get("error"),
+                    "finished": it.get("finished")}
+
     def _find(self, item_id):
         it = next((i for i in self.items if i["id"] == item_id), None)
         if not it:
@@ -141,9 +152,14 @@ class Queue:
 
     def move(self, item_id, delta):
         with self.lock:
+            # 任务页只给还没做完的项排顺序（做完的按完成时间倒序另列）：越过做完的项，和上一个 / 下一个没做完的换位置
             it = self._find(item_id)
             i = self.items.index(it)
-            j = max(0, min(len(self.items) - 1, i + delta))
+            step = -1 if delta < 0 else 1
+            j = next((k for k in range(i + step, -1 if step < 0 else len(self.items), step)
+                      if self.items[k]["status"] in ACTIVE), None)
+            if j is None:
+                return
             self.items.insert(j, self.items.pop(i))
             self._changed()
 

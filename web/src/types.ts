@@ -14,6 +14,7 @@ export interface ProjectSummary {
   broadcast?: { source: "ttml" | "arib"; file: string | null } | null;   // 字幕来自广播：能输出“广播字幕原样”（没运行也预先判断）
   broadcast_check?: "checking" | "done";   // checking：还在后台看数据流里有没有 4K 广播字幕
   queued?: Queued | null;   // 这一集还在任务队列里排队
+  failed?: Failed | null;   // 这一集最近一次任务失败了（程序重启过也有）
   render?: { status: StageStatus; note?: string; files: string[] };   // 输出字幕文件这一步
   proxy: "direct" | "ready" | "building" | "failed" | "none";
   configured?: boolean;
@@ -27,7 +28,7 @@ export interface ProjectSummary {
 export interface ProjectEntry {
   id: string; video: string; name: string; exists: boolean; opened: number;
   folder?: string; duration?: number | null; source?: string | null; targets?: string[] | null; series?: string;
-  reached?: string | null; outputs?: string[]; running?: boolean; configured?: boolean;
+  reached?: string | null; outputs?: string[]; running?: boolean; configured?: boolean; failed?: Failed | null;
 }
 
 export interface Candidate {
@@ -131,6 +132,8 @@ export interface LiveEvent {
 }
 /** 还在任务队列里排队的那一项：ahead 前面还有几项（正在跑的也算） */
 export interface Queued { item: string; kind: QueueKind; ahead: number }
+/** 最近一次任务失败：在哪一步、为什么 */
+export interface Failed { item: string; kind: QueueKind; stage: string | null; error: string | null; finished: number | null }
 export type QueueKind = "run" | "mux" | "burn" | "broadcast";
 export interface Progress { stage: string; done: number; total: number; label?: string }
 export interface LogLine { msg: string; stage?: string }
@@ -195,5 +198,5 @@ export interface PresetInfo { id: string; name: string; desc: string; builtin: b
 export interface PresetDoc { id: string; name: string; builtin: boolean; raw: Cfg; effective: Cfg; factory: { styles: Record<string, Style> } }
 export interface SeriesDoc {
   name: string; has_settings: boolean; raw: Cfg; effective: Cfg; factory: { styles: Record<string, Style> };
-  episodes: { pid: string; name: string; video: string; exists: boolean; running: boolean; diff: number | null }[];
+  episodes: { pid: string; name: string; video: string; exists: boolean; running: boolean; diff: number | null; failed?: Failed | null }[];
 }   // 用作品设置覆盖这一集 / 用这一集的设置覆盖作品

@@ -500,7 +500,8 @@ function LastRun({ stage, ctx }: { stage: string; ctx: StepCtx }) {
         {sec ? <span className="dim">{sec}s</span> : null}
         <span className="sp" /><button className="btn sm ghost" onClick={() => setAll(true)}>全部日志</button>
       </div>
-      {st === "failed" && job?.error && <div className="run-err">{job.error}</div>}
+      {st === "failed" && job?.error ? <div className="run-err">{job.error}</div>
+        : s.summary?.failed?.stage === stage && !s.running && <div className="run-err">上次运行在这一步失败：{s.summary.failed.error}</div>}
       <LogView lines={lines} empty={st === "pending" ? "这一轮还没运行到这一步" : st === "running" ? "运行中…" : saved === null ? "加载中…" : "这一步还没有日志（还没运行过，或者直接复用了以前的结果）"} />
       {all && <AllLogs onClose={() => setAll(false)} />}
     </div>
@@ -509,6 +510,18 @@ function LastRun({ stage, ctx }: { stage: string; ctx: StepCtx }) {
 
 function AllLogs({ onClose }: { onClose: () => void }) {
   const s = useStore();
+  // 这次打开以后没运行过（或程序重启过）：按步骤顺序把每一步上次的日志拼起来，不用一步步点开看
+  const [saved, setSaved] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (s.logs.length || !s.pid) return;
+    const pid = s.pid;
+    const stages = (s.summary?.plan ?? []).map((p) => p.stage);
+    Promise.all(stages.map((st) => api.stageLog(pid, st).then((r) => r.lines).catch(() => [] as string[])))
+      .then((all) => setSaved(all.flatMap((lines, i) => (lines.length ? [`── ${STAGE_LBL[stages[i]] ?? stages[i]} ──`, ...lines, ""] : []))));
+  }, [s.pid, s.logs.length, s.summary?.plan]);
+  const failed = s.summary?.failed;
+  const head = failed ? [`✕ 上次${failed.stage ? `在「${STAGE_LBL[failed.stage] ?? failed.stage}」` : ""}失败：${failed.error ?? ""}`, ""] : [];
+  const lines = s.logs.length ? s.logs.map((l) => (l.stage ? `[${STAGE_LBL[l.stage] ?? l.stage}] ${l.msg}` : l.msg)) : saved ?? [];
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", k);
@@ -517,8 +530,8 @@ function AllLogs({ onClose }: { onClose: () => void }) {
   return createPortal(
     <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-body log-dialog">
-        <div className="row" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>全部日志</h3><span className="sp" /><button className="btn sm" onClick={onClose}>关闭</button></div>
-        <LogView lines={s.logs.map((l) => (l.stage ? `[${STAGE_LBL[l.stage] ?? l.stage}] ${l.msg}` : l.msg))} empty="（这次打开以后还没有运行过）" />
+        <div className="row" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>全部日志</h3><span className="dim">{s.logs.length ? "这一次运行" : "各步骤上次运行"}</span><span className="sp" /><button className="btn sm" onClick={onClose}>关闭</button></div>
+        <LogView lines={lines.length ? [...head, ...lines] : head} empty={saved === null && !s.logs.length ? "加载中…" : "（还没有运行过）"} />
       </div>
     </div>, document.body);
 }

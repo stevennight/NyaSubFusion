@@ -5,7 +5,7 @@ import { Modal } from "../components/Modal";
 import { useSetup } from "../components/SetupWizard";
 import { useStore } from "../store";
 import type { QueueItem, QueueOptions, QueueState, TauriGlobal } from "../types";
-import { pct, STAGE_LBL } from "../util";
+import { briefError, pct, STAGE_LBL } from "../util";
 
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 import { MEDIA_EXTS } from "./Library";
@@ -22,6 +22,22 @@ const STATUS: Record<QueueItem["status"], [string, string]> = {
   waiting: ["等外部翻译", "warn"], cancelled: ["已取消", ""],
 };
 
+type Filter = "all" | "active" | "failed" | "done" | "cancelled";
+const FILTERS: [Filter, string][] = [["all", "全部"], ["active", "排队 / 运行中"], ["failed", "失败"], ["done", "完成"], ["cancelled", "已取消"]];
+const PAGE = 20;
+function inFilter(i: QueueItem, f: Filter) {
+  if (f === "all") return true;
+  if (f === "active") return i.status === "pending" || i.status === "running";
+  if (f === "done") return i.status === "done" || i.status === "waiting";
+  return i.status === f;
+}
+function when(t: number | null) {
+  if (!t) return "";
+  const d = new Date(t * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? `今天 ${hm}` : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
 function dur(a: number | null, b: number | null) {
   if (!a) return "";
   const s = Math.max(0, (b ?? Date.now() / 1000) - a);
@@ -34,6 +50,8 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
   const [adding, setAdding] = useState(addOpen);
   const [prog, setProg] = useState<Record<string, { done: number; total: number }>>({});
   const [, tick] = useState(0);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [pageSel, setPage] = useState(0);
 
   useEffect(() => {
     api.queue().then(setQ).catch((e) => s.setError(e.message));
@@ -53,6 +71,14 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
   };
   if (!q) return <div className="empty">加载中…</div>;
   const counts = q.items.reduce<Record<string, number>>((m, i) => ({ ...m, [i.status]: (m[i.status] ?? 0) + 1 }), {});
+  // 没做完的按执行顺序排在最上面（能调顺序），做完的按完成时间倒序（最近的在上）
+  const isActive = (i: QueueItem) => i.status === "pending" || i.status === "running";
+  const activeItems = q.items.filter(isActive);
+  const activeIds = activeItems.map((i) => i.id);
+  const finished = q.items.filter((i) => !isActive(i)).sort((a, b) => (b.finished ?? b.added) - (a.finished ?? a.added));
+  const shown = [...activeItems, ...finished].filter((i) => inFilter(i, filter));
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE));
+  const page = Math.min(pageSel, pages - 1);   // 移除、清除以后页数变少
 
   return (
     <div className="page"><div className="wide">
@@ -67,31 +93,45 @@ export function QueuePage({ onOpenProject, addOpen = false, onAddClosed }: { onO
       </div>
 
       <div className="card">
-        {q.items.length === 0 ? <div className="dim">队列是空的。点右上角“加入…”一次加入多个视频或文件夹。</div> : (
-          <table className="tb"><thead><tr><th>#</th><th>文件</th><th>状态</th><th>用时</th><th>说明</th><th /></tr></thead><tbody>
-            {q.items.map((it, i) => {
+        <div className="row" style={{ marginBottom: 8, gap: 4 }}>
+          {FILTERS.map(([k, label]) => {
+            const n = q.items.filter((i) => inFilter(i, k)).length;
+            return <button key={k} className={`btn sm${filter === k ? " pri" : " ghost"}`} onClick={() => { setFilter(k); setPage(0); }}>{label} {n}</button>;
+          })}
+        </div>
+        {shown.length === 0 ? <div className="dim">{q.items.length === 0 ? "队列是空的。点右上角“加入…”一次加入多个视频或文件夹。" : "没有这一类的任务。"}</div> : (
+          <table className="tb"><thead><tr><th>文件</th><th>状态</th><th>时间</th><th>说明</th><th /></tr></thead><tbody>
+            {shown.slice(page * PAGE, (page + 1) * PAGE).map((it) => {
               const [lbl, cls] = STATUS[it.status];
+              const active = it.status === "pending" || it.status === "running";
+              const k = activeIds.indexOf(it.id);
               return (
                 <tr key={it.id}>
-                  <td className="dim">{i + 1}</td>
                   <td><b>{it.name}</b> <span className="chip">{what(it)}</span>
                     <div className="dim" style={{ fontSize: 11.5, wordBreak: "break-all" }}>{it.video}</div></td>
-                  <td style={{ whiteSpace: "nowrap" }}><span className={`chip ${cls}`}>{lbl}{it.status === "running" && it.stage ? ` · ${STAGE_LBL[it.stage] ?? it.stage}` : ""}{it.status === "running" && (it.stage === "mux" || it.stage === "burn") && prog[it.id] ? ` ${pct(prog[it.id])}%` : ""}</span></td>
-                  <td className="dim" style={{ whiteSpace: "nowrap" }}>{dur(it.started, it.status === "running" ? null : it.finished)}</td>
-                  <td style={{ fontSize: 12, color: it.error ? "var(--bad)" : "var(--tx2)", maxWidth: 320, wordBreak: "break-all" }}>{it.error ?? it.note ?? ""}</td>
+                  <td style={{ whiteSpace: "nowrap" }}><span className={`chip ${cls}`}>{lbl}{(it.status === "running" || it.status === "failed") && it.stage ? ` · ${STAGE_LBL[it.stage] ?? it.stage}` : ""}{it.status === "running" && (it.stage === "mux" || it.stage === "burn") && prog[it.id] ? ` ${pct(prog[it.id])}%` : ""}</span></td>
+                  <td className="dim" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{active ? (it.status === "running" ? dur(it.started, null) : `第 ${k + 1} 个`)
+                    : <>{when(it.finished)}<br />{dur(it.started, it.finished)}</>}</td>
+                  <td style={{ fontSize: 12, color: it.error ? "var(--bad)" : "var(--tx2)", maxWidth: 360, wordBreak: "break-all" }} title={it.error ?? ""}>{it.error ? briefError(it.error) : it.note ?? ""}</td>
                   <td style={{ whiteSpace: "nowrap" }}>
-                    <button className="btn sm ghost" title="上移" disabled={i === 0} onClick={() => act(it.id, "up")}>▲</button>
-                    <button className="btn sm ghost" title="下移" disabled={i === q.items.length - 1} onClick={() => act(it.id, "down")}>▼</button>
-                    {(it.status === "pending" || it.status === "running") && <button className="btn sm" onClick={() => act(it.id, "cancel")}>取消</button>}
-                    {["failed", "cancelled", "done", "waiting"].includes(it.status) && <button className="btn sm" onClick={() => act(it.id, "retry")}>{it.status === "done" ? "再跑" : "重试"}</button>}
+                    {it.status === "pending" && <>
+                      <button className="btn sm ghost" title="上移" disabled={k <= 0} onClick={() => act(it.id, "up")}>▲</button>
+                      <button className="btn sm ghost" title="下移" disabled={k === activeIds.length - 1} onClick={() => act(it.id, "down")}>▼</button></>}
+                    {active && <button className="btn sm" onClick={() => act(it.id, "cancel")}>取消</button>}
+                    {!active && <button className="btn sm" onClick={() => act(it.id, "retry")}>{it.status === "done" ? "再跑" : "重试"}</button>}
                     {it.status !== "running" && <button className="btn sm ghost" onClick={() => act(it.id, "remove")}>移除</button>}
-                    <button className="btn sm" onClick={() => { s.open(it.pid); onOpenProject(); }}>打开</button>
+                    <button className="btn sm" title={it.status === "failed" ? "打开这一集，在「处理」里点失败的那一步看完整日志" : ""} onClick={() => { s.open(it.pid); onOpenProject(); }}>打开</button>
                   </td>
                 </tr>
               );
             })}
           </tbody></table>
         )}
+        {pages > 1 && <div className="row" style={{ marginTop: 8, justifyContent: "center" }}>
+          <button className="btn sm ghost" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</button>
+          <span className="dim">{page + 1} / {pages}</span>
+          <button className="btn sm ghost" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>下一页</button>
+        </div>}
         <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>所有任务都在这里排队，一次只做一件：批量加入的，和在一集里点的运行、封装、压制、导出广播字幕原样（这些插在批量加入的前面）。
           暂停只停批量加入的，一集里点的照常排队运行。取消正在运行的项会在几秒内停下（已完成的步骤保留，重试时接着做）。程序重启后队列会恢复。</div>
       </div>

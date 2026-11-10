@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import type { SeriesDoc } from "../types";
 import { useOpenVideo } from "./Library";
 import { SeriesNotes } from "./Notes";
+import { briefError, STAGE_LBL } from "../util";
 
 export type SeriesTab = "eps" | "settings" | "notes";
 
@@ -52,7 +53,7 @@ export function SeriesPage({ name, tab, setTab, onOpened, onRenamed }: {
             <table className="tb"><thead><tr><th>集</th><th>和默认设置相比</th><th /></tr></thead><tbody>
               {doc.episodes.map((e) => (
                 <tr key={e.pid} className={e.exists ? "" : "off"}>
-                  <td><b style={{ fontWeight: 500 }}>{e.name}</b>{e.running && <span className="chip acc mini">运行中</span>}{!e.exists && <span className="chip bad mini">文件不存在</span>}
+                  <td><b style={{ fontWeight: 500 }}>{e.name}</b>{e.running && <span className="chip acc mini">运行中</span>}{!e.running && e.failed && <span className="chip bad mini" title={briefError(e.failed.error)}>上次失败{e.failed.stage ? `（${STAGE_LBL[e.failed.stage] ?? e.failed.stage}）` : ""}</span>}{!e.exists && <span className="chip bad mini">文件不存在</span>}
                     <div className="hint" style={{ wordBreak: "break-all" }}>{e.video}</div></td>
                   <td>{!doc.has_settings ? <span className="dim">—</span> : e.diff == null ? <span className="dim">？</span>
                     : e.diff ? <span className="chip tpl click" title="打开这一集，在页头点“和模板不同”逐项看" onClick={() => openEp(e.pid, e.video)}>不同 {e.diff} 项</span>

@@ -179,7 +179,7 @@ def _check(r):
         raise _Retry(f"{r.status_code} {msg}")
     if r.status_code == 400 and re.search(r"response_format|timestamp|verbose_json|granularit", msg, re.I):
         raise _NoTimestamps(msg)
-    hint = {401: "API Key 不对", 403: "没有权限", 404: "接口地址或模型不存在（这个接口可能不支持音频转写）",
+    hint = {401: "API Key 不对", 402: "账户余额不足，到接口网站充值后再运行", 403: "没有权限", 404: "接口地址或模型不存在（这个接口可能不支持音频转写）",
             413: "音频太大"}.get(r.status_code, "请求被拒绝")
     err = _Rejected if r.status_code == 400 else AsrApiError
     raise err(f"语音识别接口报错（{r.status_code}，{hint}）：{msg}")
@@ -194,7 +194,8 @@ def _with_retry(fn):
             return fn()
         except (_Retry, httpx.TransportError) as e:
             if attempt == RETRIES:
-                raise AsrApiError(f"语音识别接口多次失败：{e}") from e
+                why = "（账户余额不够，到接口网站充值后再运行）" if str(e).startswith("402") else ""
+                raise AsrApiError(f"语音识别接口多次失败{why}：{e}") from e
             for _ in range(int(min(60, 3 * 2 ** attempt) * 4)):  # 等的时候也能取消
                 check_cancel()
                 time.sleep(0.25)

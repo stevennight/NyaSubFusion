@@ -275,7 +275,7 @@ def test_openrouter_in_flight_budget_is_retried(wav, api):
     segs, _ = _run(wav)
     assert [s["text"] for s in segs] == [t[2] + "。" for t in TRUTH]
     api["api"].fail = [402]
-    with pytest.raises(asr_api.AsrApiError, match="402"):
+    with pytest.raises(asr_api.AsrApiError, match="402，账户余额不足"):
         asr_api.transcribe(str(wav), {"api_kind": "transcribe"}, dict(EP, model="m2"), "ja")
 
 

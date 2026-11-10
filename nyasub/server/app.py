@@ -249,6 +249,7 @@ def create_app(token: str | None = None) -> FastAPI:
                           if bs else None),
             "broadcast_check": bc_check,
             "queued": queue.waiting(pid),  # 还在任务队列里排队：{"item", "kind", "ahead"}
+            "failed": queue.last_failed(pid),  # 最近一次任务失败了（程序重启过也有）：页头运行条直接显示原因
             "proxy": "direct" if playable else ("ready" if proj.media(media.PROXY_NAME).exists()
                                                 or media.hls_state(proj.media(media.HLS_DIR), float(meta.get("duration") or 0))["complete"]
                                                 else proxy_jobs.get(pid, {}).get("status", "none")),
@@ -396,7 +397,8 @@ def create_app(token: str | None = None) -> FastAPI:
         return dict(p, name=video.name, folder=video.parent.name, exists=video.is_file(),
                     duration=info.get("duration"), source=cfg.get("source"), targets=cfg.get("targets"),
                     series=cfg.get("series") or "", reached=reached, outputs=outs,
-                    running=bool(job and job["status"] == "running"), configured=(proj_root / "project.toml").exists())
+                    running=bool(job and job["status"] == "running"), configured=(proj_root / "project.toml").exists(),
+                    failed=queue.last_failed(p["id"]))  # 最近一次任务失败了：库里直接标出来
 
     @app.get("/api/projects")
     def list_projects():
@@ -770,7 +772,8 @@ def create_app(token: str | None = None) -> FastAPI:
         for p in _episodes_of(name):
             video = Path(p["video"])
             item = {"pid": p["id"], "name": video.name, "video": str(video), "exists": video.is_file(),
-                    "running": bool((j := hub.status(p["id"])) and j["status"] == "running"), "diff": None}
+                    "running": bool((j := hub.status(p["id"])) and j["status"] == "running"), "diff": None,
+                    "failed": queue.last_failed(p["id"])}
             if raw and video.is_file():
                 try:
                     item["diff"] = len(config_mod.template_diff(load_cfg(project_paths(p["id"])[1])[0], scfg))

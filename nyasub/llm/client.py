@@ -92,6 +92,10 @@ class LLM:
                     self.effort = ""  # 这个模型不支持，或者没有这一档：后面的请求也不设
                     continue
                 status = getattr(e, "status_code", None)
+                if status == 402 and "in_flight" not in msg:  # 余额用完了，重试也没用（in_flight：同时在跑的请求预扣太多，等等再试）
+                    err = FatalLLMError(f"大模型接口报错（402，账户余额不足，到接口网站充值后再运行）：{msg[:300]}")
+                    err.status = status
+                    raise err from e
                 if status in (400, 401, 403, 404, 415, 422):
                     err = FatalLLMError(f"大模型接口报错（{status}）：{msg[:300]}")
                     err.status = status

@@ -446,6 +446,7 @@ table.tb { width: 100%; border-collapse: collapse }
 .runbar .pending { font-size: 12px; color: var(--warn); max-width: 520px; text-align: right; line-height: 1.35 }
 .runbar .pending.muted { color: var(--tx2) }
 .runbar .pending .acc { color: var(--acc) }
+.runbar .run-fail { font-size: 12px; color: var(--bad); max-width: 420px; line-height: 1.35; word-break: break-all }
 .runbtn { display: inline-flex }
 .runbtn .btn:first-child { border-radius: 6px 0 0 6px }
 .runbtn .runmore { border-radius: 0 6px 6px 0; border-left: 1px solid #2a0d1844; padding: 6px 8px }

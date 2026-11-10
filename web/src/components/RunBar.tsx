@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useUnsaved } from "../doc";
 import { RUN_DEFAULT, useStore } from "../store";
-import { STAGE_LBL } from "../util";
+import { briefError, STAGE_LBL } from "../util";
 
 export const REDO_STAGES = ["subs", "asr", "ocr", "ocr_refine", "align", "fuse", "organize", "translate", "annotate"];
 const UNTIL = ["subs", "asr", "ocr", "fuse", "organize", "translate", "annotate", "render"];
@@ -32,8 +32,12 @@ export function RunBar() {
   };
   const q = !s.running ? s.queued : null;   // 还在任务队列里排队（一次只做一件）
   const busy = s.running || !!q;
+  const failed = !busy ? s.summary?.failed : null;   // 上次的任务失败了：直接写出在哪一步、为什么（不用去任务页找）
   return (
     <div className="runbar" ref={box}>
+      {failed && <span className="run-fail" title={failed.error ?? ""}>
+        ✕ 上次{KIND_LBL[failed.kind] ?? "运行"}{failed.stage ? `在「${STAGE_LBL[failed.stage] ?? failed.stage}」` : ""}失败：{briefError(failed.error) || "原因不明"}
+      </span>}
       <span className={`pending${busy ? " muted" : ""}`}>
         {s.running ? "正在运行：现在改的设置下次运行才生效"
           : q ? `${KIND_LBL[q.kind]}排进了任务队列：${q.ahead ? `前面还有 ${q.ahead} 项，轮到了自动开始（「任务」页能调整顺序）` : "马上开始…"}`

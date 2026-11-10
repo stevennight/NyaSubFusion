@@ -4,7 +4,7 @@ import { api } from "../api";
 import { SetupWizard } from "../components/SetupWizard";
 import { useStore } from "../store";
 import type { ProjectEntry, ProjectSummary, SeriesInfo, TauriGlobal } from "../types";
-import { langName, STAGE_LBL } from "../util";
+import { briefError, langName, STAGE_LBL } from "../util";
 
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 export const MEDIA_EXTS = ["mp4", "mkv", "ts", "m2ts", "mts", "mov", "webm", "avi", "flv", "wmv", "mp3", "wav", "flac", "m4a", "aac", "ogg"];
@@ -108,7 +108,8 @@ function EpRow({ p, current, onOpen, onChanged }: { p: ProjectEntry; current: bo
   const langs = p.configured
     ? `${p.source && p.source !== "auto" ? langName(p.source, s.langs) : "自动判断"} → ${(p.targets ?? []).map((t) => langName(t, s.langs)).join("、") || "—"}`
     : "还没配置";
-  const [lbl, cls, dot] = p.running ? ["运行中", "acc", "run"] : p.outputs?.length ? [`已输出 ${p.outputs.length} 个文件`, "ok", "done"]
+  const fail = !p.running && p.failed ? `上次失败${p.failed.stage ? `（${STAGE_LBL[p.failed.stage] ?? p.failed.stage}）` : ""}` : "";
+  const [lbl, cls, dot] = p.running ? ["运行中", "acc", "run"] : fail ? [fail, "bad", "fail"] : p.outputs?.length ? [`已输出 ${p.outputs.length} 个文件`, "ok", "done"]
     : p.reached ? [`做到：${STAGE_LBL[p.reached] ?? p.reached}`, "", "stale"] : ["未运行", "", "na"];
   const mins = p.duration ? `${Math.floor(p.duration / 60)} 分 ${String(Math.round(p.duration % 60)).padStart(2, "0")} 秒` : "";
   return (
@@ -117,7 +118,7 @@ function EpRow({ p, current, onOpen, onChanged }: { p: ProjectEntry; current: bo
       <div className="epname"><b>{p.name}</b>{current && <span className="chip acc mini">当前</span>}{!p.exists && <span className="chip bad mini">文件不存在</span>}
         <small>📁 {p.folder}{mins ? ` · ${mins}` : ""} · 打开于 {new Date(p.opened * 1000).toLocaleDateString()}</small></div>
       <span className="dim">{langs}</span>
-      <span className={`chip ${cls}`} title={p.outputs?.join("\n")}>{lbl}</span>
+      <span className={`chip ${cls}`} title={fail ? briefError(p.failed?.error) : p.outputs?.join("\n")}>{lbl}</span>
       <span className="row" style={{ gap: 4 }} onClick={(e) => e.stopPropagation()}>
         <button className="btn sm ghost" title="在资源管理器里打开所在文件夹" onClick={() => api.reveal(p.id).catch((e) => s.setError(e.message))}>文件夹</button>
         <button className="btn sm ghost" title="只从列表里去掉，不删除任何文件" onClick={async () => { await api.forget(p.id); onChanged(); }}>移除</button>
