@@ -317,8 +317,12 @@ export function EditorPage() {
     if (!follow) return;
     const el = document.activeElement as HTMLInputElement | null;
     if (el?.tagName === "TEXTAREA" || (el?.tagName === "INPUT" && el.type !== "checkbox")) return;
+    // 播放头还在选中那条的时间里就不换：重叠的几条里点了短的那条，不被抢回到同时在播的长的那条
+    // （选中的那条不在当前筛选里、或者跳过去落点早了一点点，以前都会被换掉）
+    const cur = sel ? cues.find((c) => c.id === sel) : null;
+    if (cur && time >= cur.start - 0.05 && time < cur.end) return;
     const here = cues.filter((c) => FILTER_TEST[filter](c) && time >= c.start && time < c.end);
-    if (!here.length || here.some((c) => c.id === sel)) return;
+    if (!here.length) return;
     setSel(here.reduce((a, b) => (b.start > a.start ? b : a)).id);
   }, [time, follow, filter, cues]);  // eslint-disable-line react-hooks/exhaustive-deps
   // M：标记正在播的这一条（有问题、回头再看）；刚播完的也算（反应慢了一点），都没有就标选中的那条
