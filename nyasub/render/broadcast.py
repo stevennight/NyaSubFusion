@@ -166,21 +166,47 @@ def _parse_ts(s):
     return int(h) * 3600 + int(m) * 60 + float(rest)
 
 
+BOX_PAD = 7  # 底框比字四周各大出多少（字幕画布的像素；libaribcaption 的画布是 960x540）
+
+
+def _box_style(line, fmt):
+    """libaribcaption 的样式：BorderStyle 4 + 阴影 4 + 不透明黑。广播数据里是半透明黑底框（ARIB 的半透明色，和 TTML 一样 50%），
+    但 BorderStyle 4 各播放器认法不一：libass（mpv、压制）画成实心黑框，VSFilter（MPC、PotPlayer）不认，画成往右下偏的黑影。
+    改成都认的 BorderStyle 3（每行一个底框，颜色取描边色）：半透明黑，四周大出 BOX_PAD，不要阴影。"""
+    name, _, vals = line.partition(":")
+    vals = [v.strip() for v in vals.split(",")]
+    if len(vals) != len(fmt):
+        return line
+    for k, v in (("BorderStyle", "3"), ("Outline", str(BOX_PAD)), ("Shadow", "0"),
+                 ("OutlineColour", "&H7F000000"), ("BackColour", "&H7F000000")):
+        if k in fmt:
+            vals[fmt.index(k)] = v
+    return f"{name}: " + ",".join(vals)
+
+
 def shift_ass(src, out, offset=0.0, note="广播字幕原样"):
-    """别的工具转好的带样式 ASS（libaribcaption 的输出）：时间挪 offset 秒，文件头记上是本工具输出的（不会再被当成外挂字幕读进来）。
-    返回字幕条数。"""
-    lines, n = [], 0
+    """别的工具转好的带样式 ASS（libaribcaption 的输出）：时间挪 offset 秒，文件头记上是本工具输出的（不会再被当成外挂字幕读进来）；
+    底框改成各播放器都画得一样的半透明黑框（_box_style）。返回字幕条数。"""
+    lines, n, fmt = [], 0, []
     for line in open(src, encoding="utf-8-sig").read().splitlines():
         m = _ASS_TIME.match(line)
         if m:
             a, b = _parse_ts(m.group(2)) + offset, _parse_ts(m.group(3)) + offset
             if b <= 0:
                 continue
-            line = f"{m.group(1)}{ts(a)},{ts(b)}," + line[m.end():]
+            # 每条都带的 \3a&Hff&（描边全透明）在 BorderStyle 3 下会把底框也弄没
+            line = f"{m.group(1)}{ts(a)},{ts(b)}," + re.sub(r"\\3a&H[Ff]{2}&", "", line[m.end():]).replace("{}", "")
             n += 1
+        elif line.startswith("Format:") and not fmt and "Fontname" in line:
+            fmt = [v.strip() for v in line.partition(":")[2].split(",")]
+        elif line.startswith("Style:") and fmt:
+            line = _box_style(line, fmt)
+        elif line.startswith("ScaledBorderAndShadow:"):
+            continue
         lines.append(line)
         if line.strip() == "[Script Info]":
             lines.append(f"; {OWN_MARK}（{note}）")
+            lines.append("ScaledBorderAndShadow: yes")  # 底框大小按字幕画布算（不然 4K 画面上只有几个像素）
     with open(out, "w", encoding="utf-8-sig", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
     return n

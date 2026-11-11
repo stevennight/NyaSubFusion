@@ -62,13 +62,20 @@ def test_ttml_to_ass(tmp_path):
 
 def test_shift_libaribcaption_output(tmp_path):
     src = tmp_path / "styled.ass"
-    src.write_text("[Script Info]\nPlayResX: 1920\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, "
-                   "MarginV, Effect, Text\nDialogue: 0,0:00:00.50,0:00:02.00,Default,,0,0,0,,{\\pos(10,20)}字\n"
+    fmt = ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+           "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+    src.write_text("[Script Info]\nPlayResX: 960\n\n[V4+ Styles]\n" + fmt + "\n"
+                   "Style: Default,BIZ UDGothic,36,&Hffffff,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,4,0,4,2,10,10,10,0\n\n"
+                   "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, "
+                   "MarginV, Effect, Text\nDialogue: 0,0:00:00.50,0:00:02.00,Default,,0,0,0,,{\\an7}{\\pos(10,20)}{\\1c&H00ffff&}{\\3a&Hff&}字\n"
                    "Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,次\n", encoding="utf-8")
     out = tmp_path / "x.ass"
     assert broadcast.shift_ass(src, out, -1.0) == 2
     text = out.read_text(encoding="utf-8-sig")
     assert "0:00:00.00,0:00:01.00" in text and "0:00:09.00,0:00:11.00" in text and subtitle.OWN_MARK in text
+    # 底框：BorderStyle 4 + 阴影（VSFilter 画成黑影、libass 画成实心黑框）→ 各播放器都一样的半透明黑框
+    assert "Style: Default,BIZ UDGothic,36,&Hffffff,&Hffffff,&H7F000000,&H7F000000,0,0,0,0,100,100,0,0,3,7,0,2,10,10,10,0" in text
+    assert "\\3a" not in text and "{\\an7}{\\pos(10,20)}{\\1c&H00ffff&}字" in text and "ScaledBorderAndShadow: yes" in text
 
 
 @pytest.fixture
