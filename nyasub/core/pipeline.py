@@ -64,7 +64,8 @@ DEFS = {
     # 整理：几路来源合并成一条条字幕（多来源合并、纠错字、分类、丢杂字），只出原文（以前是“翻译”的一部分，翻译 v5 时拆出来）
     # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）；v3：同样的话前后说了两遍（时间错开）各成一条
     "organize": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
-                                    "llm.chunk_seconds", "llm.chunk_max_items"], version=3),
+                                    "llm.chunk_seconds", "llm.chunk_max_items"], version=4),
+    # v4：大模型整行漏抄了的字幕补回原文（「水鳥が快適に生息できる環境が／守られていると」只抄了第一行）
     "translate": StageDef(["organize"], ["project.targets", "project.context", "llm.model", "llm.temperature",
                                          "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=8),
     # v8：术语表 / 译文里夹着假名的（「ヘビトンボ幼虫（孙太郎）」）改成中文；统一译名带上节目说明（生成术语表也带上，只对新整理的生效）

@@ -125,7 +125,7 @@ def apply_result(chunk, result, tgt, src_lang):
         if invented(srcs, orig):
             log(f"  {'、'.join(src)}：画面上认出的是「{srcs[0]['text'][:20]}」，整理成了「{orig[:20]}」，没有来源作证，不要")
             continue
-        orig = keep_subs_wording(srcs, orig)
+        orig = keep_subs_lines(srcs, keep_subs_wording(srcs, orig))
         tr = (c.get("tr") or c.get("zh") or "").strip()
         srcs, orig, tr, split = split_unspoken(srcs, orig, tr)
         srcs, loose = split_orphans(srcs, orig)
@@ -223,6 +223,31 @@ def keep_subs_wording(srcs, orig):
     for p in sorted({moved[b] for b in bars}, reverse=True):
         out = out[:p] + "｜" + out[p:]
     return out
+
+
+def keep_subs_lines(srcs, orig):
+    """字幕是官方文字：大模型整理原文时整行漏抄了（两行的字幕「水鳥が快適に生息できる環境が／守られていると➡」只抄了第一行），
+    补回去，放在同一条字幕前一行的后面（换行照字幕的）；找不到前一行就放在后一行前面，都找不到不补。
+    只补整行都没出现的、有 4 个字以上的行；只有括号里的说明（「(げたの音)」）不补（整理可能有意拿掉）。"""
+    subs = sorted((s for s in srcs if s["src"] == "subs"), key=lambda s: s["start"])
+    lines = [ln.replace("➡", "").strip() for s in subs for ln in s["text"].replace(" / ", "\n").split("\n")]
+    lines = [ln for ln in lines if ln]
+    for k, ln in enumerate(lines):
+        bare = re.sub(r"[（(][^）)]*[）)]", "", ln)
+        if len(norm(bare)) < 4 or covered(ln, orig) >= 0.5:
+            continue
+        prev = next((p for p in reversed(lines[:k]) if covered(p, orig) >= 0.9 and p in orig), None)
+        nxt = next((p for p in lines[k + 1:] if covered(p, orig) >= 0.9 and p in orig), None)
+        if prev:
+            i = orig.index(prev) + len(prev)
+            orig = orig[:i] + "\n" + ln + orig[i:]
+        elif nxt:
+            i = orig.index(nxt)
+            orig = orig[:i] + ln + "\n" + orig[i:]
+        else:
+            continue
+        log(f"  字幕「{ln}」整理时漏掉了，补回原文")
+    return orig
 
 
 def split_orphans(srcs, orig):

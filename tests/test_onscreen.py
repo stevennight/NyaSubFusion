@@ -1111,6 +1111,24 @@ def test_settle_keeps_confident_local_text():
     assert _settle("三が日用の分に", "加熱用のわに", "加他用のbに", 0.709) == ("加熱用のわに", False)
 
 
+def test_organize_restores_subtitle_lines_the_model_left_out():
+    """整理时大模型整行漏抄了字幕（城崎温泉 q41：两行的「水鳥が快適に生息できる環境が／守られていると➡」只抄了第一行）：
+    补回同一条字幕前一行的后面；括号里的说明、已经抄了的不动。"""
+    from nyasub.llm.translate import apply_result
+
+    chunk = [{"id": "c27", "src": "subs", "start": 189.62, "end": 193.52, "text": "水鳥が快適に生息できる環境が\n守られていると➡"},
+             {"id": "c28", "src": "subs", "start": 193.52, "end": 196.0, "text": "下流の水田や湿地とともに➡"},
+             {"id": "c29", "src": "subs", "start": 196.0, "end": 200.43, "text": "ラムサール条約に 登録されています｡"},
+             {"id": "c30", "src": "subs", "start": 201.0, "end": 203.0, "text": "(げたの音)\nいい音ですね"}]
+    result = {"cues": [{"src": ["c27", "c28", "c29"], "type": "narration",
+                        "orig": "水鳥が快適に生息できる環境が｜下流の水田や湿地とともに｜ラムサール条約に 登録されています｡"},
+                       {"src": ["c30"], "type": "dialogue", "orig": "いい音ですね"}]}
+    cues, missing = apply_result(chunk, result, "zh-Hans", "ja")
+    assert not missing
+    assert cues[0]["orig"]["text"] == "水鳥が快適に生息できる環境が\n守られていると｜下流の水田や湿地とともに｜ラムサール条約に 登録されています｡"
+    assert cues[1]["orig"]["text"] == "いい音ですね"   # 只是括号里的说明，整理有意拿掉的不补
+
+
 def test_organize_drops_lines_its_sources_do_not_support():
     """整理把乱码“纠正”成一句台词（「加他用のbに」→「三が日用の分に」）：画面字里一半都对不上，不要；只是改了错字的照旧。"""
     items = [{"id": "o245", "src": "telop", "start": 672.0, "end": 673.6, "text": "加他用のbに"},
