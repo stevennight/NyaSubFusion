@@ -184,6 +184,52 @@ def _box_style(line, fmt):
     return f"{name}: " + ",".join(vals)
 
 
+NEAR = 2 * BOX_PAD + 12  # 上下两行字之间空得比这少，就当成同一块字幕：底框拼成一整块（广播里是连着的）
+_POS = re.compile(r"\\pos\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)")
+_FS = re.compile(r"\\fs([\d.]+)")
+
+
+def _tile_boxes(lines, fmt):
+    """同一屏的几行（正文、上面的注音、下一行）各有一个底框，挨得近的上下叠在一起，叠的地方颜色深一道。
+    按上下相邻两行字之间的中线分开：底框伸到中线（\\ybord），超出的用 \\clip 裁掉，正好拼上、不叠也不留缝。
+    离得远的照旧四周大出 BOX_PAD。只处理左上角定位（\\an7 + \\pos）的行（libaribcaption 都是这样写的）。"""
+    width, size = 1920, 36.0
+    for ln in lines:
+        if ln.startswith("PlayResX:"):
+            width = int(float(ln.split(":")[1]))
+        elif ln.startswith("Style:") and "Fontsize" in fmt:
+            try:
+                size = float(ln.partition(":")[2].split(",")[fmt.index("Fontsize")])
+            except (ValueError, IndexError):
+                pass
+    rows = {}  # (开始, 结束) → [(行号, 上沿, 字高)]
+    for i, ln in enumerate(lines):
+        m = _ASS_TIME.match(ln)
+        if not m:
+            continue
+        body = ln[m.end():].split(",", 6)[-1]
+        p = _POS.search(body)
+        if not p or "\\an7" not in body or not re.sub(r"\{[^}]*\}", "", body).strip():
+            continue
+        f = _FS.search(body)
+        rows.setdefault((m.group(2), m.group(3)), []).append((i, float(p.group(2)), float(f.group(1)) if f else size))
+    for group in rows.values():
+        ys = sorted({(y, h) for _, y, h in group})
+        for i, y, h in group:
+            top, bottom = y - BOX_PAD, y + h + BOX_PAD
+            # 上下挨着的行（两行字之间空不到 NEAR）：上面那行的下沿、下面那行的上沿
+            above = [y2 + h2 for y2, h2 in ys if y2 < y and y - (y2 + h2) < NEAR]
+            below = [y2 for y2, h2 in ys if y2 > y and y2 - (y + h) < NEAR]
+            if above:
+                top = (max(above) + y) / 2
+            if below:
+                bottom = (y + h + min(below)) / 2
+            if not above and not below:
+                continue
+            bord = max(y - top, bottom - y - h, 0)
+            lines[i] = lines[i].replace("\\an7", f"\\an7\\ybord{bord:g}\\clip(0,{top:g},{width},{bottom:g})", 1)
+
+
 def shift_ass(src, out, offset=0.0, note="广播字幕原样"):
     """别的工具转好的带样式 ASS（libaribcaption 的输出）：时间挪 offset 秒，文件头记上是本工具输出的（不会再被当成外挂字幕读进来）；
     底框改成各播放器都画得一样的半透明黑框（_box_style）。返回字幕条数。"""
@@ -207,6 +253,7 @@ def shift_ass(src, out, offset=0.0, note="广播字幕原样"):
         if line.strip() == "[Script Info]":
             lines.append(f"; {OWN_MARK}（{note}）")
             lines.append("ScaledBorderAndShadow: yes")  # 底框大小按字幕画布算（不然 4K 画面上只有几个像素）
+    _tile_boxes(lines, fmt)
     with open(out, "w", encoding="utf-8-sig", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
     return n

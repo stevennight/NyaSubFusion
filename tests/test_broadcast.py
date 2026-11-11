@@ -78,6 +78,29 @@ def test_shift_libaribcaption_output(tmp_path):
     assert "\\3a" not in text and "{\\an7}{\\pos(10,20)}{\\1c&H00ffff&}字" in text and "ScaledBorderAndShadow: yes" in text
 
 
+def test_libaribcaption_boxes_tile_without_overlap(tmp_path):
+    """同一屏的注音、正文、下一行各有一个底框，挨得近的叠在一起颜色深一道：按两行字中间的线分开，伸到中线、超出的裁掉。"""
+    src = tmp_path / "styled.ass"
+    fmt = ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+           "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+    t = "Dialogue: 0,0:01:28.90,0:01:36.00,Default,,0,0,0,,"
+    src.write_text("[Script Info]\nPlayResX: 960\nPlayResY: 540\n\n[V4+ Styles]\n" + fmt + "\n"
+                   "Style: Default,BIZ UDGothic,36,&Hffffff,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,4,0,4,2,10,10,10,0\n\n"
+                   "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+                   + t + "{\\an7}{\\pos(138,359)}{\\fs18}{\\fsp2}{\\3a&Hff&}まるやまがわ\n"
+                   + t + "{\\an7}{\\pos(138,389)}{\\fsp4}{\\3a&Hff&}円山川の流れる 豊岡市は\n"
+                   + t + "{\\an7}{\\pos(158,449)}{\\fsp4}{\\3a&Hff&}日本有数の コウノトリの生息地です｡\n"
+                   "Dialogue: 0,0:00:42.70,0:00:47.00,Default,,0,0,0,,{\\an7}{\\pos(178,449)}{\\fsp4}{\\3a&Hff&}冒険の始まりは\n",
+                   encoding="utf-8")
+    out = tmp_path / "x.ass"
+    broadcast.shift_ass(src, out)
+    ev = [ln for ln in out.read_text(encoding="utf-8-sig").splitlines() if ln.startswith("Dialogue")]
+    assert "\\clip(0,352,960,383)" in ev[0]                       # 注音：上面照旧大出 7，下面到和正文之间的中线
+    assert "\\ybord12\\clip(0,383,960,437)" in ev[1]               # 正文：上接注音，下接下一行
+    assert "\\clip(0,437,960,492)" in ev[2]                       # 下一行：上接正文，下面照旧大出 7
+    assert "\\clip" not in ev[3] and "\\ybord" not in ev[3]        # 单独一行：照样式四周大出 7
+
+
 @pytest.fixture
 def with_broadcast(sample, api_config, monkeypatch, tmp_path):
     """sample 跑完一遍，再假装字幕来自 4K 广播（项目里放一份 ARIB-TTML）。"""
