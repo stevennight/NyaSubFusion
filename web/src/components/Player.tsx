@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import type { Candidate, MediaInfo, Preview, PreviewHl } from "../types";
 import { fmt, pct } from "../util";
 import { SubtitleOverlay, useSize, type OnMoveSub } from "./SubtitleOverlay";
+import { TimeJump } from "./TimeJump";
 
 export interface PlayerHandle { seek: (t: number) => void; toggle: () => void; playing: boolean }
 
@@ -172,7 +173,7 @@ export const Player = forwardRef<PlayerHandle, {
             <input type="range" min={0} max={Math.max(1, duration)} step={0.1} value={time} disabled={!ready}
                    onChange={(e) => seek(Number(e.target.value))} />
           </div>
-          <span className="time">{fmt(time)} / {fmt(duration)}</span>
+          <TimeJump time={time} duration={duration} onSeek={seek} />
         </div>
       )}
     </>

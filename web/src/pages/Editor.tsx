@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { TimeJump } from "../components/TimeJump";
 import { Player, type PlayerHandle } from "../components/Player";
 import { DROP } from "../components/SubtitleOverlay";
 import { Timeline } from "../components/Timeline";
@@ -392,7 +393,7 @@ export function EditorPage() {
           <button className="iconbtn" title="上一条（↑ 或 J）" onClick={() => step(-1)}>⏮</button>
           <button className="iconbtn big" title={playing ? "暂停（空格）" : "播放（空格）"} onClick={() => player.current?.toggle()}>{playing ? "❚❚" : "▶"}</button>
           <button className="iconbtn" title="下一条（↓ 或 K）" onClick={() => step(1)}>⏭</button>
-          <span className="time">{fmt(time)} / {fmt(duration)}</span>
+          <TimeJump time={time} duration={duration} onSeek={(t) => player.current?.seek(t)} hotkey />
           <select className="inp" style={{ width: "auto" }} value={rate} title="播放速度（[ 慢一档，] 快一档）。声音音调不变"
                   onChange={(e) => setRate(Number(e.target.value))}>
             {RATES.map((r) => <option key={r} value={r}>{r}×</option>)}

@@ -131,6 +131,8 @@ table.tb { width: 100%; border-collapse: collapse }
 .pctl { width: 100% }
 .pctl { display: flex; align-items: center; gap: 8px }
 .pctl .time { font-variant-numeric: tabular-nums; color: var(--tx2); min-width: 116px }
+.pctl .time.jump { cursor: text; border-radius: 4px; padding: 1px 3px; margin: -1px -3px } .pctl .time.jump:hover { background: #ffffff12; color: var(--tx) }
+.pctl .jumpbox { width: 84px; padding: 2px 6px; font-variant-numeric: tabular-nums; display: inline-block } .pctl .jumpbox.bad { border-color: var(--bad) }
 .iconbtn { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line2); background: var(--panel2); display: grid; place-items: center; padding: 0; flex: none }
 .iconbtn.big { width: 36px; height: 36px; background: var(--acc); border-color: var(--acc); color: #2a0d18 }
 .inspector { grid-column: 2; grid-row: 1/5; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px }
