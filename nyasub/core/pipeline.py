@@ -63,10 +63,10 @@ DEFS = {
     "fuse": StageDef(["align", "ocr_refine", "asr"], ["fusion"], version=6),  # v6：复核没作证 / 没复核过、本地也没把握、语音对不上的画面字不要；人名条和字幕连成一框的拆开；逐字出现的字幕前半截并进完整的那条；本地只认出乱码、模型读成旁边那条的按重复去掉；和招牌连成一框的两行字幕左对齐时，不居中的那行也救回来；底部居中的一整句采访字幕比语音短时照旧用字幕（v5 把它当成摘出的几个字丢了，换成听错的语音）；同一行字幕被识别切成前后两条的合成一条；v5：画面字只是语音里摘出的几个字（旁白“日本の伝統工芸をはじめ…”时的「伝統工芸」）时，整句语音单独成条，那几个字按重复去掉；没有广播字幕、和同时的画面字一个词都对不上的语音（标题卡下的“ぜひご覧ください”）单独成条，不再附为参考；v4：画面字只对上同时字幕的一小段（字幕“仮設。”、画面字“おれ仮設におった”）不再当重复丢掉；从背景框里救回的字幕行时间让开同一位置的另一条；v3：只有音乐记号的字幕（♬〜）不要；v2：标记“同时段字幕在说别的话”的画面字
     # 整理：几路来源合并成一条条字幕（多来源合并、纠错字、分类、丢杂字），只出原文（以前是“翻译”的一部分，翻译 v5 时拆出来）
     # v2：不再顺带翻译（要看译文才能定的合并、分屏放到翻译那一步）；v3：同样的话前后说了两遍（时间错开）各成一条
-    "organize": StageDef(["fuse"], ["project.targets", "project.context", "llm.model", "llm.temperature",
+    "organize": StageDef(["fuse"], ["project.targets", "project.context", "project.synopsis", "llm.model", "llm.temperature",
                                     "llm.chunk_seconds", "llm.chunk_max_items"], version=4),
     # v4：大模型整行漏抄了的字幕补回原文（「水鳥が快適に生息できる環境が／守られていると」只抄了第一行）
-    "translate": StageDef(["organize"], ["project.targets", "project.context", "llm.model", "llm.temperature",
+    "translate": StageDef(["organize"], ["project.targets", "project.context", "project.synopsis", "llm.model", "llm.temperature",
                                          "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=8),
     # v8：术语表 / 译文里夹着假名的（「ヘビトンボ幼虫（孙太郎）」）改成中文；统一译名带上节目说明（生成术语表也带上，只对新整理的生效）
     # v7：不擅自补主语（旁白写成“我”、讲妻子的事写成“我”）
@@ -161,8 +161,8 @@ class Run:
                     from ..sources.asr_api import ALIGN_V
 
                     d["api"]["timing"] = [self.cfg.asr.api_timing_model.strip(), ALIGN_V]
-                if self.cfg.asr.api_kind == "gemini" and self.cfg.project.context.strip():  # 节目说明也发给大模型
-                    d["api"]["context"] = digest(self.cfg.project.context.strip())
+                if self.cfg.asr.api_kind == "gemini" and (self.cfg.project.context.strip() or self.cfg.project.synopsis.strip()):  # 背景资料也发给大模型
+                    d["api"]["context"] = digest("\n\n".join(x for x in (self.cfg.project.context.strip(), self.cfg.project.synopsis.strip()) if x))
                 if self.cfg.asr.api_kind == "gemini" and self._user_terms():  # 术语表里人工给的名字也发给大模型
                     d["api"]["names"] = digest([[t.get("src"), t.get("reading"), t.get("type")] for t in self._user_terms()])
             return d or None
@@ -717,8 +717,9 @@ class Run:
         if c.backend == "api":  # 云端接口：没有本地模型，补识别（_fill_gaps）不做
             from ..sources import asr_api
 
+            asr_context = "\n\n".join(x for x in (self.cfg.project.context.strip(), self.cfg.project.synopsis.strip()) if x)
             segs, detected = asr_api.transcribe(str(self.proj / wav),
-                                                dict(c.model_dump(), context=self.cfg.project.context, names=self._user_terms()),
+                                                dict(c.model_dump(), context=asr_context, names=self._user_terms()),
                                                 self.cfg.endpoint("asr"),
                                                 whisper_lang, offset=info.get("audio_offset", 0.0),
                                                 duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache")

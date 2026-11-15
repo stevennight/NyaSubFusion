@@ -65,8 +65,8 @@ def test_new_episode_copies_series_defaults(client, sample):
     _set_series(client, pid, "测试作品")
     client.post(f"/api/projects/{pid}/series/overwrite", json={"direction": "to_series"})
     assert next(x for x in client.get("/api/series").json() if x["name"] == "测试作品")["settings"]
-    cfg = presets.build("documentary", "ja", ["zh-Hans"], "测试作品", "第二集")
-    assert cfg["project"]["series"] == "测试作品" and cfg["project"]["context"] == "第二集" and cfg.get("render")
+    cfg = presets.build("documentary", "ja", ["zh-Hans"], "测试作品", "第二集", "这一集的简介")
+    assert cfg["project"]["series"] == "测试作品" and cfg["project"]["context"] == "第二集" and cfg["project"]["synopsis"] == "这一集的简介" and cfg.get("render")
     assert "render" in presets.build("documentary", "ja", ["zh-Hans"], "别的作品")
 
 

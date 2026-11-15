@@ -161,7 +161,7 @@ export interface Settings {
   translate: { name: string; base_url: string; model: string };
 }
 
-export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; context?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
+export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; context?: string; synopsis?: string; until?: string; video?: "" | "off" | "mux" | "burn" }
 export interface QueueItem {
   id: string; pid: string; video: string; name: string; options: QueueOptions;
   kind?: QueueKind; manual?: boolean;   // 一集里点的（运行 / 封装 / 压制 / 导出广播字幕原样）；没有 kind 的是批量加入的运行

@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import type { PresetInfo, ProjectSummary, SeriesInfo } from "../types";
 import { SeriesPicker } from "./SeriesPicker";
 
-export interface SetupOpts { preset: string; source: string; targets: string[]; series: string; context: string }
+export interface SetupOpts { preset: string; source: string; targets: string[]; series: string; context: string; synopsis: string }
 
 /** 新建一集要选的：作品、节目说明、语言、预设。series：从作品页“加一集”进来时已经选好。
  *  返回两块界面：left（作品、节目说明、语言）、right（预设），和选好的值。 */
@@ -13,7 +13,7 @@ export function useSetup(series = "", batch = false) {
   const s = useStore();
   const [presets, setPresets] = useState<PresetInfo[]>([]);
   const [picked, setPicked] = useState<SeriesInfo | null>(null);   // 选了已有的作品
-  const [o, setO] = useState<SetupOpts>({ preset: "documentary", source: "auto", targets: ["zh-Hans"], series, context: "" });
+  const [o, setO] = useState<SetupOpts>({ preset: "documentary", source: "auto", targets: ["zh-Hans"], series, context: "", synopsis: "" });
   const set = (p: Partial<SetupOpts>) => setO((cur) => ({ ...cur, ...p }));
   useEffect(() => { api.presets().then((l) => { setPresets(l); const d = l.find((x) => x.default); if (d) set({ preset: d.id }); }); }, []);
   const follow = !!picked?.settings;   // 作品有默认设置：复制一份给这一集，不用选语言和预设
@@ -23,9 +23,11 @@ export function useSetup(series = "", batch = false) {
   const left = (<>
     <h3>作品</h3>
     <SeriesPicker value={o.series} onChange={(v) => set({ series: v })} onPicked={setPicked} />
-    {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：{each}会复制一份作品的设置（语言、识别、输出都用它）。之后{each}和作品各自独立，在{each}的「处理」「输出」里改不影响作品。节目说明不填就用作品的。</div>}
+    {follow && <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>「{picked!.name}」有默认设置：{each}会复制一份作品的设置（语言、识别、输出都用它）。之后{each}和作品各自独立，在{each}的「处理」「输出」里改不影响作品。节目说明不填就用作品的，本集简介单独填写。</div>}
     <textarea className="inp" rows={3} style={{ marginTop: 8 }} placeholder="节目说明（会告诉大模型，例如：北海道渔村纪录片，大量老渔民方言采访）"
               value={o.context} onChange={(e) => set({ context: e.target.value })} />
+    <textarea className="inp" rows={4} style={{ marginTop: 8 }} placeholder="本集简介（用于生成本集概要，再供翻译参考）"
+              value={o.synopsis} onChange={(e) => set({ synopsis: e.target.value })} />
     {!follow && <><h3 style={{ marginTop: 14 }}>语言</h3>
       <div className="kv">
         <span className="lbl">源语言</span>

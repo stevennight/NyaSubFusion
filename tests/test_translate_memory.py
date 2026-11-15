@@ -1,5 +1,5 @@
 """译文记忆：翻到和前面相同 / 很像的原文时，把前面的译法和前后句给大模型参考（沿用还是另译由它判断）。"""
-from nyasub.llm.prompts import chunk_prompt
+from nyasub.llm.prompts import chunk_prompt, glossary_system, translate_system
 from nyasub.llm.translate import recall
 
 
@@ -40,3 +40,17 @@ def test_glossary_text_gives_user_notes_only():
         {"src": "健太", "tr": "健太", "note": "", "from": "manual"},
         {"src": "大塚村", "tr": "大冢村", "note": "信乃的故乡", "from": "ep01"}])
     assert text.splitlines() == ["村雨（むらさめ） → 村雨　备注：说话时用「村雨」称呼自己", "健太 → 健太", "大塚村 → 大冢村"]
+
+
+def test_episode_synopsis_feeds_summary_generation():
+    from nyasub.lang import get
+
+    prompt = glossary_system(get("ja"), get("zh-Hans"), "纪录片背景", "本集介绍传统食物")
+    assert "纪录片背景" in prompt and "本集介绍传统食物" in prompt
+
+
+def test_translation_uses_generated_summary_as_background():
+    from nyasub.lang import get
+
+    prompt = translate_system(get("ja"), get("zh-Hans"), "本集概要：节目介绍传统食物", {})
+    assert "本集概要：节目介绍传统食物" in prompt

@@ -112,7 +112,7 @@ export const api = {
     call<{ pid: string; name: string; running: boolean; values: unknown[] }[]>(`/api/series/${encodeURIComponent(name)}/values`, json("POST", { keys })),
   seriesSync: (name: string, keys: string[][], pids: string[]) =>
     call<{ synced: string[]; skipped: string[] }>(`/api/series/${encodeURIComponent(name)}/sync`, json("POST", { keys, pids })),
-  setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string }) =>
+  setup: (pid: string, body: { preset: string; source: string; targets: string[]; series?: string; context?: string; synopsis?: string }) =>
     call<unknown>(`/api/projects/${pid}/setup`, json("POST", body)),
   series: () => call<SeriesInfo[]>("/api/series"),
   glossary: (pid: string) => call<Glossary>(`/api/projects/${pid}/glossary`),

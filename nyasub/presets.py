@@ -211,7 +211,7 @@ def name_of(preset_id: str) -> str:
     return PRESETS.get(preset_id, {}).get("name", preset_id)
 
 
-def build(preset_id, source="auto", targets=None, series="", context=""):
+def build(preset_id, source="auto", targets=None, series="", context="", synopsis=""):
     """生成 project.toml 的内容（dict）。作品已经有默认设置（series.toml）时，复制一份作品设置作为这一集的设置
     （填了节目说明就用填的），不用预设；之后这一集和作品各自独立。"""
     from .core.config import has_series_settings, read_series
@@ -221,6 +221,8 @@ def build(preset_id, source="auto", targets=None, series="", context=""):
         cfg.setdefault("project", {})["series"] = series
         if context:
             cfg["project"]["context"] = context
+        if synopsis:
+            cfg["project"]["synopsis"] = synopsis
         return cfg
     cfg = get_raw(preset_id or "custom")
     if cfg is None:
@@ -235,6 +237,8 @@ def build(preset_id, source="auto", targets=None, series="", context=""):
         project["series"] = series
     if context:
         project["context"] = context
+    if synopsis:
+        project["synopsis"] = synopsis
     cfg["project"] = project
     return cfg
 

@@ -70,6 +70,13 @@ def test_cache_reuse_and_partial_redo(sample, api_config, fake):
     assert len(fake.CALLS) > calls
     assert fp(sample, "translate")["in"] != before["in"]
 
+    # 改本集简介：重新生成概要并翻译
+    synopsis = api_config.with_name("synopsis.toml")
+    synopsis.write_text(api_config.read_text(encoding="utf-8") + '[project]\nsynopsis = "这一集介绍青森县的食物。"\n', encoding="utf-8")
+    before_synopsis = fp(sample, "translate")
+    assert run(sample, "--no-asr", "--no-ocr", "--config", synopsis) == 0
+    assert len(fake.CALLS) > calls and fp(sample, "translate")["in"] != before_synopsis["in"]
+
 
 def test_export_mode_roundtrip(sample, tmp_path, fake):
     # 第一次：导出任务，不出最终字幕

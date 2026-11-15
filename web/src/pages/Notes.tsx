@@ -99,10 +99,12 @@ export function NotesPage() {
   const doc = useDoc();
   const pid = s.pid;
   const ctx = useDraft(doc, (d) => String(d.raw.project?.context ?? d.effective.project?.context ?? ""), (raw, v) => setIn(raw, "project.context", v));
+  const syn = useDraft(doc, (d) => String(d.raw.project?.synopsis ?? d.effective.project?.synopsis ?? ""), (raw, v) => setIn(raw, "project.synopsis", v));
   const gl = useRemote<Glossary>(() => api.glossary(pid!), async (g) => { await api.putGlossary(pid!, g.terms); await s.reload(); }, [pid], s.setError);
   const rd = useRemote<Record<string, Reading[]>>(() => api.readings(pid!), (r) => api.putReadings(pid!, r), [pid], s.setError);
-  if (!pid || ctx.v === null) return <div className="empty">加载中…</div>;
-  return <NotesView context={ctx.v} setContext={(v) => ctx.update(() => v)} ctxState={ctx.state} gl={gl} rd={rd} episode
+  if (!pid || ctx.v === null || syn.v === null) return <div className="empty">加载中…</div>;
+  return <NotesView context={ctx.v} setContext={(v) => ctx.update(() => v)} ctxState={ctx.state}
+                    synopsis={syn.v} setSynopsis={(v) => syn.update(() => v)} synopsisState={syn.state} gl={gl} rd={rd} episode
                     hint={CONTEXT_HINT + "改了下次运行会重新翻译（用多模态大模型识别语音时也会重新识别）。"} />;
 }
 
@@ -114,11 +116,14 @@ export function SeriesNotes({ name }: { name: string }) {
   const rd = useRemote<Record<string, Reading[]>>(() => api.seriesReadings(name), (r) => api.putSeriesReadings(name, r), [name], s.setError);
   if (!raw.v) return <div className="empty">加载中…</div>;
   return <NotesView context={String(raw.v.project?.context ?? "")} setContext={(v) => raw.update((r) => setIn(r, "project.context", v))} ctxState={raw.state}
+                    synopsis="" setSynopsis={() => undefined} synopsisState="saved"
                     gl={gl} rd={rd} episode={false} hint={"作品默认设置里的节目说明：新建这部作品的集时复制过去，已有的集各自在「资料」里改。" + CONTEXT_HINT} />;
 }
 
-function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
-  context: string; setContext: (v: string) => void; ctxState: SaveState; gl: Remote<Glossary>; rd: Remote<Record<string, Reading[]>>; episode: boolean; hint: string;
+function NotesView({ context, setContext, ctxState, synopsis, setSynopsis, synopsisState, gl, rd, episode, hint }: {
+  context: string; setContext: (v: string) => void; ctxState: SaveState;
+  synopsis: string; setSynopsis: (v: string) => void; synopsisState: SaveState;
+  gl: Remote<Glossary>; rd: Remote<Record<string, Reading[]>>; episode: boolean; hint: string;
 }) {
   const s = useStore();
   const [tab, setTab] = useState<"terms" | "readings">("terms");
@@ -146,13 +151,13 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
   const updReading = (sc: string, i: number, patch: Partial<Reading>) => rd.update((x) => ({ ...x, [sc]: x[sc].map((e, k) => (k === i ? { ...e, ...patch } : e)) }));
   const moveReading = (sc: string, i: number, to: string) => rd.update((x) => ({ ...x, [sc]: x[sc].filter((_, k) => k !== i), [to]: [...(x[to] ?? []), x[sc][i]] }));
   const annLangs = s.langs.filter((l) => l.annotations.length);
-  const saving = [ctxState, gl.state, rd.state].find((x) => x !== "saved") ?? "saved";
+  const saving = [ctxState, synopsisState, gl.state, rd.state].find((x) => x !== "saved") ?? "saved";
   const translateStale = s.summary?.plan.find((p) => p.stage === "translate")?.status === "stale";
   return (
     <div className="page"><div className="wide">
       <div className="row" style={{ marginBottom: 12 }}>
         <span className="chip">{series ? `作品「${series}」：术语表、读音词典各集共用` : "不属于作品：术语表只在这一集里用"}</span>
-        {episode && translateStale && <span className="chip warn">节目说明 / 术语改了：下次运行会重新翻译</span>}
+        {episode && translateStale && <span className="chip warn">节目说明 / 本集简介 / 术语改了：下次运行会重新翻译</span>}
         <span className="sp" /><SaveChip state={saving} />
       </div>
       <div className="notes-grid">
@@ -162,6 +167,11 @@ function NotesView({ context, setContext, ctxState, gl, rd, episode, hint }: {
             <textarea className="inp" rows={5} placeholder="例如：北海道渔村纪录片，有大量老渔民方言采访" value={context} onChange={(e) => setContext(e.target.value)} />
             <div className="hint" style={{ marginTop: 6 }}>{hint}</div>
           </div>
+          {episode && <div className="card">
+            <h3>本集简介 <span className="dim" style={{ fontWeight: 400 }}>先用于生成本集概要</span></h3>
+            <textarea className="inp" rows={6} placeholder="粘贴这一集的官方简介或自己整理的简介" value={synopsis} onChange={(e) => setSynopsis(e.target.value)} />
+            <div className="hint" style={{ marginTop: 6 }}>大模型会结合本集字幕、语音和画面材料生成“本集概要”。简介只作为背景资料，不能单独新增字幕事实。</div>
+          </div>}
           {episode && g.summary && (
             <div className="card">
               <h3>本集概要 <span className="dim" style={{ fontWeight: 400 }}>大模型生成，翻译时参考</span></h3>

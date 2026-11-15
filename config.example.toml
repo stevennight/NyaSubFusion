@@ -11,6 +11,7 @@ source = "auto"               # 源语言：ja / zh-Hans / en / ko …；auto = 
 targets = ["zh-Hans"]         # 目标语言，可多个，例如 ["zh-Hans", "en"]
 series = ""                   # 所属作品：多集共享节目说明、术语表（存在 %APPDATA%\NyaSubFusion\series\<作品名>\）
 context = ""                  # 节目说明，会告诉大模型，例如“北海道渔村纪录片，大量老渔民方言采访”
+synopsis = ""                 # 本集简介：先帮助生成“本集概要”，再供翻译参考
 
 [subs]
 enabled = true

@@ -94,7 +94,7 @@ class Queue:
 
     # ---------- 操作 ----------
     def add(self, videos, options):
-        """options：{"until", "redo", "translate", "video", "preset", "source", "targets", "series", "context"}"""
+        """options：{"until", "redo", "translate", "video", "preset", "source", "targets", "series", "context", "synopsis"}"""
         added = []
         with self.lock:
             for v in videos:

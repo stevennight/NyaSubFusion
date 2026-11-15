@@ -380,13 +380,13 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     tgt = lang.get(tgt_code)
 
     log("生成术语表 / 本集概要")
-    gl = llm.chat_json(prompts.glossary_system(src, tgt, cfg.project.context), prompts.glossary_input(items, known_terms))
+    gl = llm.chat_json(prompts.glossary_system(src, tgt, cfg.project.context, cfg.project.synopsis), prompts.glossary_input(items, known_terms))
     terms = merge_terms(known_terms, gl.get("terms"))
     fix_terms(llm, terms, src, tgt, cfg.project.context)
     glossary = {"summary": gl.get("summary", ""), "terms": terms, "new": len(terms) - len(known_terms or [])}
     gl_text = prompts.glossary_text(terms)
 
-    system = prompts.organize_system(src, cfg.project.context)
+    system = prompts.organize_system(src, cfg.project.context, cfg.project.synopsis)
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
     for i, chunk in enumerate(chunks, 1):
@@ -504,7 +504,7 @@ def learn_terms(glossary, res):
 def translate_chunks(llm, cues, glossary, cfg, src, tgt, tgt_code, frames=None):
     """普通翻译：整理好的字幕按时间分段，一段一段翻（带前文译文、译文记忆、画面），可以把相邻几条合成一条翻。
     这一集新定下的译名记进 glossary["terms"]。返回翻好的字幕（没翻到的留着空译文，之后补翻）。"""
-    system = prompts.translate_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}))
+    system = prompts.translate_system(src, tgt, glossary.get("summary", ""), cfg.render.lang_options.get(tgt_code, {}))
     ask = Asker(llm, frames)
     chunks = chunk_items(cues, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     done = []
@@ -542,35 +542,37 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     tgt_code = targets[0]
     tgt = lang.get(tgt_code)
     n_before = len(cues)
-    fix_terms(llm, glossary["terms"], src, tgt, cfg.project.context)  # 整理时定的译法夹着原文的（旧工程的整理结果）先改好再翻
+    translation_cfg = cfg.model_copy(deep=True)
+    translation_cfg.project.context = (glossary.get("summary") or cfg.project.context or "").strip()
+    fix_terms(llm, glossary["terms"], src, tgt, translation_cfg.project.context)  # 整理时定的译法夹着原文的（旧工程的整理结果）先改好再翻
     fixed = {t.get("src"): t for t in glossary["terms"]}
     known_terms = [fixed.get(t.get("src"), t) for t in known_terms or []]  # 分组翻按作品术语表重排术语，用改好的那份
     if cfg.llm.grouped:
         from . import fine
 
-        cues = fine.run(deep, llm, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frames)
+        cues = fine.run(deep, llm, cues, translation_cfg, src, tgt, tgt_code, glossary, known_terms, frames)
     else:
         if deep.effort:
             log(f"翻译：思考程度「{deep.effort}」")
-        cues = translate_chunks(deep, cues, glossary, cfg, src, tgt, tgt_code, frames)
+        cues = translate_chunks(deep, cues, glossary, translation_cfg, src, tgt, tgt_code, frames)
     if len(cues) < n_before:
         log(f"翻译时合并了 {n_before - len(cues)} 处（一句话被拆在几屏里、按原来的分法拆开译不通顺）")
     cues = finalize(cues)
     glossary["new"] = len(glossary["terms"]) - len(known_terms or [])
     terms = glossary["terms"]
-    fix_terms(llm, terms, src, tgt, cfg.project.context)  # 人物表、翻译时新收的
+    fix_terms(llm, terms, src, tgt, translation_cfg.project.context)  # 人物表、翻译时新收的
     gl_text = prompts.glossary_text(terms)
-    translate_missing(llm, cues, src, tgt_code, gl_text, cfg)
+    translate_missing(llm, cues, src, tgt_code, gl_text, translation_cfg)
     by_id = {it["id"]: it for it in items}
-    resegment(llm, cues, by_id, src, tgt_code, cfg)
-    split_long(llm, cues, by_id, src, tgt_code, cfg)
+    resegment(llm, cues, by_id, src, tgt_code, translation_cfg)
+    split_long(llm, cues, by_id, src, tgt_code, translation_cfg)
     restore_labels(cues, terms, tgt_code)
-    enforce_terms(llm, cues, terms, src, tgt_code, cfg)
+    enforce_terms(llm, cues, terms, src, tgt_code, translation_cfg)
     unify(llm, cues, src, tgt, tgt_code)
-    fix_leftover(llm, cues, terms, src, tgt, tgt_code, cfg)
+    fix_leftover(llm, cues, terms, src, tgt, tgt_code, translation_cfg)
 
     for extra in targets[1:]:
-        translate_extra(llm, cues, src, extra, tgt_code, gl_text, cfg)
+        translate_extra(llm, cues, src, extra, tgt_code, gl_text, translation_cfg)
     return cues, glossary
 
 

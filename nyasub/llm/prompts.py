@@ -4,8 +4,18 @@ from ..textutil import fmt_time
 SRC_LABEL = {"subs": "字幕", "telop": "画面字", "info": "画面字", "asr": "语音识别"}
 
 
-def glossary_system(src, tgt, context: str = "") -> str:
-    return f"""你是影视字幕翻译的术语整理助手，负责{src.name}→{tgt.name}。节目信息：{context or "（未提供）"}
+def _background(context: str = "", synopsis: str = "") -> str:
+    rows = []
+    if context.strip():
+        rows.append(f"## 节目说明\n{context.strip()}")
+    if synopsis.strip():
+        rows.append(f"## 用户录入的本集简介\n{synopsis.strip()}")
+    return "\n\n".join(rows) or "（未提供）"
+
+
+def glossary_system(src, tgt, context: str = "", synopsis: str = "") -> str:
+    return f"""你是影视字幕翻译的术语整理助手，负责{src.name}→{tgt.name}。
+{_background(context, synopsis)}
 给你一集节目里出现的全部{src.name}文本（字幕 + 画面字 OCR，可能有 OCR 错字）。
 请输出 JSON：
 {{"summary": "用中文 3~6 句话概括本集内容（地点、人物、主题）",
@@ -23,6 +33,8 @@ def glossary_system(src, tgt, context: str = "") -> str:
   拿不准具体物种时，按节目里的描述（样子、产地、季节）判断，并在 note 里写出依据。
 - tr 就是字幕里直接要用的写法，要简短；不要在 tr 里写长篇解释。{_script_rule(src, tgt)}
 - OCR 错字明显时按正确写法收录。
+- 本集简介只是背景资料。概要可以补充简介里没有、但能从本集字幕、语音或画面材料确认的地点、人物和主题。
+- 不要把简介或推测中没有来源的内容写进概要，不要凭简介新增字幕事实。
 - 如果提供了“已有术语表”，其中的条目不要重复输出，只补充新的。"""
 
 
@@ -39,9 +51,10 @@ def _name_rule(tgt) -> str:
     return ""
 
 
-def chunk_system(src, tgt, context: str, tgt_opts: dict) -> str:
+def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "") -> str:
     notes = src.prompt_source_notes()
-    return f"""你是资深{src.name}→{tgt.name}影视字幕译者兼校对。节目信息：{context or "（未提供）"}
+    return f"""你是资深{src.name}→{tgt.name}影视字幕译者兼校对。背景资料：
+{_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
 - 字幕（subs）：视频自带的字幕，文字最可信。注意官方字幕常会省略画面上已经有字的台词。
 - 画面字：从画面 OCR 识别的硬字幕，可能有错字、漏字。后面标了位置和“像台词 / 像说明”，那只是粗略猜测，以内容为准：
@@ -174,9 +187,10 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> 
 
 
 # ---------- 整理（只出原文）→ 翻译（只翻一次）。上面的 chunk_system / chunk_prompt 是两件事一起做的，导出任务模式还在用 ----------
-def organize_system(src, context: str) -> str:
+def organize_system(src, context: str, synopsis: str = "") -> str:
     notes = src.prompt_source_notes(with_tr=False)
-    return f"""你是资深{src.name}影视字幕编辑。节目信息：{context or "（未提供）"}
+    return f"""你是资深{src.name}影视字幕编辑。背景资料：
+{_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
 - 字幕（subs）：视频自带的字幕，文字最可信。注意官方字幕常会省略画面上已经有字的台词。
 - 画面字：从画面 OCR 识别的硬字幕，可能有错字、漏字。后面标了位置和“像台词 / 像说明”，那只是粗略猜测，以内容为准：
@@ -245,7 +259,7 @@ def translate_rules(tgt, tgt_opts: dict) -> str:
 
 
 def translate_system(src, tgt, context: str, tgt_opts: dict) -> str:
-    return f"""你是资深{src.name}→{tgt.name}影视字幕译者。节目信息：{context or "（未提供）"}
+    return f"""你是资深{src.name}→{tgt.name}影视字幕译者。本集概要：{context or "（未提供）"}
 你会收到一段已经整理好的{src.name}字幕（按时间顺序，带类型），请逐条翻译成{tgt.name}。
 {translate_rules(tgt, tgt_opts)}
 - 人名、地名、专有名词、动植物和食物名称严格按术语表统一（同一个名字全集只用一种译法，不同的人不能混用名字）；

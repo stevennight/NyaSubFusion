@@ -533,11 +533,11 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.post("/api/projects/{pid}/setup")
     def setup_project(pid: str, body: dict = Body(...)):
-        """新建向导：{"preset", "source", "targets", "series", "context"} → 写 project.toml。"""
+        """新建向导：{"preset", "source", "targets", "series", "context", "synopsis"} → 写 project.toml。"""
         from .. import presets
 
         cfg = presets.build(body.get("preset") or "custom", body.get("source") or "auto", body.get("targets"),
-                            body.get("series") or "", body.get("context") or "")
+                            body.get("series") or "", body.get("context") or "", body.get("synopsis") or "")
         return put_config(pid, {"project": cfg})
 
     @app.get("/api/projects/{pid}")
@@ -1633,7 +1633,7 @@ def create_app(token: str | None = None) -> FastAPI:
         from .. import presets
 
         cfg = presets.build(opts.get("preset") or "documentary", opts.get("source") or "auto", opts.get("targets"),
-                            opts.get("series") or "", opts.get("context") or "")
+                            opts.get("series") or "", opts.get("context") or "", opts.get("synopsis") or "")
         put_config(pid, {"project": cfg})
 
     def _keep_last_run(pid):

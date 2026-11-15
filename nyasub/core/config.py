@@ -33,6 +33,7 @@ class ProjectCfg(_M):
     targets: list[str] = ["zh-Hans"]         # 目标语言，可多个；第一个用于融合+翻译，其余在其基础上翻译
     series: str = ""                         # 所属作品：共享节目说明、术语表
     context: str = ""                        # 节目说明，会告诉大模型
+    synopsis: str = ""                       # 本集简介：先用于生成本集概要，再供大模型翻译参考
     preset: str = ""                         # 新建项目时选的内容预设（不属于作品时，它就是这一集的模板）
 
 
@@ -564,7 +565,7 @@ def upgrade_file(path) -> bool:
 # ---------------- 作品（series）的默认设置 ----------------
 # 新建这部作品的一集时复制一份过去；之后一集和作品各自独立。
 # 只属于这一集、复制 / 覆盖时都不动的项：所属作品、外挂字幕文件
-EPISODE_KEYS = {"project": ("series",), "subs": ("path", "track")}
+EPISODE_KEYS = {"project": ("series", "synopsis"), "subs": ("path", "track")}
 
 
 def series_file(name: str) -> Path:
@@ -657,7 +658,7 @@ def set_keys(d: dict, keys, value) -> dict:
 
 
 # 只属于一集、和模板比较时不算的项
-TEMPLATE_SKIP = {("project", "series"), ("project", "preset"), ("project", "context"), ("subs", "path"), ("subs", "track"), ("version",)}
+TEMPLATE_SKIP = {("project", "series"), ("project", "preset"), ("project", "context"), ("project", "synopsis"), ("subs", "path"), ("subs", "track"), ("version",)}
 
 
 def template_diff(episode: "Config", template: "Config", langs=True) -> list[dict]:
