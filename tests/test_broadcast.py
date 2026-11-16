@@ -185,6 +185,30 @@ def test_guess_arib_track_before_run(sample, api_config):
     assert r._broadcast_source({"subtitles": [], "data_streams": []}, guess=True) is None
 
 
+def test_ttml_in_arib_caption_stream_is_parsed(sample, api_config, monkeypatch, tmp_path):
+    """4K XML may be reported as an arib_caption subtitle stream instead of data."""
+    from nyasub.sources import media
+    from pathlib import Path
+
+    r = _fresh(sample, api_config)
+    source = ttml_file(tmp_path).read_bytes()
+    r._subs_file = lambda: None
+
+    def dump(_path, _index, out_path, probe_bytes=0, max_seconds=900):
+        Path(out_path).write_bytes(source)
+        return len(source)
+
+    monkeypatch.setattr(media, "dump_data_stream", dump)
+    monkeypatch.setattr(media, "extract_sub_stream", lambda *_: pytest.fail("should parse XML directly"))
+    info = {
+        "video": {"height": 2160},
+        "subtitles": [{"index": 2, "sub_index": 0, "codec": "unknown", "lang": "jpn"}],
+        "data_streams": [],
+    }
+    cues = r._load_subs(info)
+    assert len(cues) == 2 and cues[0]["text"] == "\u4f0a\u90a3\u306e\u5ddd\u3002"
+
+
 def test_guess_ttml_needs_peek(sample, api_config, monkeypatch):
     from nyasub.sources import media
 

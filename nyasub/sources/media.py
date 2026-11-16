@@ -60,7 +60,7 @@ def probe(path):
         elif kind == "subtitle":
             tags = s.get("tags", {}) or {}
             res["subtitles"].append({
-                "sub_index": sub_idx, "codec": s.get("codec_name", ""),
+                "index": s["index"], "sub_index": sub_idx, "codec": s.get("codec_name", ""),
                 "lang": tags.get("language", ""), "title": tags.get("title", ""),
             })
             sub_idx += 1
@@ -98,12 +98,12 @@ def extract_arib_styled(path, sub, out_path, font=""):
     subprocess.run(cmd, check=True)
 
 
-def dump_data_stream(path, index, out_path, probe_bytes=0):
-    """原样导出数据流内容。probe_bytes>0 时只读开头一小段（用来判断是不是字幕）。"""
+def dump_data_stream(path, index, out_path, probe_bytes=0, max_seconds=900):
+    """原样导出数据流内容。probe_bytes>0 时读到指定大小就停（用来判断是不是字幕）。"""
     _need("ffmpeg")
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", path, "-map", f"0:{index}", "-c", "copy", "-f", "data"]
-    if probe_bytes:
-        cmd += ["-t", "900"]  # 只看前 15 分钟，空数据流不必扫完整个文件
+    if probe_bytes and max_seconds:
+        cmd += ["-t", str(max_seconds)]
     cmd.append("-")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     got = 0
@@ -122,10 +122,13 @@ def dump_data_stream(path, index, out_path, probe_bytes=0):
     return got
 
 
-def peek_data_stream(path, index, test, limit=1 << 20):
-    """读数据流开头一小段（最多 limit 字节、前 15 分钟），test(已读内容) 为真马上停。返回 test 的结果。"""
+def peek_data_stream(path, index, test, limit=1 << 20, max_seconds=900):
+    """读数据流开头一小段（最多 limit 字节），test(已读内容) 为真马上停。返回 test 的结果。"""
     _need("ffmpeg")
-    cmd = ["ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-c", "copy", "-f", "data", "-t", "900", "-"]
+    cmd = ["ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-c", "copy", "-f", "data"]
+    if max_seconds:
+        cmd += ["-t", str(max_seconds)]
+    cmd.append("-")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     data = b""
     try:

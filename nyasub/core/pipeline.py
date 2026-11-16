@@ -583,6 +583,20 @@ class Run:
         return subtitle.find_external(str(self.proj.video), skip_names=self.output_names() + self.written_names(),
                                       legacy_srt=legacy)
 
+    @staticmethod
+    def _ttml_indices(info):
+        """Return stream indexes that may contain ARIB-TTML XML."""
+        indices = list(info.get("data_streams") or [])
+        for sub in info.get("subtitles") or []:
+            if sub.get("index") is not None:
+                indices.append(sub["index"])
+        return list(dict.fromkeys(indices))
+
+    @staticmethod
+    def _ttml_probe_seconds(info, index):
+        # Subtitle timestamps can begin well after the first 15 minutes of a recording.
+        return 0 if any(s.get("index") == index for s in info.get("subtitles") or []) else 900
+
     def _load_subs(self, info):
         from ..sources import media, subtitle
 
@@ -596,13 +610,15 @@ class Run:
             cues = subtitle.load_cues(path, ratio)
             log(f"字幕：{os.path.basename(path)}，{len(cues)} 条")
             return cues
-        tracks = [s for s in info["subtitles"] if s["codec"] in media.TEXT_SUB_CODECS]
-        if c.track is not None:
-            tracks = [s for s in info["subtitles"] if s["sub_index"] == c.track]
-        if not tracks and info.get("data_streams") and c.track is None:
+        # Some 4K recordings carry ARIB-TTML XML in a stream that ffprobe labels
+        # arib_caption. Detect that payload before trying libaribcaption.
+        if c.track is None and (info.get("data_streams") or (info.get("video") or {}).get("height", 0) > 1080):
             cues = self._arib_ttml(info, ratio)
             if cues:
                 return cues
+        tracks = [s for s in info["subtitles"] if s["codec"] in media.TEXT_SUB_CODECS]
+        if c.track is not None:
+            tracks = [s for s in info["subtitles"] if s["sub_index"] == c.track]
         if not tracks:
             if info["subtitles"]:
                 log(f"内封字幕都是图片格式（{', '.join(s['codec'] for s in info['subtitles'])}），暂不支持，按无字幕处理")
@@ -625,9 +641,10 @@ class Run:
         """4K 广播字幕（ARIB-TTML）的数据流导出成文件，返回路径；没有返回 None（单独导出广播字幕原样用，和 _arib_ttml 导出的是同一个文件）。"""
         from ..sources import media, subtitle
 
-        for idx in info.get("data_streams") or []:  # 先读开头一小段看是不是，是才完整导出
+        for idx in self._ttml_indices(info):  # 先读开头一小段看是不是，是才完整导出
             probe_path = self.proj.media(f"data_{idx}.probe")
-            media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20)
+            media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20,
+                                   max_seconds=self._ttml_probe_seconds(info, idx))
             head = probe_path.read_bytes()
             probe_path.unlink()
             if not subtitle.is_arib_ttml(head):
@@ -641,9 +658,10 @@ class Run:
     def _arib_ttml(self, info, ratio):
         from ..sources import media, subtitle
 
-        for idx in info["data_streams"]:
+        for idx in self._ttml_indices(info):
             probe_path = self.proj.media(f"data_{idx}.probe")
-            media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20)
+            media.dump_data_stream(str(self.proj.video), idx, str(probe_path), probe_bytes=1 << 20,
+                                   max_seconds=self._ttml_probe_seconds(info, idx))
             head = probe_path.read_bytes()
             probe_path.unlink()
             if not subtitle.is_arib_ttml(head):
@@ -1360,6 +1378,15 @@ class Run:
         info = info or self.results.get("probe") or {}
         if not c.enabled or (self.opts.subs_path or "").lower() == "none" or (self._subs_file() and c.track is None):
             return None
+        bins = sorted(self.proj.root.glob("media/arib_ttml_*.bin"))
+        if bins and c.track is None:
+            return ("ttml", bins[0])
+        if guess and c.track is None and self._ttml_indices(info) and "subs" not in self.results:
+            rec = self.peeked_ttml()
+            if rec is None:
+                return ("peek", None)
+            if rec.get("ttml") is not None:
+                return ("ttml", None)
         tracks = [s for s in info.get("subtitles", []) if s["codec"] in media.TEXT_SUB_CODECS]
         if c.track is not None:
             tracks = [s for s in info.get("subtitles", []) if s["sub_index"] == c.track]
@@ -1368,12 +1395,6 @@ class Run:
             tracks.sort(key=lambda s: (s["codec"] != "arib_caption",
                                        want != "auto" and lang.canonical(s["lang"]) != lang.canonical(want)))
             return ("arib", tracks[0]) if tracks[0]["codec"] == "arib_caption" else None
-        bins = sorted(self.proj.root.glob("media/arib_ttml_*.bin"))
-        if bins and c.track is None:
-            return ("ttml", bins[0])
-        if guess and c.track is None and info.get("data_streams") and "subs" not in self.results:
-            rec = self.peeked_ttml()
-            return ("peek", None) if rec is None else (("ttml", None) if rec.get("ttml") is not None else None)
         return None
 
     def _peek_key(self):
@@ -1390,9 +1411,12 @@ class Run:
         from ..sources import media, subtitle
 
         found = None
-        for idx in info.get("data_streams") or []:
+        for idx in self._ttml_indices(info):
             try:
-                if media.peek_data_stream(str(self.proj.video), idx, subtitle.is_arib_ttml):
+                kwargs = {}
+                if self._ttml_probe_seconds(info, idx) == 0:
+                    kwargs["max_seconds"] = 0
+                if media.peek_data_stream(str(self.proj.video), idx, subtitle.is_arib_ttml, **kwargs):
                     found = idx
                     break
             except Exception as e:
