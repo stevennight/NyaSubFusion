@@ -49,7 +49,7 @@ class StageDef:
 
 
 DEFS = {
-    "probe": StageDef([], [], version=2),  # v2：记录视频编码（判断能否直接在界面里播放）
+    "probe": StageDef([], [], version=3),  # v3：记录字幕流的真实 stream index，识别 ARIB-TTML subtitle 流
     "audio": StageDef(["probe"], []),
     "subs": StageDef(["probe"], ["subs.enabled", "subs.ruby_size_ratio", "subs.track"]),
     "asr": StageDef(["audio"], ["asr.enabled", "asr.model", "asr.beam_size", "asr.vad", "asr.vad_threshold",
