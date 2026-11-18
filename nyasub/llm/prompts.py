@@ -86,7 +86,8 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "") -> 
 8. 人名、地名、专有名词、动植物和食物名称严格按术语表统一（同一个名字全集只用一种译法，不同的人不能混用名字）；
    本段第一次出现、术语表里没有的人名 / 地名 / 专有名词，在 new_terms 里给出你采用的译名，后面各段会沿用；术语表里没有的，用{tgt.name}观众最熟悉的常用叫法，
    常用叫法不明确时用学名 / 正式名，不要含糊地译成上位词。当地特有叫法第一次出现时可以在括号里简短注明，之后不再重复注释。
-9. {tgt.prompt_target_rules(tgt_opts)}"""
+9. {tgt.prompt_target_rules(tgt_opts)}
+{SUBTITLE_FLOW_RULES}"""
 
 
 def _position(it):
@@ -240,6 +241,13 @@ def organize_prompt(chunk, gl_text, summary, context_cues) -> str:
 KIND = {"narration": "旁白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
 
 
+SUBTITLE_FLOW_RULES = """- 每屏译文按目标语言的语序组织，连接词与它引出的分句一起显示，让每屏形成自然的意群。
+  同一说话人连续说的同一句话跨相邻屏时，允许将转折、因果等连接成分移到相邻屏，保持整句的逻辑和语气；
+  例如日译中「深い海に暮らしていますが｜冬になると…」可译为「生活在深海｜但到了冬季…」；其他语言按各自语法决定连接成分的位置。
+  人物、动作、否定、数量等主要信息仍对应原来的屏，不提前透露后文。换人、换话题或有明显长停顿时不要跨屏移动。
+  跨字幕条目移动只限本次一起输出的相邻条目；仅供参考的前后文保持原样，连接关系完整保留，避免漏译或重复。"""
+
+
 def translate_rules(tgt, tgt_opts: dict) -> str:
     """翻译时的合并 / 分屏规则和输出格式（普通翻译和分组翻共用）。"""
     return f"""输出 JSON：{{"items": [{{"ids": ["q12"], "tr": "译文"}}, {{"ids": ["q13", "q14"], "tr": "合成一条的译文"}}]}}，
@@ -247,7 +255,8 @@ def translate_rules(tgt, tgt_opts: dict) -> str:
 - 合成一条：同一个人说的一句话被拆在相邻几条字幕里（原来是前后几屏），按原来的分法拆开，{tgt.name}就不通顺（语序要颠倒、半句话没法单独译）时，
   可以把这几条（最多 4 条、连续、都是对话或都是旁白、间隔不超过 2 秒）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合。
   合成的那条原文就是这几条按顺序用“｜”接起来：译文能按原来的几屏分开就用“｜”分成同样多段（语序可以在段之间微调），实在分不开就写成一段。
-- 原文里的“｜”是分屏标记：译文要分成同样多段，每段只译原文同一段里的内容。
+- 原文里的“｜”是分屏标记：译文要分成同样多段，每段的主要信息与原文同一段对应。
+{SUBTITLE_FLOW_RULES}
 - 原文里的“ / ”是原来的换行：译文只在这些地方、或者一行放不下时才换行（JSON 里写作 \\n），不要另加换行；译文里不要写“ / ”。
 - 主语：原文常省略主语，没说出“我 / 你 / 他”的，译文一般也不要补；非补不可时先弄清是谁：
   旁白是第三人称叙述（写“她 / 他”或名字，绝不能写成“我”）；说话人在讲别人的事（「（妻は）…」是在讲妻子）时主语是那个人；
@@ -301,7 +310,8 @@ def missing_system(src, tgt, context: str, tgt_opts: dict) -> str:
 你会收到几条还没有翻译的{src.name}文本（画面上打出的说明、标签、问题概括，或者漏翻的台词），每条附前后已经翻好的字幕作参考。
 请把每条翻译成{tgt.name}，输出 JSON：{{"items": [{{"id": "q12", "tr": "译文"}}]}}，每个 id 都要有且只有一条。
 画面上的说明文字译得简洁；和前后台词意思重复也照样翻译，不要省略。
-人名、地名、专有名词、动植物和食物名称按术语表统一。{tgt.prompt_target_rules(tgt_opts)}"""
+人名、地名、专有名词、动植物和食物名称按术语表统一。{tgt.prompt_target_rules(tgt_opts)}
+{SUBTITLE_FLOW_RULES}"""
 
 
 def missing_prompt(cues, idx, gl_text, tgt_code) -> str:
@@ -322,7 +332,8 @@ def extra_target_system(src, tgt, ref, context: str, tgt_opts: dict) -> str:
 你会收到已经整理好的{src.name}字幕，每条带 id，并附有{ref.name}参考译文（只帮助理解，不要照搬它的措辞）。
 请把每条翻译成{tgt.name}，输出 JSON：{{"items": [{{"id": "q12", "tr": "译文"}}]}}，每个 id 都要有且只有一条。
 人名、地名、专有名词按术语表统一。{tgt.prompt_target_rules(tgt_opts)}
-原文里的“｜”是分段标记，译文要分成同样多段，每段只译原文同一段里的内容。"""
+原文里的“｜”是分段标记，译文要分成同样多段，每段的主要信息与原文同一段对应。
+{SUBTITLE_FLOW_RULES}"""
 
 
 def extra_target_prompt(cues, gl_text, src_code, ref_code) -> str:

@@ -67,7 +67,8 @@ DEFS = {
                                     "llm.chunk_seconds", "llm.chunk_max_items"], version=4),
     # v4：大模型整行漏抄了的字幕补回原文（「水鳥が快適に生息できる環境が／守られていると」只抄了第一行）
     "translate": StageDef(["organize"], ["project.targets", "project.context", "project.synopsis", "llm.model", "llm.temperature",
-                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=8),
+                                         "llm.chunk_seconds", "llm.chunk_max_items", "render.lang_options"], version=9),
+    # v9：连接成分按目标语言的意群跨相邻屏安排，主要信息仍与原屏对应
     # v8：术语表 / 译文里夹着假名的（「ヘビトンボ幼虫（孙太郎）」）改成中文；统一译名带上节目说明（生成术语表也带上，只对新整理的生效）
     # v7：不擅自补主语（旁白写成“我”、讲妻子的事写成“我”）
     # v6：只翻一次（普通翻译或分组按顺序翻），翻的时候可以把相邻几条合成一条；补翻、重新分段、拆长句从整理挪过来；参考画面用在这里
