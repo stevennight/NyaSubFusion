@@ -262,6 +262,12 @@ function SubsStep({ ctx }: { ctx: StepCtx }) {
         <span className="lbl">用哪条字幕</span>
         <input className="inp" placeholder="空 = 自动找同名外挂字幕 / 内封字幕；也可以写字幕文件的路径" value={String(val("subs.path") ?? "")} onChange={(e) => set("subs.path", e.target.value)} />
         <span /><span className="hint">最可信的来源：有字幕时以它为准，语音和画面字用来补漏、对时间。来自电视广播时还能输出“广播字幕原样”（在「输出」里）。</span>
+        <Lbl ctx={ctx} k="subs.skip_sound_annotations">声音说明</Lbl>
+        <label className="row">
+          <input type="checkbox" checked={!!val("subs.skip_sound_annotations")} onChange={(e) => set("subs.skip_sound_annotations", e.target.checked)} />
+          跳过声音说明
+          <span className="hint">过滤笑声、掌声、伴奏等标注，台词和歌词照常翻译。</span>
+        </label>
       </div>
     </div>
   );

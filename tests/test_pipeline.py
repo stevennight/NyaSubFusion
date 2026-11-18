@@ -45,6 +45,33 @@ def test_full_run_two_targets(sample, api_config, fake):
     assert "main" in subs.styles and "sub" in subs.styles
 
 
+def test_skip_sound_annotations_before_translation(sample, api_config, fake):
+    subtitle = sample.with_suffix(".srt")
+    subtitle.write_text(
+        "1\n00:00:00,200 --> 00:00:01,800\n♪（祭り囃子）\n\n"
+        "2\n00:00:02,000 --> 00:00:03,800\n（田中）こんにちは（笑）\n（拍手）\n\n"
+        "3\n00:00:04,000 --> 00:00:05,800\n♪ 春が来た（伴奏）\n\n"
+        "4\n00:00:06,000 --> 00:00:07,800\n[波の音]\n\n"
+        "5\n00:00:08,000 --> 00:00:09,800\n（男性の声）聞こえますか？\n",
+        encoding="utf-8",
+    )
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    stages = sample.with_name("sample.nyasub") / "stages"
+    before = (stages / "subs.json").read_bytes()
+    assert "祭り囃子" in (stages / "translate.json").read_text(encoding="utf-8")
+
+    cfg = api_config.with_name("skip_sound.toml")
+    cfg.write_text(api_config.read_text(encoding="utf-8") + "\n[subs]\nskip_sound_annotations = true\n", encoding="utf-8")
+    fake.CALLS.clear()
+    assert run(sample, "--no-asr", "--no-ocr", "--config", cfg) == 0
+
+    data = json.loads((stages / "translate.json").read_text(encoding="utf-8"))
+    assert [c["orig"]["text"] for c in data["cues"]] == ["（田中）こんにちは", "♪ 春が来た", "（男性の声）聞こえますか？"]
+    assert [(c["start"], c["end"]) for c in data["cues"]] == [(2.0, 3.8), (4.0, 5.8), (8.0, 9.8)]
+    assert all(not any(note in user for note in ("祭り囃子", "（笑）", "拍手", "伴奏", "波の音")) for _, user in fake.CALLS)
+    assert (stages / "subs.json").read_bytes() == before
+
+
 def test_cache_reuse_and_partial_redo(sample, api_config, fake):
     assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
     calls = len(fake.CALLS)

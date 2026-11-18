@@ -136,6 +136,8 @@ class Run:
         if name == "subs":
             path = self._subs_file()
             return {"arg": self.opts.subs_path, "file": file_stamp(path) if path else None}
+        if name == "align" and self.cfg.subs.skip_sound_annotations:
+            return {"skip_sound_annotations": True}
         if name == "ocr":  # 识别语言和实际用的模型（auto 时取决于有没有 GPU）都会影响结果
             models = None
             if self.cfg.ocr.det_model == "auto" or self.cfg.ocr.rec_model == "auto":
@@ -821,6 +823,15 @@ class Run:
         from ..fusion.align import apply_offset, estimate_offset
         from ..fusion.speakers import split_speakers
 
+        if self.cfg.subs.skip_sound_annotations:
+            from ..sources.subtitle import without_sound_annotations
+
+            cleaned = [without_sound_annotations(c) for c in subs]
+            removed = sum(c is None for c in cleaned)
+            trimmed = sum(c is not None and c is not orig for orig, c in zip(subs, cleaned))
+            subs = [c for c in cleaned if c is not None]
+            if removed or trimmed:
+                log(f"声音说明：跳过 {removed} 条，清理混合字幕 {trimmed} 条")
         segs = asr["segments"]
         off = 0.0
         if subs and segs and self.cfg.fusion.auto_sync:
