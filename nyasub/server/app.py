@@ -115,8 +115,17 @@ def _fetch_openai_models(base_url: str, key: str) -> dict:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     try:
-        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
-            resp = client.get(url, headers=headers)
+        for attempt in range(4):
+            try:
+                with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                    resp = client.get(url, headers=headers)
+                break
+            except httpx.TransportError:
+                # 代理或 TUN 在 TLS 握手阶段偶发 EOF 断连，仅对传输层错误做短退避重试
+                if attempt < 3:
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+                raise
         if resp.status_code >= 400:
             msg = ""
             try:

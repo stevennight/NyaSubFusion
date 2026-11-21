@@ -49,7 +49,7 @@ class StageDef:
 
 
 DEFS = {
-    "probe": StageDef([], [], version=3),  # v3：记录字幕流的真实 stream index，识别 ARIB-TTML subtitle 流
+    "probe": StageDef([], [], version=4),  # v4：自动识别片头无 PMT、延迟出现的 ARIB 字幕流；v3：记录字幕流的真实 stream index，识别 ARIB-TTML subtitle 流
     "audio": StageDef(["probe"], []),
     "subs": StageDef(["probe"], ["subs.enabled", "subs.ruby_size_ratio", "subs.track"]),
     "asr": StageDef(["audio"], ["asr.enabled", "asr.model", "asr.beam_size", "asr.vad", "asr.vad_threshold",
@@ -161,10 +161,17 @@ class Run:
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.effort("asr"):
                     d["api"]["effort"] = self.cfg.effort("asr")
-                if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
+                if self.cfg.asr.api_kind == "gemini":
                     from ..sources.asr_api import ALIGN_V
 
-                    d["api"]["timing"] = [self.cfg.asr.api_timing_model.strip(), ALIGN_V]
+                    if self.cfg.asr.api_timing_provider == "local":
+                        d["api"]["timing"] = ["local", self.cfg.asr.model, ALIGN_V]
+                    elif self.cfg.asr.api_timing_model.strip():
+                        if self.cfg.asr.api_timing_provider:
+                            tep = self.cfg.endpoint("asr_timing")
+                            d["api"]["timing"] = [tep["base_url"], self.cfg.asr.api_timing_model.strip(), ALIGN_V]
+                        else:
+                            d["api"]["timing"] = [self.cfg.asr.api_timing_model.strip(), ALIGN_V]
                 if self.cfg.asr.api_kind == "gemini" and (self.cfg.project.context.strip() or self.cfg.project.synopsis.strip()):  # 背景资料也发给大模型
                     d["api"]["context"] = digest("\n\n".join(x for x in (self.cfg.project.context.strip(), self.cfg.project.synopsis.strip()) if x))
                 if self.cfg.asr.api_kind == "gemini" and self._user_terms():  # 术语表里人工给的名字也发给大模型
@@ -761,11 +768,23 @@ class Run:
             from ..sources import asr_api
 
             asr_context = "\n\n".join(x for x in (self.cfg.project.context.strip(), self.cfg.project.synopsis.strip()) if x)
+            extra_kw = {}
+            if c.api_kind == "gemini":
+                if c.api_timing_provider == "local":
+                    extra_kw["local_ref"] = lambda: asr.transcribe(
+                        str(self.proj / wav), c.model_dump(), whisper_lang,
+                        offset=info.get("audio_offset", 0.0), duration=info["duration"],
+                        fill_gaps=separated, junk=junk,
+                        detect_wav=self.proj / self.results["audio"]["wav"] if separated else None,
+                    )[0]
+                elif c.api_timing_provider.strip():
+                    extra_kw["timing_ep"] = self.cfg.endpoint("asr_timing")
             segs, detected = asr_api.transcribe(str(self.proj / wav),
                                                 dict(c.model_dump(), context=asr_context, names=self._user_terms()),
                                                 self.cfg.endpoint("asr"),
                                                 whisper_lang, offset=info.get("audio_offset", 0.0),
-                                                duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache")
+                                                duration=info["duration"], junk=junk, cache_dir=self.proj / "llm_cache",
+                                                **extra_kw)
         else:
             segs, detected = asr.transcribe(str(self.proj / wav), c.model_dump(), whisper_lang,
                                             offset=info.get("audio_offset", 0.0), duration=info["duration"],

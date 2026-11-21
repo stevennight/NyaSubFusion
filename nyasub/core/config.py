@@ -63,6 +63,7 @@ class AsrCfg(_M):
     api_chunk_seconds: float = 0             # 每块上传多长（秒）；0 = 自动：OpenRouter 3 分钟（它上游 60 秒超时），其它 10 分钟
     # 多模态大模型识别时，再用这个转写模型（同一个接口，比如 microsoft/mai-transcribe-2）识别一遍，借它的时间：
     # 大模型的字准、时间是估的（常差半秒以上），转写模型有逐字时间；句子起止对到转写模型的时间上，大模型漏掉的短感叹也补上。空 = 不用
+    api_timing_provider: str = ""            # 对时用哪个接口（空 = 和识别同一个；"local" = 本机 faster-whisper；或 providers 里的 name）
     api_timing_model: str = ""
     api_effort: str = ""                     # 多模态大模型识别时的思考程度；空 = 不设（使用模型默认）
 
@@ -338,6 +339,10 @@ class Config(_M):
             name = c.listen or c.translate
         if purpose == "asr":  # 云端语音识别：接口凭据和翻译共用一套，模型单独设
             name = self.asr.api_provider or c.asr or c.translate
+        if purpose == "asr_timing":
+            name = self.asr.api_timing_provider or self.asr.api_provider or c.asr or c.translate
+            if name == "local":
+                return {"name": "local", "kind": "local", "base_url": "", "model": self.asr.model, "key": ""}
         p = next((x for x in c.providers if x.name == name), None) if name else None
         if p:
             model = c.translate_model.strip() or p.model
@@ -347,6 +352,8 @@ class Config(_M):
                 model = c.refine_model.strip() or p.vision_model or p.model
             elif purpose == "asr":
                 model = self.asr_api_model()
+            elif purpose == "asr_timing":
+                model = self.asr.api_timing_model.strip()
             elif purpose == "listen":  # 单独选了听音接口时没填听音模型就用它的模型；跟着翻译接口时要填了听音模型才算设了
                 model = c.listen_model.strip() or p.listen_model or (p.model if c.listen else "")
             if p.kind != "openai":
@@ -360,6 +367,8 @@ class Config(_M):
             model = c.refine_model.strip() or c.vision_model or c.model
         elif purpose == "asr":
             model = self.asr_api_model()
+        elif purpose == "asr_timing":
+            model = self.asr.api_timing_model.strip()
         elif purpose == "listen":
             model = c.listen_model.strip()
         key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")

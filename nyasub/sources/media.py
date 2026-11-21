@@ -14,6 +14,85 @@ def _need(tool):
         raise RuntimeError(f"找不到 {tool}，请先安装 ffmpeg 并加入 PATH")
 
 
+def _probe_delayed_subs(path, streams, orig_start_time):
+    """某些广电 TS 录制片头几秒还没有 subtitle PMT，开头被 ffprobe 记成 bin_data。
+    对每个 bin_data 流取第 1 个包：若本身已是 subtitle 包且 pos > 0，则用 -skip_initial_bytes 重新探测。"""
+    bins = [s for s in streams if s.get("codec_type") == "data" and s.get("codec_name") == "bin_data"]
+    for b in bins:
+        idx = b.get("index")
+        if idx is None:
+            continue
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", str(idx), "-read_intervals", "%+60",
+            "-show_entries", "packet=codec_type,pos", "-of", "compact=p=0:nokey=0", path,
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                text=True, encoding="utf-8", errors="replace")
+        first = ""
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if "codec_type=" in line:
+                    first = line
+                    break
+        finally:
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+        if not first:
+            continue
+        kv = dict(part.split("=", 1) for part in first.split("|") if "=" in part)
+        if kv.get("codec_type") != "subtitle":
+            continue
+        try:
+            pos = int(kv.get("pos") or 0)
+        except ValueError:
+            continue
+        if pos <= 0:
+            continue
+        skip = (pos // 188) * 188
+        out2 = subprocess.run(
+            ["ffprobe", "-v", "error", "-skip_initial_bytes", str(skip),
+             "-print_format", "json", "-show_format", "-show_streams", path],
+            capture_output=True, check=True,
+        ).stdout
+        info2 = json.loads(out2.decode("utf-8", "replace"))
+        start2 = float((info2.get("format") or {}).get("start_time") or 0)
+        skip_offset = max(0.0, start2 - orig_start_time) if start2 and orig_start_time else 0.0
+        found = []
+        sub_i = 0
+        for s in info2.get("streams", []):
+            if s.get("codec_type") != "subtitle":
+                continue
+            tags = s.get("tags", {}) or {}
+            found.append({
+                "index": s["index"], "sub_index": sub_i, "codec": s.get("codec_name", ""),
+                "lang": tags.get("language", ""), "title": tags.get("title", ""),
+                "skip_bytes": skip, "skip_offset": round(skip_offset, 6),
+            })
+            sub_i += 1
+        if found:
+            return found
+    return []
+
+
+def _shift_ass(path, offset_sec):
+    """因 -skip_initial_bytes 跳过的片头时长补回 ASS 时间轴。"""
+    if not offset_sec or abs(float(offset_sec)) < 0.001:
+        return
+    import pysubs2
+
+    subs = pysubs2.load(str(path))
+    subs.shift(ms=round(float(offset_sec) * 1000))
+    subs.save(str(path))
+
+
 def probe(path):
     _need("ffprobe")
     out = subprocess.run(
@@ -64,6 +143,10 @@ def probe(path):
                 "lang": tags.get("language", ""), "title": tags.get("title", ""),
             })
             sub_idx += 1
+    if not res["subtitles"] and res.get("data_streams"):
+        delayed = _probe_delayed_subs(path, info.get("streams", []), res["start_time"])
+        if delayed:
+            res["subtitles"] = delayed
     if res["video"] is None and not res["has_audio"]:
         raise RuntimeError(f"{path} 里既没有视频也没有音频")
     return res
@@ -84,8 +167,11 @@ def extract_sub_stream(path, sub, out_path):
     cmd = ["ffmpeg", "-y", "-v", "error"]
     if sub["codec"] == "arib_caption":
         cmd += ["-fix_sub_duration", "-c:s", "libaribcaption", "-sub_type", "ass", "-ignore_ruby", "1"]
+    if sub.get("skip_bytes"):
+        cmd += ["-skip_initial_bytes", str(int(sub["skip_bytes"]))]
     cmd += ["-i", path, "-map", f"0:s:{sub['sub_index']}", "-c:s", "ass", out_path]
     subprocess.run(cmd, check=True)
+    _shift_ass(out_path, sub.get("skip_offset") or 0.0)
 
 
 def extract_arib_styled(path, sub, out_path, font=""):
@@ -94,8 +180,11 @@ def extract_arib_styled(path, sub, out_path, font=""):
     cmd = ["ffmpeg", "-y", "-v", "error", "-fix_sub_duration", "-c:s", "libaribcaption", "-sub_type", "ass"]
     if font:
         cmd += ["-font", font]
+    if sub.get("skip_bytes"):
+        cmd += ["-skip_initial_bytes", str(int(sub["skip_bytes"]))]
     cmd += ["-i", path, "-map", f"0:s:{sub['sub_index']}", "-c:s", "ass", out_path]
     subprocess.run(cmd, check=True)
+    _shift_ass(out_path, sub.get("skip_offset") or 0.0)
 
 
 def dump_data_stream(path, index, out_path, probe_bytes=0, max_seconds=900):

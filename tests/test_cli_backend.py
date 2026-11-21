@@ -678,3 +678,168 @@ def test_step_model_and_effort_overrides(tmp_path, monkeypatch):
     assert r_eff._extra("organize")["effort"] == "low"
     assert r_eff._extra("translate")["listen_effort"] == "low"
     assert r_eff._extra("translate")["effort"] == "high"
+
+
+def test_asr_cross_provider_and_local_timing(tmp_path, monkeypatch):
+    import wave
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from nyasub.core import pipeline
+    from nyasub.sources import media
+
+    wav = tmp_path / "t.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(b"\x01\x00" * 32000)  # 2s
+
+    monkeypatch.setattr(cli_backend, "call_cli", lambda *a, **kw: (
+        json.dumps({"language": "ja", "segments": [{"start": "00:00.10", "end": "00:00.90", "text": "礼文島は花の島"}]}),
+        None,
+    ))
+
+    # 1) agy 识别 + 本机 local 对时
+    cfg_local = config.Config.model_validate({
+        "llm": {"translate": "agy", "providers": [{"name": "agy", "kind": "agy", "model": "gemini-4-neon-medium"}]},
+        "asr": {"backend": "api", "api_provider": "agy", "api_kind": "gemini", "api_model": "gemini-4-hydrogen-medium", "api_timing_provider": "local"},
+    })
+    assert cfg_local.endpoint("asr_timing")["kind"] == "local"
+    called_local = [0]
+
+    def fake_local_ref():
+        called_local[0] += 1
+        return [{
+            "id": "w1", "start": 0.45, "end": 1.35, "text": "れぶん島は花の島",
+            "words": [
+                {"w": "礼文島は", "s": 0.45, "e": 0.90},
+                {"w": "花の島", "s": 0.90, "e": 1.35},
+            ],
+        }]
+
+    segs, _ = asr_api.transcribe(wav, cfg_local.asr.model_dump(), cfg_local.endpoint("asr"),
+                                 cache_dir=tmp_path / "clocal", timing_ep=cfg_local.endpoint("asr_timing"), local_ref=fake_local_ref)
+    assert called_local[0] == 1 and len(segs) == 1
+    assert segs[0]["timing"] == "aligned" and segs[0]["start"] == pytest.approx(0.45, abs=0.05) and segs[0]["end"] == pytest.approx(1.35, abs=0.05)
+
+    # 2) agy 识别 + 跨接口 OpenAI 转写对时
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+
+    class _MockTrans(BaseHTTPRequestHandler):
+        def do_POST(self):
+            ln = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(ln)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "language": "ja",
+                "segments": [{"start": 0.60, "end": 1.50, "text": "礼文島は花の島"}],
+                "words": [{"word": "礼文島は", "start": 0.60, "end": 1.05}, {"word": "花の島", "start": 1.05, "end": 1.50}],
+            }).encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), _MockTrans)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        cfg_cross = config.Config.model_validate({
+            "llm": {
+                "translate": "agy",
+                "providers": [
+                    {"name": "agy", "kind": "agy", "model": "gemini-4-neon-medium"},
+                    {"name": "or", "base_url": f"http://127.0.0.1:{srv.server_port}/v1", "model": "gpt-5", "api_key": "sk-mock"},
+                ],
+            },
+            "asr": {"backend": "api", "api_provider": "agy", "api_kind": "gemini", "api_model": "gemini-4-hydrogen-medium",
+                    "api_timing_provider": "or", "api_timing_model": "mai-transcribe-2"},
+        })
+        tep = cfg_cross.endpoint("asr_timing")
+        assert tep["name"] == "or" and tep["model"] == "mai-transcribe-2"
+        segs2, _ = asr_api.transcribe(wav, cfg_cross.asr.model_dump(), cfg_cross.endpoint("asr"),
+                                      cache_dir=tmp_path / "ccross", timing_ep=tep)
+        assert segs2[0]["timing"] == "aligned" and segs2[0]["start"] == pytest.approx(0.60, abs=0.05) and segs2[0]["end"] == pytest.approx(1.50, abs=0.05)
+
+        vid = tmp_path / "v.mp4"
+        vid.write_bytes(b"mp4")
+        r_loc = pipeline.Run(str(vid), cfg_local, pipeline.Options(workdir=str(tmp_path / "wl")))
+        r_crs = pipeline.Run(str(vid), cfg_cross, pipeline.Options(workdir=str(tmp_path / "wc")))
+        assert r_loc._extra("asr")["api"]["timing"][:2] == ["local", cfg_local.asr.model]
+        assert r_crs._extra("asr")["api"]["timing"][:2] == [tep["base_url"], "mai-transcribe-2"]
+    finally:
+        srv.shutdown()
+
+    # 3) _shift_ass 保留广播定位标签并准确平移毫秒
+    import pysubs2
+
+    ass_path = tmp_path / "bcast.ass"
+    sfile = pysubs2.SSAFile()
+    sfile.events.append(pysubs2.SSAEvent(start=3260, end=6260, text=r"{\an7}{\pos(378,449)}風の中に➡"))
+    sfile.save(str(ass_path))
+    media._shift_ass(ass_path, 6.224)
+    shifted = pysubs2.load(str(ass_path))
+    # ASS 格式最小时间粒度为厘秒（10ms）
+    assert shifted.events[0].start == 9480 and shifted.events[0].end == 12480
+    assert r"{\an7}{\pos(378,449)}風の中に➡" in shifted.events[0].text
+
+
+def test_fetch_openai_models_retries_transport_error(monkeypatch):
+    """_fetch_openai_models 仅对 httpx.TransportError 短退避重试，HTTP 错误不重试。"""
+    import httpx
+    from nyasub.server import app as server_app
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(server_app.time, "sleep", lambda d: sleeps.append(d))
+
+    outcomes: list[object] = []
+    calls: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            calls.append(url)
+            res = outcomes.pop(0)
+            if isinstance(res, Exception):
+                raise res
+            return res
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    # 1. 前 2 次传输层 EOF 失败，第 3 次成功
+    outcomes[:] = [
+        httpx.ConnectError("transient EOF"),
+        httpx.ConnectError("transient EOF"),
+        httpx.Response(200, json={"data": [{"id": "gpt-5"}]}),
+    ]
+    res = server_app._fetch_openai_models("https://openrouter.ai/api/v1", "sk-test")
+    assert res["ok"] is True
+    assert [m["id"] for m in res["models"]] == ["gpt-5"]
+    assert len(calls) == 3
+    assert sleeps == pytest.approx([0.4, 0.8])
+
+    # 2. HTTP 401 立即返回，不重试
+    calls.clear()
+    sleeps.clear()
+    outcomes[:] = [httpx.Response(401, json={"error": {"message": "bad key"}})]
+    res = server_app._fetch_openai_models("https://openrouter.ai/api/v1", "sk-bad")
+    assert res["ok"] is False
+    assert "HTTP 401" in res["error"]
+    assert len(calls) == 1
+    assert sleeps == []
+
+    # 3. 连续 4 次 TransportError 后返回最终错误
+    calls.clear()
+    sleeps.clear()
+    outcomes[:] = [httpx.ConnectError("persistent EOF")] * 4
+    res = server_app._fetch_openai_models("https://openrouter.ai/api/v1", "sk-test")
+    assert res["ok"] is False
+    assert "persistent EOF" in res["error"]
+    assert len(calls) == 4
+    assert sleeps == pytest.approx([0.4, 0.8, 1.2])
+

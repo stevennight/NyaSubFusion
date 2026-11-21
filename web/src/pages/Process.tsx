@@ -406,6 +406,17 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
     legacyBase,
     asrProvider && asrKind === "codex" ? "当前翻译接口为 Codex CLI（不支持音频），请在上方选 OpenAI 兼容接口或 Antigravity CLI" : "",
   );
+  const timingProviderName = String(val("asr.api_timing_provider") ?? "").trim();
+  const timingLocal = timingProviderName === "local";
+  const timingProviderObj = timingLocal ? undefined : (timingProviderName ? allProviders.find((p) => p.name === timingProviderName) : asrProvider);
+  const timingKind = timingProviderObj?.kind ?? "openai";
+  const timingKey = modelKey(timingProviderObj, legacyBase);
+  const timingFetched = modelLists[timingKey];
+  const onFetchTiming = () => fetchModels(
+    timingProviderObj,
+    legacyBase,
+    timingKind !== "openai" ? "对时需 OpenAI 兼容的转写接口（或将对时接口选为「本机 faster-whisper」）" : "",
+  );
   const setKind = (k: keyof typeof ASR_API_KINDS) => {
     set("asr.api_kind", k);
     const m = String(val("asr.api_model") ?? "");
@@ -455,23 +466,36 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
               models={apiFetched?.models}
               tip="多模态大模型听音转写时的思考程度（空 = 使用模型/接口默认）。通常 low 或不设即可。"
             />
-            <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
+            <Lbl ctx={ctx} k="asr.api_timing_provider">对时接口</Lbl>
             <div className="row">
-              <ModelPicker
-                value={String(val("asr.api_timing_model") ?? "")}
-                placeholder="可选：转写模型，比如 microsoft/mai-transcribe-2"
-                filterModality="audio"
-                allowClear
-                models={apiFetched?.models}
-                loading={apiFetched?.loading}
-                error={apiFetched?.error}
-                loaded={apiFetched?.loaded}
-                onFetch={onFetch}
-                onChange={(v) => set("asr.api_timing_model", v.trim())}
-              />
-              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差半秒以上。填一个转写模型（同一个接口）时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" />
-              {asrKind === "agy" && <span className="hint" style={{ color: "var(--warn)" }}>Antigravity CLI 不支持转写对时接口，将自动跳过</span>}
+              <select className="inp" style={{ maxWidth: 320 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>
+                <option value="">和识别用同一个{asrProviderName ? `（${asrProviderName}）` : ""}</option>
+                <option value="local">本机 faster-whisper（免费 · 借 GPU 逐字时间）</option>
+                {allProviders.filter((p) => !p.kind || p.kind === "openai").map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+              </select>
+              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差几秒。选「本机 faster-whisper」可免费用显卡跑逐字时间来对齐大模型文字；也可单独选一个 OpenAI 兼容的转写接口（如 OpenRouter / OpenAI），不再受主识别接口限制。" />
             </div>
+            {timingLocal ? (
+              <><span /><div className="hint">使用本机 faster-whisper（{String(val("asr.model") || "large-v3")}）提取逐字时间，对齐上面多模态大模型识别出的精准文字。</div></>
+            ) : (<>
+              <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
+              <div className="row">
+                <ModelPicker
+                  value={String(val("asr.api_timing_model") ?? "")}
+                  placeholder="可选：转写模型，比如 microsoft/mai-transcribe-2"
+                  filterModality="audio"
+                  allowClear
+                  models={timingFetched?.models}
+                  loading={timingFetched?.loading}
+                  error={timingFetched?.error}
+                  loaded={timingFetched?.loaded}
+                  onFetch={onFetchTiming}
+                  onChange={(v) => set("asr.api_timing_model", v.trim())}
+                />
+                <Tip text="填一个转写模型时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" />
+                {timingKind === "agy" && <span className="hint" style={{ color: "var(--warn)" }}>Antigravity CLI 不支持转写对时接口（可上方改选「本机 faster-whisper」或 OpenAI 兼容接口）</span>}
+              </div>
+            </>)}
           </>)}
         </>) : (<>
           <Lbl ctx={ctx} k="asr.model">模型</Lbl>

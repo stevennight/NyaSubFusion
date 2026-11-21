@@ -527,7 +527,7 @@ def chunk_seconds(c: dict, ep: dict) -> float:
     return CHUNK_SHORT if ("openrouter.ai" in (ep.get("base_url") or "") or ep.get("kind") == "agy") else CHUNK
 
 
-def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None):
+def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None, timing_ep=None, local_ref=None):
     """c 是 AsrCfg 的 dict，ep 是 Config.endpoint("asr")。返回 (语音段列表, 检测到的语言)，和 asr.transcribe 一样。
     duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。"""
     kind = c.get("api_kind", "transcribe")
@@ -654,14 +654,22 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                  words=[dict(x, s=round(x["s"] + offset, 3), e=round(x["e"] + offset, 3)) for x in s["words"]])
         out.append({"id": f"a{len(out) + 1}", "start": s["start"], "end": s["end"], "text": s["text"],
                     "words": s["words"], "timing": s["timing"]})
+    timing_provider = (c.get("api_timing_provider") or "").strip() if kind == "gemini" else ""
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
-    if timing_model:
-        if ep_kind != "openai":
-            log("对时：当前语音识别接口是 Antigravity CLI，不支持转写对时接口，已跳过对时模型")
+    if timing_provider == "local":
+        if local_ref:
+            log(f"对时：再用本机 faster-whisper（{c.get('model') or 'default'}）跑逐字时间，对齐大模型文字")
+            out = align_to_reference(out, local_ref())
         else:
-            log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
-            ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context="", names=[]),
-                                dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
+            log("对时：指定了本机 faster-whisper 对时，但未传入本地识别回调，已跳过")
+    elif timing_model:
+        tep = timing_ep or dict(ep, model=timing_model)
+        if tep.get("kind", "openai") != "openai":
+            log(f"对时：接口「{tep.get('name') or tep.get('kind')}」不支持转写对时，已跳过（可将「对时接口」选为「本机 faster-whisper」或 OpenAI 兼容接口）")
+        else:
+            log(f"对时：再用 {tep.get('name') or tep['base_url']} · {timing_model} 识别一遍，句子的起止对到它的时间上")
+            ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", api_timing_provider="", context="", names=[]),
+                                dict(tep, model=timing_model), language, offset, duration, junk, cache_dir)
             out = align_to_reference(out, ref)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
     log(f"云端识别：{len(out)} 段（时间精度：" + "，".join(f"{n} {k}" for k, n in
