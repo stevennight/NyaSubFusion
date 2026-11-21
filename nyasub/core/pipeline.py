@@ -80,7 +80,9 @@ DEFS = {
     "annotate": StageDef(["translate"], ["render.strip_marks"], version=12),  # v12：只有画面字、语音也没念的“旁白”改成说明；v11：画面上的振假名当读音参考；v10：字面的“\n”换回换行；v9：画面上也打着的字幕句不再显示原文；v8：画面字的框只算原文里有的那几块字；v7：落在同一条字幕中间的“｜”合回去；v6：去掉标成 drop 的条目；v5：重新翻译后手动修改按锚点 / 内容对到新条目；v4：原文按段判断是否已在画面上；v3：说明类位置、去掉“ / ”；v2：去掉 ➡、分段时间
     # 输出视频（可选）：用排版好的字幕文件封装 MKV / 压制硬字幕
     "mux": StageDef(["annotate"], ["render.video.keep_subs", "render.video.fonts"]),
-    "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height"]),
+    "burn": StageDef(["annotate"], ["render.video.encoder", "render.video.quality", "render.video.height",
+                                    "render.video.bit_depth", "render.video.color_709",
+                                    "render.video.extra_args", "render.video.extra_vf"]),
 }
 VIDEO_STAGES = ("mux", "burn")
 # 4K 视频里带的是 2K 广播字幕：原生的 2K 字幕只会配 2K 视频，这多半是录制时把 4K 节目转成 .ts、字幕跟着从 4K 字幕转了一道。
@@ -1626,7 +1628,9 @@ class Run:
                     enc = "copy"
                 else:
                     _, enc = video.burn(self.proj.video, tracks[0]["path"], files, out, vinfo, vc.encoder, vc.quality,
-                                        vc.height, duration, self.cancel, self.proj.media("burn"))
+                                        vc.height, duration, self.cancel, self.proj.media("burn"),
+                                        bit_depth=vc.bit_depth, color_709=vc.color_709,
+                                        extra_args=vc.extra_args, extra_vf=vc.extra_vf)
             except video.Stopped:
                 log("已取消输出视频")
                 raise Cancelled()

@@ -24,7 +24,8 @@ const LBL: Record<string, string> = {
   "render.video.mode": "输出 › 运行完自动生成视频", "render.video.profiles": "封装 MKV › 放进哪些字幕", "render.video.default": "封装 MKV › 默认轨",
   "render.video.fonts": "封装 MKV › 字体", "render.video.keep_subs": "封装 MKV › 保留原有字幕轨", "render.video.broadcast": "封装 MKV › 放进广播字幕原样",
   "render.video.burn": "压制硬字幕 › 压哪一个", "render.video.encoder": "压制硬字幕 › 编码", "render.video.quality": "压制硬字幕 › 画质",
-  "render.video.height": "压制硬字幕 › 尺寸",
+  "render.video.height": "压制硬字幕 › 尺寸", "render.video.bit_depth": "压制硬字幕 › 色深", "render.video.color_709": "压制硬字幕 › 色彩空间",
+  "render.video.extra_args": "压制硬字幕 › 自定义参数", "render.video.extra_vf": "压制硬字幕 › 附加滤镜",
 };
 const STYLE_FIELD: Record<string, string> = {
   font: "字体", size: "字号", color: "文字颜色", outline_color: "描边颜色", outline: "描边", shadow: "阴影", bold: "粗体", italic: "斜体",

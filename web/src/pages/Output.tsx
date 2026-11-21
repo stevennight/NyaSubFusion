@@ -12,6 +12,7 @@ import { fmt, langName, pct, setIn, STAGE_LBL } from "../util";
 type Video = {
   mode: "off" | "mux" | "burn"; profiles: string[]; keep_subs: boolean; fonts: string; encoder: string;
   quality: number; height: number; broadcast: boolean; default: string; burn: string;
+  bit_depth?: "auto" | "8" | "10"; color_709?: "off" | "auto" | "force"; extra_args?: string; extra_vf?: string;
 };
 interface R {
   profiles: Profile[]; styles: Record<string, Style>; strip_marks: string[]; video: Video;
@@ -599,6 +600,28 @@ function VideoEditor({ r, update, doc, mode, bc }: { r: R; update: Upd; doc: Con
           <span className="lbl">尺寸</span>
           <select className="inp" value={vc.height} onChange={(e) => setV({ height: Number(e.target.value) })}>
             {[[0, "原尺寸"], [2160, "2160p"], [1080, "1080p"], [720, "720p"], [480, "480p"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <span className="lbl">色深</span>
+          <select className="inp" value={vc.bit_depth ?? "auto"} onChange={(e) => setV({ bit_depth: e.target.value as Video["bit_depth"] })}>
+            <option value="auto">自动（默认 8-bit；H.265 转 709 时用 10-bit）</option>
+            <option value="8">8-bit（yuv420p，兼容性最好）</option>
+            <option value="10">10-bit（Main 10 / 减少断层）</option>
+          </select>
+          <span className="lbl">色彩空间</span>
+          <select className="inp" value={vc.color_709 ?? "off"} onChange={(e) => setV({ color_709: e.target.value as Video["color_709"] })}>
+            <option value="off">保持原样</option>
+            <option value="auto">BT.2020 SDR 自动转 BT.709（zscale 线性光）</option>
+            <option value="force">强制按 BT.2020 SDR 转 BT.709</option>
+          </select>
+          <span className="lbl">自定义参数</span>
+          <div>
+            <input className="inp" style={{ width: "100%" }} value={vc.extra_args ?? ""}
+                   onChange={(e) => setV({ extra_args: e.target.value })}
+                   placeholder="-preset p6 -b:v 25M -maxrate 50M -spatial-aq 1 -bf 3" />
+            <div className="hint" style={{ marginTop: 4 }}>可选，附加给 FFmpeg；同名参数自动替换默认值</div>
+          </div>
+          <span className="lbl">附加滤镜</span>
+          <input className="inp" value={vc.extra_vf ?? ""} onChange={(e) => setV({ extra_vf: e.target.value })}
+                 placeholder="可选，例如 hqdn3d=1.5:1.5:6:6（拼在字幕滤镜前）" />
         </>)}
       </div>
     </div>

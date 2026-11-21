@@ -277,6 +277,7 @@ def test_auto_encoder_follows_source_codec_and_rate_is_capped():
 
     assert pick_encoders("auto", "hevc") == ["hevc_nvenc", "libx265"]
     assert pick_encoders("auto", "h264") == ["h264_nvenc", "libx264"]
+    assert pick_encoders("auto", "h264", bit_depth="10") == ["hevc_nvenc", "libx265"]
     assert pick_encoders("libx264", "hevc") == ["libx264"]
     uhd, fhd = (3840, 2160), (1920, 1080)
     assert rate_cap(25_000_000, "hevc", uhd, uhd, "hevc_nvenc") == 25_000_000
@@ -284,3 +285,107 @@ def test_auto_encoder_follows_source_codec_and_rate_is_capped():
     assert rate_cap(25_000_000, "hevc", uhd, uhd, "h264_nvenc") == 37_500_000     # H.265 → H.264 放宽 1.5 倍
     assert rate_cap(8_000_000, "h264", fhd, fhd, "libx264") == 8_000_000
     assert rate_cap(0, "hevc", uhd, uhd, "hevc_nvenc") is None
+
+
+def test_detect_bt2020_sdr(monkeypatch):
+    def fake(stream, trc=()):
+        monkeypatch.setattr(video, "streams", lambda path: [stream])
+        monkeypatch.setattr(video, "_body_transfer", lambda path, at: list(trc))
+        return video.detect_bt2020_sdr("x.ts", {"index": 0}, duration=100.0)
+
+    ok, _ = fake({"index": 0, "codec_type": "video", "codec_name": "h264", "color_primaries": "bt709"})
+    assert ok is False
+
+    ok, _ = fake({"index": 0, "codec_type": "video", "codec_name": "hevc", "color_primaries": "bt2020",
+                  "color_transfer": "arib-std-b67"}, trc=[1, 1, 1])
+    assert ok is True
+
+    ok, _ = fake({"index": 0, "codec_type": "video", "codec_name": "hevc", "color_primaries": "bt2020",
+                  "color_transfer": "arib-std-b67"}, trc=[18, 18, 1])
+    assert ok is False
+
+    ok, _ = fake({"index": 0, "codec_type": "video", "codec_name": "vp9", "color_primaries": "bt2020",
+                  "color_transfer": "smpte2084"})
+    assert ok is False
+
+
+def test_merge_ffmpeg_args():
+    base = ["-c:v", "hevc_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "20", "-b:v", "0",
+            "-maxrate", "20000000", "-bufsize", "40000000", "-pix_fmt", "p010le", "-c:a", "copy"]
+    merged = video.merge_ffmpeg_args(base, "-preset p6 -b:v 25M -spatial-aq 1")
+    assert merged == ["-c:v", "hevc_nvenc", "-tune", "hq", "-rc", "vbr", "-pix_fmt", "p010le", "-c:a", "copy",
+                      "-preset", "p6", "-b:v", "25M", "-spatial-aq", "1"]
+
+    with pytest.raises(RuntimeError, match="附加视频滤镜"):
+        video.merge_ffmpeg_args(base, "-vf scale=1280:720")
+    with pytest.raises(RuntimeError, match="自定义 FFmpeg 参数格式有误"):
+        video.merge_ffmpeg_args(base, '"unclosed')
+
+
+def test_burn_commands_for_709_bit_depth_and_extra_args(monkeypatch, tmp_path):
+    vid = tmp_path / "in.ts"
+    vid.write_bytes(b"\x00" * 1024)
+    ass = tmp_path / "s.ass"
+    ass.write_text("[Script Info]\n[Events]\n", encoding="utf-8")
+    vinfo = {"index": 0, "width": 3840, "height": 2160, "aspect": 16 / 9, "codec": "hevc", "interlaced": False}
+    captured = []
+
+    def fake_ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, vinfo=None):
+        captured.append(list(cmd))
+        part.write_bytes(b"ok")
+        return 0, "", 10.0
+
+    monkeypatch.setattr(video, "streams", lambda path: [
+        {"index": 0, "codec_type": "video", "codec_name": "hevc", "color_primaries": "bt2020"},
+        {"index": 1, "codec_type": "audio", "codec_name": "aac"},
+    ])
+    monkeypatch.setattr(video, "_body_transfer", lambda path, at: [1, 1])
+    monkeypatch.setattr(video, "_ffmpeg", fake_ffmpeg)
+
+    # 1. BT.2020 SDR 自动转 709 + hevc_nvenc + auto 色深 -> 10-bit p010le + zscale + hevc_metadata
+    out1 = tmp_path / "out1.mp4"
+    video.burn(str(vid), str(ass), [], out1, vinfo, encoder="hevc_nvenc", duration=10.0,
+               work_dir=tmp_path / "w1", bit_depth="auto", color_709="auto")
+    c1 = captured[-1]
+    assert "-hwaccel" in c1 and "-hwaccel_output_format" not in c1
+    vf1 = c1[c1.index("-vf") + 1]
+    assert "zscale=pin=2020:tin=709:min=2020_ncl:rin=limited:p=2020:t=linear:m=gbr:r=full:npl=100,format=gbrpf32le," in vf1
+    assert "format=yuv420p10le,subtitles=sub.ass:fontsdir=fonts,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709" in vf1
+    assert c1[c1.index("-profile:v") + 1] == "main10"
+    assert c1[c1.index("-pix_fmt") + 1] == "p010le"
+    assert "hevc_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1" in c1[c1.index("-bsf:v") + 1]
+
+    # 2. libx265 指定 10-bit（不开 709） -> main10 + yuv420p10le
+    out2 = tmp_path / "out2.mp4"
+    video.burn(str(vid), str(ass), [], out2, vinfo, encoder="libx265", duration=10.0,
+               work_dir=tmp_path / "w2", bit_depth="10", color_709="off")
+    c2 = captured[-1]
+    assert c2[c2.index("-profile:v") + 1] == "main10"
+    assert c2[c2.index("-pix_fmt") + 1] == "yuv420p10le"
+    assert "-bsf:v" not in c2
+
+    # 3. 附加滤镜拼在字幕滤镜前 + 自定义参数替换默认 -preset / -crf
+    out3 = tmp_path / "out3.mp4"
+    video.burn(str(vid), str(ass), [], out3, vinfo, encoder="libx264", duration=10.0,
+               work_dir=tmp_path / "w3", extra_vf="hqdn3d", extra_args="-preset slow -crf 18")
+    c3 = captured[-1]
+    vf3 = c3[c3.index("-vf") + 1]
+    assert vf3.index("hqdn3d") < vf3.index("subtitles=sub.ass:fontsdir=fonts")
+    assert c3[c3.index("-preset") + 1] == "slow" and c3.count("-preset") == 1
+    assert c3[c3.index("-crf") + 1] == "18" and c3.count("-crf") == 1
+
+
+def test_burn_force_709_real_ffmpeg(sample, api_config, fake):
+    cfg = api_config.with_name("burn_709.toml")
+    cfg.write_text(
+        api_config.read_text(encoding="utf-8")
+        + '[render.video]\nencoder = "libx264"\nquality = 30\ncolor_709 = "force"\nextra_args = "-preset ultrafast"\n',
+        encoding="utf-8",
+    )
+    assert run(sample, "--no-asr", "--no-ocr", "--config", cfg, "--video", "burn") == 0
+    out = sample.with_name("sample" + video.BURN_SUFFIX)
+    v = [s for s in probe_streams(out) if s["codec_type"] == "video"][0]
+    assert (v["codec_name"], v["color_primaries"], v["color_transfer"], v["color_space"]) == (
+        "h264", "bt709", "bt709", "bt709"
+    )
+

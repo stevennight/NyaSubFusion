@@ -10,6 +10,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,11 +41,13 @@ ENCODERS = {
 HEVC_LIKE = {"hevc", "h265", "av1", "vp9"}  # 压缩率比 H.264 高的编码
 
 
-def pick_encoders(encoder, src_codec):
-    """自动：原片是 H.265（或更新的编码）就压 H.265，否则 H.264；都是先试显卡再用 CPU。"""
+def pick_encoders(encoder, src_codec, bit_depth="auto"):
+    """自动：原片是 H.265（或更新的编码）或指定 10-bit 时优先 H.265，否则 H.264；都是先试显卡再用 CPU。"""
     if encoder != "auto":
         return [encoder]
-    return ["hevc_nvenc", "libx265"] if (src_codec or "").lower() in HEVC_LIKE else ["h264_nvenc", "libx264"]
+    if bit_depth == "10" or (src_codec or "").lower() in HEVC_LIKE:
+        return ["hevc_nvenc", "libx265"]
+    return ["h264_nvenc", "libx264"]
 
 
 def rate_cap(src_bps, src_codec, src_size, out_size, enc):
@@ -254,13 +257,139 @@ def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=
     return out
 
 
+_TRC_RE = re.compile(r"transfer_characteristics\s+\d+\s*=\s*(\d+)")
+_CROSS_OVERRIDES = {
+    "-b:v": {"-cq", "-crf", "-maxrate", "-bufsize"},
+    "-cq": {"-cq", "-crf"},
+    "-crf": {"-cq", "-crf"},
+    "-c:a": {"-b:a"},
+}
+_DIRECT_OVERRIDES = {
+    "-preset", "-tune", "-rc", "-cq", "-crf", "-b:v", "-maxrate", "-bufsize",
+    "-pix_fmt", "-profile:v", "-tag:v", "-c:a", "-b:a", "-bsf:v",
+    "-color_range", "-color_primaries", "-color_trc", "-colorspace", "-movflags",
+}
+
+
+def _body_transfer(path, at_sec):
+    """采样检测 HEVC 正片码流里的 transfer_characteristics（1=BT.709，16=PQ，18=HLG）。"""
+    cmd = ["ffmpeg", "-hide_banner", "-ss", str(max(0, int(at_sec))), "-i", str(path),
+           "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers", "-frames:v", "90", "-f", "null", "-"]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    text = (res.stdout or b"").decode("utf-8", "replace")
+    return [int(m.group(1)) for m in _TRC_RE.finditer(text)]
+
+
+def detect_bt2020_sdr(path, vinfo=None, duration=0.0):
+    """判断视频是否为 BT.2020 SDR（需线性光转 BT.709），跳过已是 709 或真 HDR（PQ/HLG）的片源。"""
+    st = streams(path)
+    vs = None
+    if vinfo and vinfo.get("index") is not None:
+        vs = next((s for s in st if s.get("index") == vinfo["index"]), None)
+    if vs is None:
+        vs = next((s for s in st if s.get("codec_type") == "video"), None)
+    if not vs:
+        return False, "未找到视频流，跳过转 709"
+    cp = (vs.get("color_primaries") or "").lower()
+    if cp != "bt2020":
+        return False, f"色域为 {cp or '未标注'}（非 BT.2020），无需转 709"
+    codec = (vs.get("codec_name") or "").lower()
+    ct = (vs.get("color_transfer") or "").lower()
+    if codec == "hevc" and duration and duration > 0:
+        trc = _body_transfer(path, int(duration * 0.1)) + _body_transfer(path, int(duration * 0.5))
+        if trc and sum(t in (16, 18) for t in trc) > len(trc) / 2:
+            return False, f"正片为 HDR（transfer={sorted(set(trc))}），跳过转 709"
+    elif ct in ("smpte2084", "arib-std-b67"):
+        return False, f"正片为 HDR（{ct}），跳过转 709"
+    return True, "检测到 BT.2020 SDR，启用线性光 BT.2020→BT.709 转换"
+
+
+def merge_ffmpeg_args(base_args, extra):
+    """合并用户自定义 FFmpeg 输出参数，并自动移除与用户选项冲突的默认参数。"""
+    if not extra or not str(extra).strip():
+        return list(base_args)
+    try:
+        tokens = shlex.split(str(extra))
+    except ValueError as e:
+        raise RuntimeError(f"自定义 FFmpeg 参数格式有误：{e}") from e
+    if any(t in ("-vf", "-filter:v") or t.startswith(("-vf=", "-filter:v=")) for t in tokens):
+        raise RuntimeError("请把自定义视频滤镜填在「附加视频滤镜」里，不要在自定义参数里写 -vf（会覆盖字幕滤镜）")
+    user_flags = {t.split("=", 1)[0] for t in tokens if t.startswith("-")}
+    drop = set(user_flags & _DIRECT_OVERRIDES)
+    for flag, also in _CROSS_OVERRIDES.items():
+        if flag in user_flags:
+            drop |= also
+    filtered = []
+    i = 0
+    while i < len(base_args):
+        tok = base_args[i]
+        if tok in drop:
+            # base_args 中的默认参数均成对出现，跳过值以免残留孤立参数
+            i += 2 if i + 1 < len(base_args) and not base_args[i + 1].startswith("-") else 1
+            continue
+        filtered.append(tok)
+        i += 1
+    return filtered + tokens
+
+
+def _resolve_bit_depth(enc, bit_depth, do_709):
+    """按编码器和色深设置确定 (use_10bit, pix_fmt, profile_args, downgraded_from_nvenc_h264)。"""
+    is_hevc = enc in ("hevc_nvenc", "libx265")
+    want_10 = (bit_depth == "10") or (bit_depth == "auto" and do_709 and is_hevc)
+    if want_10 and enc == "h264_nvenc":
+        return False, "yuv420p", [], True
+    if not want_10:
+        return False, "yuv420p", [], False
+    if enc == "hevc_nvenc":
+        # hevc_nvenc 不接受 yuv420p10le，需用硬件 10-bit 像素格式 p010le
+        return True, "p010le", ["-profile:v", "main10"], False
+    if enc == "libx265":
+        return True, "yuv420p10le", ["-profile:v", "main10"], False
+    return True, "yuv420p10le", [], False
+
+
+def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf):
+    """构建压制时的前置输入参数与 -vf 滤镜链。"""
+    scaled = (w, h) != (vinfo["width"], vinfo["height"])
+    extra = [extra_vf] if extra_vf else []
+    subs = ["subtitles=sub.ass:fontsdir=fonts"]
+    if do_709:
+        pre = ["-hwaccel", "cuda"] if use_gpu_decode else []
+        out_fmt = "yuv420p10le" if use_10 else "yuv420p"
+        conv = ("zscale=pin=2020:tin=709:min=2020_ncl:rin=limited:p=2020:t=linear:m=gbr:r=full:npl=100,format=gbrpf32le,"
+                f"zscale=pin=2020:tin=linear:min=gbr:rin=full:p=709:t=709:m=709:r=limited:dither=error_diffusion,format={out_fmt}")
+        tag709 = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + ([f"scale={w}:{h}:flags=lanczos"] if scaled else []) + ["setsar=1", conv] + extra + subs + [tag709]
+        return pre, vf
+    if use_gpu_decode:
+        gpu_fmt = "p010le" if use_10 else "yuv420p"
+        pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format={gpu_fmt}", "hwdownload", f"format={gpu_fmt}", "setsar=1"] + extra + subs
+        return pre, vf
+    pre = []
+    vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + ([f"scale={w}:{h}:flags=lanczos"] if scaled else []) + ["setsar=1"] + extra + subs
+    return pre, vf
+
+
 def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, height=0, duration=0.0,
-         cancel=None, work_dir=None):
+         cancel=None, work_dir=None, bit_depth="auto", color_709="off", extra_args="", extra_vf=""):
     """压制硬字幕 MP4。字幕和字体先放进工作目录，ffmpeg 在那里运行（滤镜参数里写 Windows 路径很麻烦）。"""
     from ..sources import media
 
     if not vinfo:
         raise RuntimeError("纯音频文件不能压制硬字幕")
+    if color_709 == "force":
+        do_709 = True
+        env.log("强制启用 BT.2020 SDR → BT.709 转换")
+    elif color_709 == "auto":
+        do_709, note = detect_bt2020_sdr(video, vinfo, duration)
+        env.log(note)
+    else:
+        do_709 = False
+
     work = Path(work_dir)
     shutil.rmtree(work / "fonts", ignore_errors=True)
     (work / "fonts").mkdir(parents=True, exist_ok=True)
@@ -269,30 +398,37 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
         shutil.copyfile(f, work / "fonts" / Path(f).name)
     w, h = media.frame_size(vinfo, height)
     inter = vinfo.get("interlaced")
-    subs = ["setsar=1", "subtitles=sub.ass:fontsdir=fonts"]
-    # 显卡解码：反交错、缩放、转 8 位都在显卡上做，只把成品帧传回内存画字幕（4K HEVC 用 CPU 解码很慢）
-    gpu = (["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
-           (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format=yuv420p", "hwdownload",
-                                                                          "format=yuv420p"] + subs)
-    cpu = ([], (["bwdif=mode=send_frame:deint=all"] if inter else [])
-           + ([f"scale={w}:{h}:flags=lanczos"] if (w, h) != (vinfo["width"], vinfo["height"]) else []) + subs)
+    extra_vf_clean = (extra_vf or "").strip()
     audio = [s.get("codec_name") for s in streams(video) if s.get("codec_type") == "audio"]
     acodec = ["-c:a", "copy"] if all(c in MP4_COPY_AUDIO for c in audio) else ["-c:a", "aac", "-b:a", "192k"]
     part = _part(Path(out).resolve())
-    encs = pick_encoders(encoder, vinfo.get("codec"))
-    tried = [(e, d) for e in encs for d in ((gpu, cpu) if e.endswith("_nvenc") else (cpu,))]
+    encs = pick_encoders(encoder, vinfo.get("codec"), bit_depth=bit_depth)
+    tried = [(e, gpu) for e in encs for gpu in ((True, False) if e.endswith("_nvenc") else (False,))]
     # 原片码率：整个文件的平均码率（含音频，差得不多；很多 TS / M2TS 的视频流不标码率）
     try:
         src_bps = Path(video).stat().st_size * 8 / duration if duration else 0
     except OSError:
         src_bps = 0
-    for i, (enc, (pre, vf)) in enumerate(tried):
-        how = f"{enc}{'，显卡解码' if pre else ''}"
+    warned_h264_10 = False
+    for i, (enc, use_gpu) in enumerate(tried):
+        use_10, pix_fmt, prof, downgraded = _resolve_bit_depth(enc, bit_depth, do_709)
+        if downgraded and not warned_h264_10:
+            env.log("h264_nvenc 不支持 10-bit，已改用 8-bit（如需 10-bit 请选 H.265 或 libx264）")
+            warned_h264_10 = True
+        pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean)
         cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
         limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
+        is_hevc = enc in ("hevc_nvenc", "libx265")
+        color_flags = (
+            ["-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+             "-bsf:v", f"{'hevc_metadata' if is_hevc else 'h264_metadata'}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]
+            if do_709 else []
+        )
+        out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, *acodec, "-movflags", "+faststart"]
+        out_args = merge_ffmpeg_args(out_args, extra_args)
         cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}",
-               "-map", "0:a?", "-vf", ",".join(vf), *ENCODERS[enc](quality), *limit, "-pix_fmt", "yuv420p", *acodec,
-               "-movflags", "+faststart", str(part)]
+               "-map", "0:a?", "-vf", ",".join(vf), *out_args, str(part)]
+        how = f"{enc}{'，显卡解码' if pre else ''}，{'10-bit' if use_10 else '8-bit'}" + ("，BT.709" if do_709 else "")
         env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}" + (f"，码率不超过 {cap / 1e6:.1f} Mbps" if cap else ""))
         rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part, video=video, vinfo=vinfo)
         if rc != 0 and done < 1 and i + 1 < len(tried):  # 一开始就失败（没有 N 卡、显卡不支持这种编码）：换下一种
