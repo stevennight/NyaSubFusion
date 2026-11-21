@@ -154,11 +154,29 @@ export interface Term { src: string; reading?: string; tr?: string; type?: strin
 export interface Glossary { series: string; context: string; summary: string; path: string; episode: string; terms: Term[] }
 export interface Reading { lang: string; src: string; reading: string; proper?: boolean }
 
-export interface Provider { name: string; base_url: string; model: string; vision_model?: string; listen_model?: string; api_key_env?: string }
+export type ProviderKind = "openai" | "agy" | "codex";
+export interface Provider {
+  name: string; kind?: ProviderKind; base_url: string; command?: string;
+  model: string; vision_model?: string; listen_model?: string; api_key_env?: string;
+}
+export interface CliStatus { installed: boolean; path: string; version: string; error: string }
+export interface ModelOption {
+  id: string; name: string; efforts?: string[]; default?: boolean;
+  modalities?: string[]; context_length?: number; owned_by?: string;
+}
+export type CliModel = ModelOption;
+export interface ModelListResult {
+  ok: boolean; error: string; models: ModelOption[];
+  installed?: boolean; path?: string; version?: string;
+}
+export interface EndpointSummary { name: string; kind?: ProviderKind; base_url: string; command?: string; model: string }
 export interface Settings {
   user_config: Cfg; effective: Cfg; path: string; keyring: string;
   keys: Record<string, boolean>; env_keys: Record<string, boolean>;
-  translate: { name: string; base_url: string; model: string };
+  translate: EndpointSummary;
+  organize?: EndpointSummary;
+  vision?: EndpointSummary;
+  cli?: Record<"agy" | "codex", CliStatus>;
 }
 
 export interface QueueOptions { preset?: string; source?: string; targets?: string[]; series?: string; context?: string; synopsis?: string; until?: string; video?: "" | "off" | "mux" | "burn" }

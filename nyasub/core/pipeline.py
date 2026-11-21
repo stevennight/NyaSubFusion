@@ -157,6 +157,7 @@ class Run:
                 from ..sources.asr_api import chunk_seconds
 
                 d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
+                            **({"backend": ep["kind"]} if ep.get("kind", "openai") != "openai" else {}),
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
                     from ..sources.asr_api import ALIGN_V
@@ -175,13 +176,18 @@ class Run:
                 for i, t in enumerate(self._video_tracks(name, self._video_profiles))]}
         if name == "ocr_refine":
             o = self.cfg.ocr
-            model = self.cfg.endpoint("vision")["model"] if o.refine == "vlm" else None
+            vep = self.cfg.endpoint("vision")
+            model = vep["model"] if o.refine == "vlm" else None
+            vkind = vep.get("kind", "openai") if o.refine == "vlm" else "openai"
             if self._refine_on() and o.refine_mode == "crop":  # 本地截图方式：选项和 0.3 以前一样记进指纹
-                return {"model": model, "mode": "crop", **({"context": True} if o.refine_context else {}),
+                return {"model": model, "mode": "crop",
+                        **({"kind": vkind} if vkind != "openai" else {}),
+                        **({"context": True} if o.refine_context else {}),
                         **({"frame_width": o.refine_context_width} if o.refine_context and o.refine_context_width != 640 else {}),
                         **({"boxed": True} if o.refine_boxed else {}), **({"batch": o.refine_batch} if o.refine_batch != 4 else {})}
             unread = load_json(self.proj.stage("ocr_unread.json"), [])  # 本地认不出字的地方变了也要重新复核
             return {"model": model,
+                    **({"kind": vkind} if vkind != "openai" else {}),
                     **({"unread": digest(unread)} if unread and self._refine_on() else {}),
                     **({"frame_width": o.refine_frame_width}
                        if self._refine_on() and o.refine_frame_width != 1280 else {})}
@@ -190,17 +196,25 @@ class Run:
             c = self.cfg.llm
             effort = c.reasoning_effort.strip() if mode == "api" else ""
             if name == "translate":  # 翻译：分组翻、思考程度、参考画面（默认开着，关掉才记）、参考语音（默认关着，开了才记）、作品术语表
+                tep = self.cfg.endpoint("translate")
+                tkind = tep.get("kind", "openai") if mode == "api" else "openai"
+                lep = self.cfg.endpoint("listen")
+                listen_fp = f"{lep['kind']}:{lep['model']}" if lep.get("kind", "openai") != "openai" else lep["model"]
                 return {"src": self.src, "mode": mode, "series": self._series_terms_digest(),
-                        "model": self.cfg.endpoint()["model"] if mode == "api" else None,
+                        "model": tep["model"] if mode == "api" else None,
+                        **({"kind": tkind} if tkind != "openai" else {}),
                         **({} if self._use_frames(mode) or mode != "api" else {"frames": False}),
-                        **({"listen": self.cfg.endpoint("listen")["model"]} if self._use_listen(mode) else {}),
+                        **({"listen": listen_fp} if self._use_listen(mode) else {}),
                         **({"grouped": 1} if c.grouped and mode == "api" else {}),
                         **({"effort": effort} if effort else {})}
             jobs = None
             if mode == "export":  # 外部助手改了结果文件，就重新导入；导出任务时整理和翻译一起做，排版选项也算
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
+            oep = self.cfg.endpoint("organize")
+            okind = oep.get("kind", "openai") if mode == "api" else "openai"
             return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
-                    "model": self.cfg.endpoint()["model"] if mode == "api" else None,
+                    "model": oep["model"] if mode == "api" else None,
+                    **({"kind": okind} if okind != "openai" else {}),
                     **({"lang_options": digest(self.cfg.render.lang_options)} if mode == "export" else {}),
                     **({"skip_sound_annotations": True} if self.cfg.subs.skip_sound_annotations else {})}
         return None
@@ -831,11 +845,11 @@ class Run:
                 subs, off = apply_offset(subs, o), o
         # 一条字幕里两个人各说一句的拆成各自独立的字幕（线索看不出来的先请大模型判断）
         subs = [dict(c) for c in subs]
-        if any(c.get("speaker_check") for c in subs) and self.cfg.llm_mode() == "api":
+        if any(c.get("speaker_check") for c in subs) and self.cfg.llm_mode() == "api" and self.cfg.endpoint_ready("organize"):
             from ..llm.client import LLM
             from ..llm.speakers import judge
 
-            judge(LLM(self.cfg, cache_dir=self.proj / "llm_cache"), subs, segs)
+            judge(LLM(self.cfg, cache_dir=self.proj / "llm_cache", purpose="organize"), subs, segs)
         subs = split_speakers(subs, segs)
         n = len({c["split_from"] for c in subs if c.get("split_from")})
         if n:
@@ -882,8 +896,9 @@ class Run:
         return bool(self.cfg.llm.frames) and mode == "api" and bool(info.get("video", True))
 
     def _use_listen(self, mode):
+        lep = self.cfg.endpoint("listen")
         return (bool(self.cfg.llm.listen_audio) and mode == "api" and bool((self.results.get("audio") or {}).get("wav"))
-                and bool(self.cfg.endpoint("listen")["model"]))  # 没设听音模型就不听，指纹也不变
+                and lep.get("kind", "openai") in ("openai", "agy") and bool(lep["model"]))  # 没设听音模型就不听，指纹也不变
 
     def _frames(self, items):
         """每条候选字幕出现时的画面小图（取中间时刻），存在 media/frames/，再翻译时直接用。返回 {条目 id: 路径}。"""
@@ -957,7 +972,11 @@ class Run:
         if mode == "api" and cues:
             frames = self._frames(fused["items"]) if self._use_frames(mode) else None
             if self.cfg.llm.listen_audio and not self._use_listen(mode):
-                log("参考语音：没有设置听音模型（「设置」里给接口填“听音模型”，比如 Gemini）或者没有音频，这次不听")
+                lep = self.cfg.endpoint("listen")
+                if lep.get("kind", "openai") not in ("openai", "agy"):
+                    log(f"参考语音：接口「{lep['name']}」是本机 CLI（{lep['kind']}），不支持音频输入，请选择 OpenAI 兼容接口或 Antigravity CLI")
+                else:
+                    log("参考语音：没有设置听音模型（「设置」里给接口填“听音模型”，比如 Gemini）或者没有音频，这次不听")
             if self._use_listen(mode):
                 from ..llm import listen
 

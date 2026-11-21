@@ -21,27 +21,41 @@ class FatalLLMError(RuntimeError):
 class LLM:
     def __init__(self, cfg, vision=False, cache_dir=None, effort="", purpose=""):
         """effort：思考程度（请求里的 reasoning_effort，比如 low / medium / high），空 = 不设、用接口默认。
-        purpose：用哪个接口（translate / vision / listen），空 = 按 vision 选翻译或视觉复核的接口。"""
-        from openai import OpenAI
-
+        purpose：用哪个接口（translate / organize / vision / listen），空 = 按 vision 选翻译或视觉复核的接口。"""
         c = cfg.llm
         self.c = c
         self.effort = (effort or "").strip()
         ep = cfg.endpoint(purpose or ("vision" if vision else "translate"))
+        self.kind = ep.get("kind") or "openai"
+        self.command = ep.get("command") or ""
         self.model = ep["model"]
-        if not ep["key"] or not self.model:
-            raise RuntimeError("没有配置大模型接口：请在「设置」里添加接口并设置 API Key（或在配置的 [llm] 里填 base_url / model）")
-        self.client = OpenAI(base_url=ep["base_url"], api_key=ep["key"], timeout=c.timeout)
+        self.client = None
+        if self.kind == "openai":
+            from openai import OpenAI
+
+            if not ep["key"] or not self.model or not ep["base_url"]:
+                raise RuntimeError("没有配置大模型接口：请在「设置」里添加接口并设置 API Key（或在配置的 [llm] 里填 base_url / model）")
+            self.client = OpenAI(base_url=ep["base_url"], api_key=ep["key"], timeout=c.timeout)
+        elif self.kind in ("agy", "codex"):
+            if not self.model:
+                raise RuntimeError(f"本机 CLI（{self.kind}）没有配置模型名：请在「设置」里选择或填写模型")
+        else:
+            raise RuntimeError(f"不支持的大模型接口类型：{self.kind}")
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.usage = None  # 最近一次真正发出去的请求的用量（读缓存时是 None）
 
     def chat_json(self, system, user, images=None, audio=None):
         """images：图片路径，或 {"path", "label"（图前面的说明文字）, "detail"（low / high）}。
         audio：(音频文件, 格式 mp3 / wav)，附在提示词后面（chat/completions 的 input_audio）。"""
+        if audio and self.kind not in ("openai", "agy"):
+            err = FatalLLMError(f"本机 CLI（{self.kind}）不支持音频输入，请选择 OpenAI 兼容接口或 Antigravity CLI")
+            err.status = 415
+            raise err
         img_hashes = [hashlib.sha1(Path(p).read_bytes()).hexdigest() if not isinstance(p, dict)
                       else [p.get("label"), hashlib.sha1(Path(p["path"]).read_bytes()).hexdigest(), p.get("detail")]
                       for p in images or []]
         key = digest({"model": self.model, "t": self.c.temperature, "system": system, "user": user, "img": img_hashes,
+                      **({"backend": self.kind} if self.kind != "openai" else {}),
                       **({"effort": self.effort} if self.effort else {}),  # 不设思考程度时和以前的缓存一样
                       **({"audio": hashlib.sha1(Path(audio[0]).read_bytes()).hexdigest()} if audio else {})})
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
@@ -54,6 +68,8 @@ class LLM:
         return result
 
     def _call(self, system, user, images, audio=None):
+        if self.kind in ("agy", "codex"):
+            return self._call_cli(system, user, images, audio=audio)
         content = user
         if images or audio:
             content = [{"type": "text", "text": user}]
@@ -106,6 +122,41 @@ class LLM:
                 log(f"  接口调用失败（{msg[:200]}），{wait}s 后重试")
                 time.sleep(wait)
         raise RuntimeError(f"大模型接口多次失败：{last_err}")
+
+    def _call_cli(self, system, user, images, audio=None):
+        from ..env import Cancelled
+        from . import cli_backend
+
+        last_err = None
+        for attempt in range(int(self.c.max_retries) + 1):
+            check_cancel()
+            try:
+                text, usage = cli_backend.call_cli(
+                    self.kind, self.command, self.model, system, user,
+                    images=images, audio=audio, effort=self.effort, timeout=self.c.timeout,
+                )
+                self.usage = usage
+                return parse_json(text or "")
+            except Cancelled:
+                raise
+            except FatalLLMError as e:
+                msg = str(e)
+                if self.effort and any(w in msg.lower() for w in ("effort", "reasoning")) and e.status in (400, 422):
+                    log(f"  本机 CLI 不接受思考程度「{self.effort}」（{msg[:150]}），改为不设")
+                    self.effort = ""
+                    continue
+                raise
+            except Exception as e:
+                last_err = e
+                msg = str(e)
+                if attempt == int(self.c.max_retries):
+                    break
+                wait = min(60, 3 * 2 ** attempt)
+                log(f"  本机 CLI（{self.kind}）调用失败（{msg[:200]}），{wait}s 后重试")
+                for _ in range(wait * 4):
+                    check_cancel()
+                    time.sleep(0.25)
+        raise RuntimeError(f"本机 CLI（{self.kind}）多次失败：{last_err}")
 
 
 def parse_json(text):

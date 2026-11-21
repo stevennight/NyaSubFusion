@@ -85,7 +85,11 @@ def annotate(cues, cfg, cache_dir, wav, clip_dir):
     from .client import LLM, FatalLLMError
 
     ep = cfg.endpoint("listen")
-    if not ep["model"] or not ep["key"]:
+    kind = ep.get("kind", "openai")
+    if kind not in ("openai", "agy"):
+        log(f"参考语音：接口「{ep['name']}」是本机 CLI（{kind}），不支持音频输入，请选择 OpenAI 兼容接口或 Antigravity CLI")
+        return 0
+    if not ep["model"] or (kind == "openai" and not ep["key"]):
         log("参考语音：没有设置听音模型（「设置」里给接口填“听音模型”，比如 Gemini），这次不听")
         return 0
     if not wav or not Path(wav).exists():

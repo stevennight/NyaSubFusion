@@ -1,6 +1,6 @@
 // 内核接口客户端。开发时由 Vite 代理到本地服务，打包后同源访问。
 import type { MediaInfo, Queued } from "./types";
-import type { Cfg, ConfigState, OverwriteDir, PresetDoc, PresetInfo, SeriesDoc, SeriesInfo, TemplateInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
+import type { Cfg, CliModel, ConfigState, ModelListResult, OverwriteDir, PresetDoc, PresetInfo, SeriesDoc, SeriesInfo, TemplateInfo, ComponentStatus, EditResult, Glossary, QueueOptions, QueueState, Reading, Settings, Term, LangInfo, LiveEvent, PlanItem, Preview, ProjectData, ProjectEntry, ProjectSummary } from "./types";
 
 const params = new URLSearchParams(location.search);
 // 桌面壳会注入 token；浏览器里调试时可以写在地址栏 ?token=
@@ -87,8 +87,12 @@ export const api = {
   putSettings: (user_config: Cfg) => call<Settings>("/api/settings", json("PUT", { user_config })),
   putKey: (name: string, key: string) => call<{ ok: boolean }>(`/api/settings/keys/${encodeURIComponent(name)}`, json("PUT", { key })),
   deleteKey: (name: string) => call<{ ok: boolean }>(`/api/settings/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  testProvider: (body: { name?: string; base_url?: string; model?: string; key?: string }) =>
+  testProvider: (body: { name?: string; kind?: string; base_url?: string; command?: string; model?: string; key?: string }) =>
     call<{ ok: boolean; ms?: number; reply?: string; error?: string }>("/api/settings/test", json("POST", body)),
+  providerModels: (body: { name?: string; kind?: string; base_url?: string; command?: string; key?: string; api_key_env?: string }) =>
+    call<ModelListResult>("/api/settings/models", json("POST", body)),
+  cliModels: (body: { kind: "agy" | "codex"; command?: string }) =>
+    call<{ ok: boolean; installed: boolean; path: string; version: string; error: string; models: CliModel[] }>("/api/settings/cli/models", json("POST", body)),
   presets: () => call<PresetInfo[]>("/api/presets"),
   preset: (id: string) => call<PresetDoc>(`/api/presets/${encodeURIComponent(id)}`),
   putPreset: (id: string, raw: Cfg) => call<PresetDoc>(`/api/presets/${encodeURIComponent(id)}`, json("PUT", { raw })),

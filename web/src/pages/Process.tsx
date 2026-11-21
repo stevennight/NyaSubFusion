@@ -2,13 +2,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import { ModelPicker } from "../components/ModelPicker";
 import { RegionEditor, type Region } from "../components/RegionEditor";
 import { REDO_STAGES } from "../components/RunBar";
 import { SeriesPicker } from "../components/SeriesPicker";
 import { SaveChip, templateChange, useDoc, useDraft, useUnsaved, type ConfigDoc } from "../doc";
 import { showVal, stepOf } from "../settingLabels";
 import { useStore } from "../store";
-import type { Cfg, Change, Provider, StageStatus } from "../types";
+import type { Cfg, Change, ModelOption, Provider, StageStatus } from "../types";
 import { briefError, deepGet, langName, pct, setIn, STAGE_LBL } from "../util";
 
 const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复用", cached: "复用", stale: "要重做", missing: "未运行", running: "运行中",
@@ -267,14 +268,63 @@ function SubsStep({ ctx }: { ctx: StepCtx }) {
   );
 }
 
+const providerOpt = (p: Provider, vision = false) => {
+  const tag = p.kind === "agy" ? " [agy]" : p.kind === "codex" ? " [codex]" : "";
+  const m = vision ? (p.vision_model || p.model) : p.model;
+  return `${p.name}${tag}${m ? ` · ${m}` : ""}`;
+};
+
 function AsrStep({ ctx }: { ctx: StepCtx }) {
   const { val, set, doc } = ctx;
   const [models, setModels] = useState<{ id: string; label: string; desc: string }[]>([]);
+  const [apiModelLists, setApiModelLists] = useState<Record<string, { loading?: boolean; loaded?: boolean; error?: string; models: ModelOption[] }>>({});
   useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
   const backend = String(val("asr.backend") ?? "local");
   const kind = (String(val("asr.api_kind") ?? "transcribe") in ASR_API_KINDS ? String(val("asr.api_kind") ?? "transcribe") : "transcribe") as keyof typeof ASR_API_KINDS;
-  const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const allProviders = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const providers = allProviders.filter((p) => !p.kind || p.kind === "openai" || p.kind === "agy");
   const translateName = String(deepGet(doc.effective, "llm.translate") ?? "");
+  const asrProviderName = String(val("asr.api_provider") ?? "").trim() || translateName;
+  const asrProvider = allProviders.find((p) => p.name === asrProviderName);
+  const asrKind = asrProvider?.kind ?? "openai";
+  const legacyBase = String(deepGet(doc.effective, "llm.base_url") ?? "");
+  const cacheKey = asrProvider
+    ? `${asrProvider.name}|${asrKind}|${asrProvider.base_url}|${asrProvider.command ?? ""}`
+    : (legacyBase ? `__legacy__|${legacyBase}` : "__none__");
+  const apiFetched = apiModelLists[cacheKey];
+  const fetchApiModels = async () => {
+    setApiModelLists((m) => ({ ...m, [cacheKey]: { ...(m[cacheKey] ?? { models: [] }), loading: true, error: "" } }));
+    if (asrProvider && asrKind === "codex") {
+      setApiModelLists((m) => ({
+        ...m,
+        [cacheKey]: { loading: false, loaded: true, error: "当前翻译接口为 Codex CLI（不支持音频），请在上方选 OpenAI 兼容接口或 Antigravity CLI", models: [] },
+      }));
+      return;
+    }
+    if (!asrProvider && !legacyBase) {
+      setApiModelLists((m) => ({
+        ...m,
+        [cacheKey]: { loading: false, loaded: true, error: "请先在「设置」中添加 OpenAI 兼容接口或 Antigravity CLI", models: [] },
+      }));
+      return;
+    }
+    try {
+      const r = await api.providerModels(asrProvider
+        ? (asrKind === "agy"
+          ? { name: asrProvider.name, kind: "agy", command: asrProvider.command ?? "" }
+          : { name: asrProvider.name, kind: "openai", base_url: asrProvider.base_url, api_key_env: asrProvider.api_key_env ?? "" })
+        : { kind: "openai", base_url: legacyBase });
+      setApiModelLists((m) => ({
+        ...m,
+        [cacheKey]: { loading: false, loaded: true, error: r.ok ? "" : (r.error || "读取失败"), models: r.models ?? [] },
+      }));
+    } catch (e) {
+      setApiModelLists((m) => ({
+        ...m,
+        [cacheKey]: { ...(m[cacheKey] ?? { models: [] }), loading: false, loaded: true, error: (e as Error).message },
+      }));
+    }
+  };
   const setKind = (k: keyof typeof ASR_API_KINDS) => {
     set("asr.api_kind", k);
     const m = String(val("asr.api_model") ?? "");
@@ -291,19 +341,46 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
           <Lbl ctx={ctx} k="asr.api_provider">接口</Lbl>
           <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
             <option value="">和翻译用同一个{translateName ? `（${translateName}）` : ""}</option>
-            {providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+            {providers.map((p) => <option key={p.name} value={p.name}>{p.kind === "agy" ? `${p.name} [agy]` : p.name}</option>)}
           </select>
           <Lbl ctx={ctx} k="asr.api_kind">接口类型</Lbl>
           <div className="row"><div className="seg">{(Object.keys(ASR_API_KINDS) as (keyof typeof ASR_API_KINDS)[]).map((k) =>
-            <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div><Tip text={ASR_API_KINDS[kind].desc} /></div>
+            <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>{ASR_API_KINDS[k].label}</button>)}</div><Tip text={ASR_API_KINDS[kind].desc} />
+            {asrKind === "agy" && kind === "transcribe" && <span className="hint" style={{ color: "var(--warn)" }}>Antigravity CLI 仅支持「多模态大模型」模式，请切到右侧</span>}
+          </div>
           <Lbl ctx={ctx} k="asr.api_model">模型</Lbl>
-          <div className="row"><input className="inp" value={String(val("asr.api_model") ?? "")} placeholder={ASR_API_KINDS[kind].model} onChange={(e) => set("asr.api_model", e.target.value)} />
-            <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0" /></div>
+          <div className="row">
+            <ModelPicker
+              value={String(val("asr.api_model") ?? "")}
+              placeholder={ASR_API_KINDS[kind].model}
+              filterModality="audio"
+              models={apiFetched?.models}
+              loading={apiFetched?.loading}
+              error={apiFetched?.error}
+              loaded={apiFetched?.loaded}
+              onFetch={fetchApiModels}
+              onChange={(v) => set("asr.api_model", v)}
+            />
+            <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0；用 Antigravity CLI 可选 gemini-4-argon-medium / gemini-4-hydrogen-medium 等 Gemini 模型" />
+          </div>
           {kind === "gemini" && (<>
             <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
-            <div className="row"><input className="inp" value={String(val("asr.api_timing_model") ?? "")} placeholder="可选：转写模型，比如 microsoft/mai-transcribe-2"
-                onChange={(e) => set("asr.api_timing_model", e.target.value.trim())} />
-              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差半秒以上。填一个转写模型（同一个接口）时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" /></div>
+            <div className="row">
+              <ModelPicker
+                value={String(val("asr.api_timing_model") ?? "")}
+                placeholder="可选：转写模型，比如 microsoft/mai-transcribe-2"
+                filterModality="audio"
+                allowClear
+                models={apiFetched?.models}
+                loading={apiFetched?.loading}
+                error={apiFetched?.error}
+                loaded={apiFetched?.loaded}
+                onFetch={fetchApiModels}
+                onChange={(v) => set("asr.api_timing_model", v.trim())}
+              />
+              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差半秒以上。填一个转写模型（同一个接口）时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" />
+              {asrKind === "agy" && <span className="hint" style={{ color: "var(--warn)" }}>Antigravity CLI 不支持转写对时接口，将自动跳过</span>}
+            </div>
           </>)}
         </>) : (<>
           <Lbl ctx={ctx} k="asr.model">模型</Lbl>
@@ -325,7 +402,7 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
             <Lbl ctx={ctx} k="asr.api_chunk_seconds">每块时长</Lbl>
             <div className="row">
               <select className="inp" value={String(Number(val("asr.api_chunk_seconds") ?? 0))} onChange={(e) => set("asr.api_chunk_seconds", Number(e.target.value))}>
-                <option value="0">自动（OpenRouter 3 分钟，其它 10 分钟）</option>
+                <option value="0">自动（OpenRouter / agy 3 分钟，其它 10 分钟）</option>
                 {[1, 2, 3, 5, 10, 20].map((m) => <option key={m} value={String(m * 60)}>{m} 分钟</option>)}
               </select>
               <Tip text="音频切成多长一块上传。太长可能超过接口的处理时间上限（OpenRouter 是 60 秒）而失败；太短切点多，句子被切断的机会多一点" />
@@ -364,13 +441,18 @@ function OcrStep({ ctx }: { ctx: StepCtx }) {
 }
 
 function RefineStep({ ctx }: { ctx: StepCtx }) {
-  const { val, set } = ctx;
+  const { val, set, doc } = ctx;
   const on = val("ocr.refine") === "vlm";
   const crop = val("ocr.refine_mode") === "crop";
+  const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
   return (
     <div className="card">
-      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型重新看画面字，纠正错字，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。用「设置 › 用途」里的“画面字复核”接口，接口要支持图片。</div>
+      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型重新看画面字，纠正错字，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。可以和「翻译」分开选不同接口（比如复核用 API、翻译用本机 CLI）。</div>
       <div className="kv" style={on ? undefined : { opacity: 0.45, pointerEvents: "none" }}>
+        <Lbl ctx={ctx} k="llm.vision">接口</Lbl>
+        <div className="row"><select className="inp" value={String(val("llm.vision") ?? "")} onChange={(e) => set("llm.vision", e.target.value)}>
+          <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p, true)}</option>)}</select>
+          <span className="hint">可单独指定 OpenAI 兼容接口或本机 CLI</span></div>
         <Lbl ctx={ctx} k="ocr.refine_mode">复核方式</Lbl>
         <div className="row"><select className="inp" value={crop ? "crop" : "frame"} onChange={(e) => set("ocr.refine_mode", e.target.value)}>
           <option value="frame">整帧画面（默认）</option><option value="crop">本地截图（省）</option></select>
@@ -416,8 +498,8 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
           <span className="hint">{mode === "export" ? "把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次" : mode === "off" ? "只做识别和合并，不输出译文" : mode === "auto" ? "配了接口就调接口，否则导出任务文件" : ""}</span></div>
         <Lbl ctx={ctx} k="llm.translate">接口</Lbl>
         <div className="row"><select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
-          <option value="">跟随设置</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name} · {p.model}</option>)}</select>
-          <span className="hint">接口在「设置」里管理；「整理」也用这个接口</span></div>
+          <option value="">跟随设置</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
+          <span className="hint">支持 OpenAI 兼容接口和本机 CLI（agy / codex）；在「设置」里管理</span></div>
         <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
           <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网、省略的主语是谁）。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
@@ -454,11 +536,16 @@ function isFine(val: (p: string) => unknown) {
 }
 
 function OrganizeStep({ ctx }: { ctx: StepCtx }) {
-  const { val, set } = ctx;
+  const { val, set, doc } = ctx;
+  const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
   return (
     <div className="card">
-      <div className="hint" style={{ marginBottom: 10 }}>用大模型把合成后的字幕整理成一条条字幕，只整理原文、不翻译：几路来源说的同一句话合成一条（半句在字幕、半句在画面字里的也接上），按上下文和术语表纠正画面字、语音识别的错字，分出台词、旁白、说明，丢掉画面上的杂字和重复的语音。原来分开的几屏照样分开，要不要合成一条、怎么分屏，翻译时按译文再定。接口和方式在「翻译」里设。</div>
+      <div className="hint" style={{ marginBottom: 10 }}>用大模型把合成后的字幕整理成一条条字幕，只整理原文、不翻译：几路来源说的同一句话合成一条（半句在字幕、半句在画面字里的也接上），按上下文和术语表纠正画面字、语音识别的错字，分出台词、旁白、说明，丢掉画面上的杂字和重复的语音。原来分开的几屏照样分开，要不要合成一条、怎么分屏，翻译时按译文再定。</div>
       <div className="kv">
+        <Lbl ctx={ctx} k="llm.organize">接口</Lbl>
+        <div className="row"><select className="inp" value={String(val("llm.organize") ?? "")} onChange={(e) => set("llm.organize", e.target.value)}>
+          <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
+          <span className="hint">可与翻译拆开，例如整理用便宜快速的 API、翻译用本机 CLI 或旗舰模型</span></div>
         <Lbl ctx={ctx} k="subs.skip_sound_annotations">声音说明</Lbl>
         <label className="row">
           <input type="checkbox" checked={!!val("subs.skip_sound_annotations")} onChange={(e) => set("subs.skip_sound_annotations", e.target.checked)} />

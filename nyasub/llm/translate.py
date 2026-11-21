@@ -381,7 +381,7 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     要看译文才能定的合并、分屏放在翻译那一步。返回 (cues, glossary)。"""
     from .client import LLM
 
-    llm = LLM(cfg, cache_dir=cache_dir)
+    llm = LLM(cfg, cache_dir=cache_dir, purpose="organize")
     src = lang.get(src_code)
     tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)

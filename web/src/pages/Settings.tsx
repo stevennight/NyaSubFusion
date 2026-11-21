@@ -2,18 +2,36 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { GpuComponents } from "../components/GpuComponents";
+import { ModelPicker } from "../components/ModelPicker";
 import { useStore } from "../store";
-import type { Cfg, PresetInfo, Provider, Settings, Style } from "../types";
+import type { Cfg, EndpointSummary, ModelOption, PresetInfo, Provider, ProviderKind, Settings, Style } from "../types";
 import { deepGet, setIn } from "../util";
 import { canZoom, getZoom, setZoom, ZOOMS } from "../zoom";
 
+const KIND_LBL: Record<ProviderKind, string> = {
+  openai: "OpenAI 兼容接口",
+  agy: "Antigravity CLI (agy)",
+  codex: "Codex CLI (codex)",
+};
+
+const kindOf = (p: Provider): ProviderKind => (p.kind === "agy" || p.kind === "codex" ? p.kind : "openai");
+const isCliKind = (k: ProviderKind): k is "agy" | "codex" => k === "agy" || k === "codex";
+const epText = (ep?: EndpointSummary) => {
+  if (!ep?.model) return "未配置";
+  const k = ep.kind ?? "openai";
+  if (k === "agy" || k === "codex") return `${ep.name || k} [${KIND_LBL[k]}] · ${ep.model}`;
+  return `${ep.name || "旧配置"} · ${ep.model} @ ${ep.base_url}`;
+};
+
 // 常用服务：一键填入地址和推荐模型（模型名以服务商文档为准，可以改）
 const PRESETS: (Provider & { label: string })[] = [
-  { label: "DeepSeek", name: "deepseek", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  { label: "阿里百炼", name: "bailian", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max", vision_model: "qwen-vl-max" },
-  { label: "OpenAI", name: "openai", base_url: "https://api.openai.com/v1", model: "" },
-  { label: "OpenRouter", name: "openrouter", base_url: "https://openrouter.ai/api/v1", model: "" },
-  { label: "本地 Ollama", name: "ollama", base_url: "http://127.0.0.1:11434/v1", model: "qwen2.5:14b" },
+  { label: "DeepSeek", kind: "openai", name: "deepseek", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { label: "阿里百炼", kind: "openai", name: "bailian", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max", vision_model: "qwen-vl-max" },
+  { label: "OpenAI", kind: "openai", name: "openai", base_url: "https://api.openai.com/v1", model: "" },
+  { label: "OpenRouter", kind: "openai", name: "openrouter", base_url: "https://openrouter.ai/api/v1", model: "" },
+  { label: "本地 Ollama", kind: "openai", name: "ollama", base_url: "http://127.0.0.1:11434/v1", model: "qwen2.5:14b" },
+  { label: "Antigravity CLI", kind: "agy", name: "agy", base_url: "", model: "gemini-4-neon-medium" },
+  { label: "Codex CLI", kind: "codex", name: "codex", base_url: "", model: "gpt-6.2-sol" },
 ];
 
 export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => void }) {
@@ -22,14 +40,20 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
   const [draft, setDraft] = useState<Cfg>({});
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [tests, setTests] = useState<Record<string, string>>({});
+  const [modelLists, setModelLists] = useState<Record<string, {
+    loading?: boolean; loaded?: boolean; sig?: string; version?: string; path?: string; error?: string; models: ModelOption[];
+  }>>({});
   const load = async () => { const r = await api.settings(); setSt(r); setDraft(r.user_config); };
   useEffect(() => { load().catch((e) => s.setError(e.message)); }, []);
   if (!st) return <div className="empty">加载中…</div>;
 
   const providers: Provider[] = (deepGet(draft, "llm.providers") as Provider[]) ?? [];
+  const audioProviders = providers.filter((p) => kindOf(p) !== "codex");
   const setProviders = (ps: Provider[]) => setDraft(setIn(draft, "llm.providers", ps));
   const val = (path: string) => (deepGet(draft, path) ?? deepGet(st.effective, path)) as string;
   const dirty = JSON.stringify(draft) !== JSON.stringify(st.user_config);
+  const trProvider = providers.find((p) => p.name === val("llm.translate"));
+  const trIsCodex = !!trProvider && kindOf(trProvider) === "codex";
 
   const save = async () => {
     try { const r = await api.putSettings(draft); setSt(r); setDraft(r.user_config); await s.reload(); s.toast("设置已保存"); }
@@ -43,14 +67,67 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
     s.toast(`「${name}」的 API Key 已存入系统凭据库`);
   };
   const test = async (p: Provider) => {
+    const k = kindOf(p);
     setTests({ ...tests, [p.name]: "测试中…" });
-    const r = await api.testProvider(keys[p.name] ? { ...p, key: keys[p.name] } : { name: p.name, base_url: p.base_url, model: p.model });
+    const body = isCliKind(k)
+      ? { name: p.name, kind: k, command: p.command ?? "", model: p.model }
+      : (keys[p.name] ? { ...p, kind: k, key: keys[p.name] } : { name: p.name, kind: k, base_url: p.base_url, model: p.model });
+    const r = await api.testProvider(body);
     setTests({ ...tests, [p.name]: r.ok ? `✓ 连接成功，${r.ms} ms（回复：${r.reply}）` : `✗ ${r.error}` });
+  };
+  const modelSig = (p: Provider) => {
+    const k = kindOf(p);
+    return isCliKind(k)
+      ? `${k}|${p.command ?? ""}`
+      : `${k}|${p.name}|${p.base_url}|${p.api_key_env ?? ""}|${keys[p.name] ?? ""}`;
+  };
+  const fetchModels = async (p: Provider) => {
+    const k = kindOf(p);
+    const sig = modelSig(p);
+    setModelLists((m) => ({ ...m, [p.name]: { ...(m[p.name] ?? { models: [] }), loading: true, error: "" } }));
+    try {
+      const r = isCliKind(k)
+        ? await api.providerModels({ name: p.name, kind: k, command: p.command ?? "" })
+        : await api.providerModels({
+            name: p.name,
+            kind: k,
+            base_url: p.base_url,
+            api_key_env: p.api_key_env ?? "",
+            ...(keys[p.name] ? { key: keys[p.name] } : {}),
+          });
+      setModelLists((m) => ({
+        ...m,
+        [p.name]: {
+          loading: false,
+          loaded: true,
+          sig,
+          version: r.version,
+          path: r.path,
+          error: r.ok ? "" : (r.error || "读取失败"),
+          models: r.models ?? [],
+        },
+      }));
+      if (r.ok && r.models.length) s.toast(`读取到 ${r.models.length} 个可用模型`);
+    } catch (e) {
+      setModelLists((m) => ({
+        ...m,
+        [p.name]: { ...(m[p.name] ?? { models: [] }), loading: false, loaded: true, sig, error: (e as Error).message },
+      }));
+    }
   };
   const add = (p: Provider) => {
     let name = p.name, i = 2;
     while (providers.some((x) => x.name === name)) name = `${p.name}${i++}`;
-    const ps = [...providers, { name, base_url: p.base_url, model: p.model, ...(p.vision_model ? { vision_model: p.vision_model } : {}) }];
+    const k = kindOf(p);
+    const entry: Provider = {
+      name,
+      ...(k !== "openai" ? { kind: k } : {}),
+      base_url: isCliKind(k) ? "" : (p.base_url ?? ""),
+      model: p.model,
+      ...(p.vision_model ? { vision_model: p.vision_model } : {}),
+      ...(p.command ? { command: p.command } : {}),
+    };
+    const ps = [...providers, entry];
     let d = setIn(draft, "llm.providers", ps);
     if (!deepGet(d, "llm.translate")) d = setIn(d, "llm.translate", name);
     setDraft(d);
@@ -69,7 +146,7 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
       <div className="card">
         <div className="row" style={{ marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>大模型接口</h3>
-          <span className="dim" style={{ fontSize: 12 }}>任何 OpenAI 兼容接口；API Key 存在系统凭据库（{st.keyring}），不写进配置文件</span>
+          <span className="dim" style={{ fontSize: 12 }}>支持 OpenAI 兼容接口（Key 存系统凭据库 {st.keyring}）和本机 CLI（Antigravity agy / Codex，复用本机登录账号）</span>
         </div>
         <div className="row wrap" style={{ marginBottom: 10 }}>
           <span className="lbl">添加：</span>
@@ -77,51 +154,189 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
           <button className="btn sm" onClick={() => add({ name: "custom", base_url: "", model: "" })}>＋ 自定义</button>
         </div>
         {providers.length === 0 && <div className="dim" style={{ padding: "6px 0 10px" }}>还没有接口。没有接口时，翻译会导出任务文件，交给 Claude Code 之类的助手完成。</div>}
-        {providers.map((p, i) => (
+        {providers.map((p, i) => {
+          const k = kindOf(p);
+          const cli = isCliKind(k);
+          const det = cli ? st.cli?.[k] : undefined;
+          const fetched = modelLists[p.name];
+          const isLoaded = Boolean(fetched?.loaded && fetched.sig === modelSig(p));
+          return (
           <div key={i} className="card" style={{ background: "var(--bg2)", marginBottom: 8, padding: 12 }}>
             <div className="kv">
               <span className="lbl">名字</span>
-              <div className="row"><input className="inp" style={{ maxWidth: 180 }} value={p.name} onChange={(e) => upd(i, { name: e.target.value.trim() })} />
+              <div className="row wrap">
+                <input className="inp" style={{ maxWidth: 160 }} value={p.name} onChange={(e) => upd(i, { name: e.target.value.trim() })} />
+                <select className="inp" style={{ width: "auto" }} value={k} onChange={(e) => {
+                  const nk = e.target.value as ProviderKind;
+                  upd(i, { kind: nk === "openai" ? undefined : nk, ...(isCliKind(nk) ? { base_url: "" } : { command: "" }) });
+                }}>
+                  {(Object.keys(KIND_LBL) as ProviderKind[]).map((x) => <option key={x} value={x}>{KIND_LBL[x]}</option>)}
+                </select>
                 {val("llm.translate") === p.name && <span className="chip acc">翻译</span>}
+                {(val("llm.organize") || val("llm.translate")) === p.name && <span className="chip">整理</span>}
                 {(val("llm.vision") || val("llm.translate")) === p.name && <span className="chip">视觉复核</span>}
-                {(val("llm.listen") ? val("llm.listen") === p.name : val("llm.translate") === p.name && !!p.listen_model) && <span className="chip">听音</span>}
-                <span className="sp" /><button className="btn sm ghost" onClick={() => setProviders(providers.filter((_, k) => k !== i))}>删除</button></div>
-              <span className="lbl">接口地址</span><input className="inp" value={p.base_url} placeholder="https://…/v1" onChange={(e) => upd(i, { base_url: e.target.value })} />
-              <span className="lbl">模型</span>
-              <div className="row"><input className="inp" value={p.model} placeholder="翻译用的模型" onChange={(e) => upd(i, { model: e.target.value })} />
-                <input className="inp" value={p.vision_model ?? ""} placeholder="视觉模型（可选）" onChange={(e) => upd(i, { vision_model: e.target.value })} />
-                <input className="inp" value={p.listen_model ?? ""} placeholder="听音模型（可选）" title="翻译页勾了“参考语音”时，用这个模型听对话原声，标出问句还是陈述、语气。要能听音频的模型，比如 OpenRouter 上的 google/gemini-4-argon（测试里判断最准；flash 便宜但常把讲解听成问句）。gpt-6-luna 之类不能听音频。" onChange={(e) => upd(i, { listen_model: e.target.value })} /></div>
-              <span className="lbl">API Key</span>
-              <div className="row">
-                {st.keys[p.name] ? <span className="chip ok">已设置</span> : st.env_keys[p.name] ? <span className="chip ok">来自环境变量</span> : <span className="chip warn">未设置</span>}
-                <input className="inp" type="password" autoComplete="off" placeholder={st.keys[p.name] ? "输入新的 Key 可替换" : "粘贴 API Key"} value={keys[p.name] ?? ""}
-                       onChange={(e) => setKeys({ ...keys, [p.name]: e.target.value })} style={{ flex: 1 }} />
-                <button className="btn sm" disabled={!keys[p.name]} onClick={() => saveKey(p.name)}>保存 Key</button>
-                {st.keys[p.name] && <button className="btn sm ghost" onClick={async () => { await api.deleteKey(p.name); await load(); s.toast("已删除 Key"); }}>删除 Key</button>}
-                <button className="btn sm" onClick={() => test(p)}>测试连接</button>
+                {k !== "codex" && (val("llm.listen") ? val("llm.listen") === p.name : val("llm.translate") === p.name && !!p.listen_model) && <span className="chip">听音</span>}
+                <span className="sp" /><button className="btn sm ghost" onClick={() => setProviders(providers.filter((_, m) => m !== i))}>删除</button>
               </div>
-              <span className="lbl">环境变量</span>
-              <input className="inp" style={{ maxWidth: 260 }} placeholder="可选：凭据库里没有时从这个环境变量取" value={p.api_key_env ?? ""} onChange={(e) => upd(i, { api_key_env: e.target.value })} />
+              {cli ? (<>
+                <span className="lbl">本机程序</span>
+                <div className="row wrap">
+                  {p.command
+                    ? <span className="chip">自定义路径</span>
+                    : det?.installed
+                      ? <span className="chip ok" title={det.path}>已检测到{fetched?.version ? ` · ${fetched.version}` : ""}</span>
+                      : <span className="chip warn">未自动检测到（可手填路径）</span>}
+                  <input className="inp" style={{ flex: 1 }} value={p.command ?? ""} placeholder={det?.path ? `留空自动用：${det.path}` : `可选：填写 ${k}.exe 完整路径`}
+                         onChange={(e) => upd(i, { command: e.target.value })} />
+                  <button className="btn sm" disabled={!!fetched?.loading} onClick={() => fetchModels(p)}>{fetched?.loading ? "读取中…" : "读取本机模型"}</button>
+                  <button className="btn sm" onClick={() => test(p)}>测试连接</button>
+                </div>
+                <span className="lbl">模型</span>
+                <div className="row">
+                  <ModelPicker
+                    value={p.model}
+                    placeholder={k === "agy" ? "例如 gemini-4-neon-medium" : "例如 gpt-6.2-sol"}
+                    models={fetched?.models}
+                    loading={fetched?.loading}
+                    error={fetched?.error}
+                    loaded={isLoaded}
+                    onFetch={() => fetchModels(p)}
+                    onChange={(v) => upd(i, { model: v })}
+                  />
+                  <ModelPicker
+                    value={p.vision_model ?? ""}
+                    placeholder="视觉复核模型（可选，留空同左）"
+                    filterModality="image"
+                    allowClear
+                    models={fetched?.models}
+                    loading={fetched?.loading}
+                    error={fetched?.error}
+                    loaded={isLoaded}
+                    onFetch={() => fetchModels(p)}
+                    onChange={(v) => upd(i, { vision_model: v })}
+                  />
+                  {k === "agy" && (
+                    <ModelPicker
+                      value={p.listen_model ?? ""}
+                      placeholder="听音模型（可选，用于参考语音）"
+                      title="翻译页勾了“参考语音”时，用这个 Gemini 模型听对话原声（如 gemini-4-argon-medium 或 gemini-4-hydrogen-medium）。仅 Gemini 系列支持音频，Claude / GPT-OSS 不支持。"
+                      filterModality="audio"
+                      allowClear
+                      models={fetched?.models}
+                      loading={fetched?.loading}
+                      error={fetched?.error}
+                      loaded={isLoaded}
+                      onFetch={() => fetchModels(p)}
+                      onChange={(v) => upd(i, { listen_model: v })}
+                    />
+                  )}
+                </div>
+                <span />
+                <div className="hint">
+                  {k === "agy"
+                    ? "通过本机常驻协议（agy acp）调用，免 API Key、支持画面截图，也支持用 Gemini 模型听音频（听音标注 / 云端语音识别的多模态大模型模式；转写对时接口仍需 OpenAI 兼容接口）。"
+                    : "通过本机常驻协议（codex app-server）调用，免 API Key、原生支持画面截图；不支持音频（听音标注 / 云端语音识别请选 OpenAI 兼容接口或 Antigravity CLI）。"}
+                </div>
+              </>) : (<>
+                <span className="lbl">接口地址</span><input className="inp" value={p.base_url} placeholder="https://…/v1" onChange={(e) => upd(i, { base_url: e.target.value })} />
+                <span className="lbl">模型</span>
+                <div className="row">
+                  <ModelPicker
+                    value={p.model}
+                    placeholder="翻译用的模型"
+                    models={fetched?.models}
+                    loading={fetched?.loading}
+                    error={fetched?.error}
+                    loaded={isLoaded}
+                    onFetch={() => fetchModels(p)}
+                    onChange={(v) => upd(i, { model: v })}
+                  />
+                  <ModelPicker
+                    value={p.vision_model ?? ""}
+                    placeholder="视觉模型（可选）"
+                    filterModality="image"
+                    allowClear
+                    models={fetched?.models}
+                    loading={fetched?.loading}
+                    error={fetched?.error}
+                    loaded={isLoaded}
+                    onFetch={() => fetchModels(p)}
+                    onChange={(v) => upd(i, { vision_model: v })}
+                  />
+                  <ModelPicker
+                    value={p.listen_model ?? ""}
+                    placeholder="听音模型（可选）"
+                    title="翻译页勾了“参考语音”时，用这个模型听对话原声，标出问句还是陈述、语气。要能听音频的模型，比如 OpenRouter 上的 google/gemini-4-argon（测试里判断最准；flash 便宜但常把讲解听成问句）。gpt-6-luna 之类不能听音频。"
+                    filterModality="audio"
+                    allowClear
+                    models={fetched?.models}
+                    loading={fetched?.loading}
+                    error={fetched?.error}
+                    loaded={isLoaded}
+                    onFetch={() => fetchModels(p)}
+                    onChange={(v) => upd(i, { listen_model: v })}
+                  />
+                </div>
+                <span className="lbl">API Key</span>
+                <div className="row">
+                  {st.keys[p.name] ? <span className="chip ok">已设置</span> : st.env_keys[p.name] ? <span className="chip ok">来自环境变量</span> : <span className="chip warn">未设置</span>}
+                  <input className="inp" type="password" autoComplete="off" placeholder={st.keys[p.name] ? "输入新的 Key 可替换" : "粘贴 API Key"} value={keys[p.name] ?? ""}
+                         onChange={(e) => setKeys({ ...keys, [p.name]: e.target.value })} style={{ flex: 1 }} />
+                  <button className="btn sm" disabled={!keys[p.name]} onClick={() => saveKey(p.name)}>保存 Key</button>
+                  {st.keys[p.name] && <button className="btn sm ghost" onClick={async () => { await api.deleteKey(p.name); await load(); s.toast("已删除 Key"); }}>删除 Key</button>}
+                  <button className="btn sm" disabled={!!fetched?.loading} onClick={() => fetchModels(p)}>{fetched?.loading ? "获取中…" : "获取模型"}</button>
+                  <button className="btn sm" onClick={() => test(p)}>测试连接</button>
+                </div>
+                <span className="lbl">环境变量</span>
+                <input className="inp" style={{ maxWidth: 260 }} placeholder="可选：凭据库里没有时从这个环境变量取" value={p.api_key_env ?? ""} onChange={(e) => upd(i, { api_key_env: e.target.value })} />
+              </>)}
             </div>
+            {fetched?.error && <div style={{ marginTop: 6, fontSize: 12, color: "var(--bad)", wordBreak: "break-all" }}>获取模型失败：{fetched.error}</div>}
             {tests[p.name] && <div style={{ marginTop: 6, fontSize: 12, color: tests[p.name].startsWith("✓") ? "var(--ok)" : tests[p.name].startsWith("✗") ? "var(--bad)" : "var(--tx2)", wordBreak: "break-all" }}>{tests[p.name]}</div>}
           </div>
-        ))}
+          );
+        })}
         <div className="kv" style={{ marginTop: 6 }}>
           <span className="lbl">翻译用</span>
-          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.translate") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.translate", e.target.value))}>
-            <option value="">（不用接口列表，按旧的 [llm] 配置）</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          <select className="inp" style={{ maxWidth: 320 }} value={val("llm.translate") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.translate", e.target.value))}>
+            <option value="">（不用接口列表，按旧的 [llm] 配置）</option>
+            {providers.map((p) => <option key={p.name} value={p.name}>{p.name}{isCliKind(kindOf(p)) ? ` [${kindOf(p)}]` : ""}{p.model ? ` · ${p.model}` : ""}</option>)}
+          </select>
+          <span className="lbl">整理用</span>
+          <select className="inp" style={{ maxWidth: 320 }} value={val("llm.organize") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.organize", e.target.value))}>
+            <option value="">和翻译用同一个</option>
+            {providers.map((p) => <option key={p.name} value={p.name}>{p.name}{isCliKind(kindOf(p)) ? ` [${kindOf(p)}]` : ""}{p.model ? ` · ${p.model}` : ""}</option>)}
+          </select>
           <span className="lbl">画面字复核用</span>
-          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.vision") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.vision", e.target.value))}>
-            <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          <select className="inp" style={{ maxWidth: 320 }} value={val("llm.vision") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.vision", e.target.value))}>
+            <option value="">和翻译用同一个</option>
+            {providers.map((p) => <option key={p.name} value={p.name}>{p.name}{isCliKind(kindOf(p)) ? ` [${kindOf(p)}]` : ""}{(p.vision_model || p.model) ? ` · ${p.vision_model || p.model}` : ""}</option>)}
+          </select>
           <span className="lbl">云端语音识别用</span>
-          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.asr") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.asr", e.target.value))}>
-            <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          <div className="row">
+            <select className="inp" style={{ maxWidth: 320 }} value={val("llm.asr") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.asr", e.target.value))}>
+              <option value="">和翻译用同一个{trIsCodex ? "（Codex CLI 不支持，请另选）" : ""}</option>
+              {audioProviders.map((p) => <option key={p.name} value={p.name}>{p.name}{kindOf(p) === "agy" ? " [agy]" : ""}</option>)}
+            </select>
+            {!val("llm.asr") && trIsCodex && <span className="hint" style={{ color: "var(--warn)" }}>翻译是 Codex CLI，云端语音识别需单独选 OpenAI 兼容接口或 Antigravity CLI</span>}
+          </div>
           <span className="lbl">听音标注用</span>
-          <select className="inp" style={{ maxWidth: 260 }} value={val("llm.listen") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.listen", e.target.value))}>
-            <option value="">和翻译用同一个（要填了听音模型）</option>{providers.map((p) => <option key={p.name} value={p.name}>{p.name}{p.listen_model ? ` · ${p.listen_model}` : ` · ${p.model}`}</option>)}</select>
-          <span /><span className="hint">一集里可以单独换（在「处理」的对应步骤里），不换就用这里的。听音标注只在翻译页勾了“参考语音”时用。</span>
+          <div className="row">
+            <select className="inp" style={{ maxWidth: 320 }} value={val("llm.listen") ?? ""} onChange={(e) => setDraft(setIn(draft, "llm.listen", e.target.value))}>
+              <option value="">和翻译用同一个{trIsCodex ? "（Codex CLI 不支持，请另选）" : "（要填了听音模型）"}</option>
+              {audioProviders.map((p) => <option key={p.name} value={p.name}>{p.name}{kindOf(p) === "agy" ? " [agy]" : ""}{p.listen_model ? ` · ${p.listen_model}` : ` · ${p.model}`}</option>)}
+            </select>
+            {!val("llm.listen") && trIsCodex && <span className="hint" style={{ color: "var(--warn)" }}>翻译是 Codex CLI，听音标注需单独选 OpenAI 兼容接口或 Antigravity CLI</span>}
+          </div>
+          <span /><span className="hint">翻译、整理、画面字复核可以分别选 API 或本机 CLI，一集里也可以在「处理」对应步骤里单独覆盖。</span>
           <span className="lbl">当前翻译</span>
-          <span className="dim">{st.translate.model ? `${st.translate.name || "旧配置"} · ${st.translate.model} @ ${st.translate.base_url}` : "未配置 → 导出任务文件"}</span>
+          <span className="dim">{st.translate.model ? epText(st.translate) : "未配置 → 导出任务文件"}</span>
+          {st.organize?.model && (st.organize.name !== st.translate.name || st.organize.model !== st.translate.model) && (<>
+            <span className="lbl">当前整理</span><span className="dim">{epText(st.organize)}</span>
+          </>)}
+          {st.vision?.model && (st.vision.name !== st.translate.name || st.vision.model !== st.translate.model) && (<>
+            <span className="lbl">当前复核</span><span className="dim">{epText(st.vision)}</span>
+          </>)}
         </div>
       </div>
       <div className="gap" />

@@ -107,12 +107,14 @@ class FusionCfg(_M):
 
 
 class ProviderCfg(_M):
-    """一个 OpenAI 兼容接口。API Key 存在系统凭据库（按 name），配置里不写。"""
+    """一个大模型接口：OpenAI 兼容 HTTP 接口（openai），或本机 CLI 常驻服务（agy / codex）。API Key 存在系统凭据库（按 name），配置里不写。"""
     name: str
-    base_url: str
+    kind: Literal["openai", "agy", "codex"] = "openai"
+    base_url: str = ""                       # kind = openai 时必填；本机 CLI 留空
+    command: str = ""                        # kind = agy / codex 时可选：程序路径；空 = 自动探测
     model: str = ""
     vision_model: str = ""                   # 这个接口用于视觉复核时的模型；空 = 用 model
-    listen_model: str = ""                   # 这个接口用于听音标注时的模型（要能听音频，比如 Gemini）；空 = 不用这个接口听
+    listen_model: str = ""                   # 这个接口用于听音标注时的模型（仅 openai 接口，要能听音频，比如 Gemini）；空 = 不用这个接口听
     api_key_env: str = ""                    # 凭据库里没有时，从这个环境变量取
     api_key: str = ""                        # 不推荐：明文写在配置里
 
@@ -121,6 +123,7 @@ class LlmCfg(_M):
     mode: Literal["auto", "api", "export", "off"] = "auto"  # auto：配了接口就调接口，否则导出任务文件
     providers: list[ProviderCfg] = []        # 接口列表（设置页管理，存在用户全局配置里）
     translate: str = ""                      # 翻译用哪个接口（providers 里的 name）；空 = 用下面的旧写法
+    organize: str = ""                       # 整理用哪个接口；空 = 和翻译用同一个
     vision: str = ""                         # 视觉复核用哪个接口；空 = 和翻译用同一个
     asr: str = ""                            # 云端语音识别默认用哪个接口；空 = 和翻译用同一个（一集里可以用 asr.api_provider 单独换）
     listen: str = ""                         # 听音标注用哪个接口；空 = 和翻译用同一个（那个接口要设了听音模型）
@@ -287,7 +290,7 @@ VERSION = 3   # 配置格式：2 = 样式是整套的；3 = 不再从全局配�
 
 # 用户全局配置里只留这些（跟这台电脑 / 这个人有关的），其余是每一集自己的处理参数
 MACHINE_KEYS = {
-    "llm": {"providers", "translate", "vision", "asr", "listen", "base_url", "api_key", "api_key_env", "model", "vision_model",
+    "llm": {"providers", "translate", "organize", "vision", "asr", "listen", "base_url", "api_key", "api_key_env", "model", "vision_model",
             "timeout", "max_retries", "json_mode"},
     "asr": {"device", "compute_type", "download_root", "hf_endpoint"},
     "ocr": {"use_cuda", "hwaccel"},
@@ -316,11 +319,13 @@ class Config(_M):
         return out
 
     def endpoint(self, purpose="translate") -> dict:
-        """某个用途实际用的接口：{"name", "base_url", "model", "key"}。key 只在内存里，不落盘。"""
+        """某个用途实际用的接口：{"name", "base_url", "model", "key"}（本机 CLI 另含 "kind", "command"）。key 只在内存里，不落盘。"""
         from .. import secrets
 
         c = self.llm
         name = (c.vision or c.translate) if purpose == "vision" else c.translate
+        if purpose == "organize":
+            name = c.organize or c.translate
         if purpose == "listen":
             name = c.listen or c.translate
         if purpose == "asr":  # 云端语音识别：接口凭据和翻译共用一套，模型单独设
@@ -332,6 +337,8 @@ class Config(_M):
                 model = self.asr_api_model()
             if purpose == "listen":  # 单独选了听音接口时没填听音模型就用它的模型；跟着翻译接口时要填了听音模型才算设了
                 model = p.listen_model or (p.model if c.listen else "")
+            if p.kind != "openai":
+                return {"name": p.name, "kind": p.kind, "command": p.command, "base_url": "", "model": model, "key": ""}
             key = secrets.get(p.name) or (os.environ.get(p.api_key_env, "") if p.api_key_env else "") or p.api_key
             return {"name": p.name, "base_url": p.base_url, "model": model, "key": key}
         model = (c.vision_model or c.model) if purpose == "vision" else c.model
@@ -342,6 +349,13 @@ class Config(_M):
         key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")
         return {"name": "", "base_url": c.base_url, "model": model, "key": key}
 
+    def endpoint_ready(self, purpose="translate") -> bool:
+        """某个用途的接口是否已经配好可用。"""
+        ep = self.endpoint(purpose)
+        if ep.get("kind", "openai") != "openai":
+            return bool(ep["model"])
+        return bool(ep["base_url"] and ep["key"] and ep["model"])
+
     def asr_api_model(self) -> str:
         from ..sources.asr_api import DEFAULT_MODEL
 
@@ -350,8 +364,7 @@ class Config(_M):
     def llm_mode(self) -> str:
         if self.llm.mode != "auto":
             return self.llm.mode
-        ep = self.endpoint()
-        return "api" if (ep["key"] and ep["model"]) else "export"
+        return "api" if self.endpoint_ready("translate") else "export"
 
     def api_key(self) -> str:
         return self.endpoint()["key"]

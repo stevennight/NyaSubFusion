@@ -261,45 +261,81 @@ def names_text(terms):
     return "\n".join(rows)
 
 
+def _chat_audio_agy(ep, path, fmt, seconds, user):
+    """通过本机 Antigravity CLI（agy acp）读取临时音频文件完成多模态语音识别。"""
+    from ..llm import cli_backend
+    from ..llm.client import FatalLLMError
+
+    last_err = None
+    for attempt in range(RETRIES + 1):
+        check_cancel()
+        try:
+            text, _ = cli_backend.call_cli(
+                "agy",
+                ep.get("command") or "",
+                ep["model"],
+                SYSTEM,
+                user,
+                audio=(path, fmt),
+                timeout=max(180.0, float(seconds) * 2.5),
+            )
+            return text or ""
+        except Cancelled:
+            raise
+        except FatalLLMError as e:
+            raise AsrApiError(str(e)) from e
+        except Exception as e:
+            last_err = e
+            if attempt == RETRIES:
+                break
+            for _ in range(int(min(60, 3 * 2 ** attempt) * 4)):
+                check_cancel()
+                time.sleep(0.25)
+    raise AsrApiError(f"Antigravity CLI 语音识别多次失败：{last_err}") from last_err
+
+
 def _chat_audio(ep, path, fmt, language, seconds, context=""):
-    """多模态大模型（chat/completions + input_audio）：返回 {"language", "segments": [...]}。
+    """多模态大模型（chat/completions + input_audio，或本机 Antigravity CLI）：返回 {"language", "segments": [...]}。
     context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。"""
     from ..llm.client import parse_json
 
-    b64 = base64.b64encode(Path(path).read_bytes()).decode()
     user = f"这段音频长 {seconds:.1f} 秒（{int(seconds // 60):02d}:{seconds % 60:05.2f}）。语言：{language or '请自动判断'}。"
     if context.strip():
         user += CONTEXT_NOTE.format(context=context.strip())
-    body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
-            "max_tokens": max_out(seconds),
-            "messages": [{"role": "system", "content": SYSTEM},
-                         {"role": "user", "content": [{"type": "text", "text": user},
-                                                      {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
+    if ep.get("kind") == "agy":
+        text = _chat_audio_agy(ep, path, fmt, seconds, user)
+    else:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode()
+        body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
+                "max_tokens": max_out(seconds),
+                "messages": [{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": [{"type": "text", "text": user},
+                                                          {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
 
-    def call():
-        with _client() as c:
-            r = c.post(_url(ep, "/chat/completions"), headers={"Authorization": f"Bearer {ep['key']}"}, json=body)
-        if r.status_code == 400 and "response_format" in r.text and "response_format" in body:
-            body.pop("response_format")  # 有的接口不支持 JSON 模式
-            raise _Retry("不支持 JSON 模式，去掉再试")
-        if r.status_code == 400 and "max_tokens" in r.text and "max_tokens" in body:
-            body.pop("max_tokens")
-            raise _Retry("不支持 max_tokens，去掉再试")
-        _check(r)
-        return r.json()
-    try:
-        resp = _with_retry(call)
-    except _NoTimestamps as e:
-        raise AsrApiError(f"语音识别接口报错：{e}") from e
-    used = (resp.get("usage") or {}).get("prompt_tokens")
-    text_tokens = (len(SYSTEM) + len(user)) * 1.5
-    if used is not None and seconds >= GUARD_SECONDS and used < text_tokens + seconds * MIN_AUDIO_TOKENS:
-        raise AsrApiError(f"接口没有收到音频（{seconds:.0f} 秒音频 + 提示词只计了 {used} 个输入 token）：这个接口 / 中转不支持音频输入，"
-                          "模型会凭空编一段话或者什么也不给。请换支持音频的接口（例如 Gemini 官方接口）")
-    choice = (resp.get("choices") or [{}])[0]
-    text = (choice.get("message") or {}).get("content") or ""
-    if choice.get("finish_reason") == "length":
-        raise _Truncated(f"{seconds:.0f} 秒的音频写到输出上限（{body.get('max_tokens')} token）被截断")
+        def call():
+            with _client() as c:
+                r = c.post(_url(ep, "/chat/completions"), headers={"Authorization": f"Bearer {ep['key']}"}, json=body)
+            if r.status_code == 400 and "response_format" in r.text and "response_format" in body:
+                body.pop("response_format")  # 有的接口不支持 JSON 模式
+                raise _Retry("不支持 JSON 模式，去掉再试")
+            if r.status_code == 400 and "max_tokens" in r.text and "max_tokens" in body:
+                body.pop("max_tokens")
+                raise _Retry("不支持 max_tokens，去掉再试")
+            _check(r)
+            return r.json()
+        try:
+            resp = _with_retry(call)
+        except _NoTimestamps as e:
+            raise AsrApiError(f"语音识别接口报错：{e}") from e
+        used = (resp.get("usage") or {}).get("prompt_tokens")
+        text_tokens = (len(SYSTEM) + len(user)) * 1.5
+        if used is not None and seconds >= GUARD_SECONDS and used < text_tokens + seconds * MIN_AUDIO_TOKENS:
+            raise AsrApiError(f"接口没有收到音频（{seconds:.0f} 秒音频 + 提示词只计了 {used} 个输入 token）：这个接口 / 中转不支持音频输入，"
+                              "模型会凭空编一段话或者什么也不给。请换支持音频的接口（例如 Gemini 官方接口）")
+        choice = (resp.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        if choice.get("finish_reason") == "length":
+            raise _Truncated(f"{seconds:.0f} 秒的音频写到输出上限（{body.get('max_tokens')} token）被截断")
     try:
         return parse_json(text)
     except Exception as e:
@@ -477,7 +513,7 @@ def chunk_seconds(c: dict, ep: dict) -> float:
     v = float(c.get("api_chunk_seconds") or 0)
     if v > 0:
         return min(max(v, CHUNK_RANGE[0]), CHUNK_RANGE[1])
-    return CHUNK_SHORT if "openrouter.ai" in (ep.get("base_url") or "") else CHUNK
+    return CHUNK_SHORT if ("openrouter.ai" in (ep.get("base_url") or "") or ep.get("kind") == "agy") else CHUNK
 
 
 def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None):
@@ -488,23 +524,33 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     names = names_text(c.get("names")) if kind == "gemini" else ""
     if names:
         context = (context + "\n\n" if context else "") + "人名、地名、专有名词（原文（读音））：\n" + names
-    if not ep.get("key") or not ep.get("model"):
-        raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
-    _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
+    ep_kind = ep.get("kind", "openai")
+    if ep_kind not in ("openai", "agy"):
+        raise AsrApiError(f"云端语音识别不支持本机 CLI（{ep_kind}），请选择 OpenAI 兼容接口或 Antigravity CLI")
+    if ep_kind == "agy":
+        if kind != "gemini":
+            raise AsrApiError("Antigravity CLI 仅支持「多模态大模型」模式的语音识别，不支持「转写接口」；请切换为多模态大模型，或选择 OpenAI 兼容接口")
+        if not ep.get("model"):
+            raise AsrApiError("云端语音识别缺少模型名：请填写可用的 Gemini 模型")
+    else:
+        if not ep.get("key") or not ep.get("model"):
+            raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
+        _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
     w = Wav(wav)
     total = w.duration
     size = chunk_seconds(c, ep)
     chunks = plan_chunks(total, w.quiet, size, None, min(SEARCH, size / 4))
-    log(f"云端语音识别：{ep.get('name') or ep['base_url']} · {ep['model']}（{'转写接口' if kind == 'transcribe' else '多模态大模型'}），"
-        f"{total / 60:.1f} 分钟切成 {len(chunks)} 块上传（每块约 {size / 60:g} 分钟）")
+    log(f"云端语音识别：{ep.get('name') or ep.get('base_url') or ep_kind} · {ep['model']}（{'转写接口' if kind == 'transcribe' else '多模态大模型'}），"
+        f"{total / 60:.1f} 分钟切成 {len(chunks)} 块{'识别' if ep_kind == 'agy' else '上传'}（每块约 {size / 60:g} 分钟）")
     # 取消时还在上传的工作线程可能开着块文件（Windows 删不掉）：清理失败不报错，留给系统临时目录
     tmp = tempfile.TemporaryDirectory(prefix="nyasub-asr-", ignore_cleanup_errors=True)
     state = {"timed": True, "lang": None, "done": 0.0, "hits": 0, "calls": 0}
     lock = threading.Lock()
+    ep_id = ep["base_url"] if ep_kind == "openai" else f"cli:{ep_kind}"
 
     def key_of(path, extra):
         h = hashlib.sha1(Path(path).read_bytes()).hexdigest()
-        return hashlib.sha1(json.dumps([PROMPT_V, kind, ep["base_url"], ep["model"], language, extra, h]).encode()).hexdigest()
+        return hashlib.sha1(json.dumps([PROMPT_V, kind, ep_id, ep["model"], language, extra, h]).encode()).hexdigest()
 
     def one(a, b, timed):
         """识别 [a, b] 这一段（相对 wav 开头），返回 (段列表（相对 wav 开头）, 语言)。"""
@@ -590,10 +636,13 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                     "words": s["words"], "timing": s["timing"]})
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
     if timing_model:
-        log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
-        ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context="", names=[]),
-                            dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
-        out = align_to_reference(out, ref)
+        if ep_kind != "openai":
+            log("对时：当前语音识别接口是 Antigravity CLI，不支持转写对时接口，已跳过对时模型")
+        else:
+            log(f"对时：再用转写模型 {timing_model} 识别一遍，句子的起止对到它的时间上")
+            ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", context="", names=[]),
+                                dict(ep, model=timing_model), language, offset, duration, junk, cache_dir)
+            out = align_to_reference(out, ref)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
     log(f"云端识别：{len(out)} 段（时间精度：" + "，".join(f"{n} {k}" for k, n in
         (("逐字", timing["word"]), ("逐句、借转写模型的时间", timing["aligned"]), ("逐句", timing["segment"]),

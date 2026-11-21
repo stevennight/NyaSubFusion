@@ -510,3 +510,32 @@ table.tb { width: 100%; border-collapse: collapse }
 .eprow .epname { min-width: 0 } .eprow .epname b { font-weight: 500 }
 .eprow .epname small { display: block; color: var(--tx3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .chip.mini { margin-left: 6px }
+
+/* ---------- 模型选择器 ---------- */
+.mp-wrap { position: relative; display: flex; align-items: stretch; flex: 1 1 160px; min-width: 0 }
+.mp-inp { flex: 1; min-width: 0; padding-right: 26px }
+.mp-wrap:has(.mp-clr) .mp-inp { padding-right: 46px }
+.mp-btn { position: absolute; top: 1px; bottom: 1px; border: 0; background: transparent; color: var(--tx3); padding: 0 7px; font-size: 12px; display: flex; align-items: center; justify-content: center; border-radius: 5px }
+.mp-btn:hover { color: var(--tx); background: var(--panel2) }
+.mp-clr { right: 24px; font-size: 14px }
+.mp-trig { right: 2px; min-width: 22px }
+
+.mp-pop { position: fixed; z-index: 75; background: var(--panel); border: 1px solid var(--line2); border-radius: 9px; box-shadow: 0 12px 32px rgba(0, 0, 0, .55); display: flex; flex-direction: column; overflow: hidden; padding: 8px; gap: 6px }
+.mp-head { display: flex; gap: 6px; align-items: center }
+.mp-search { flex: 1; min-width: 0; font-size: 12.5px; padding: 5px 8px }
+.mp-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--tx3) }
+.mp-count { margin-left: auto }
+.mp-chip-on { border-color: var(--acc); color: var(--acc); background: rgba(255, 122, 168, .12) }
+.mp-err { font-size: 11.5px; color: var(--bad); background: rgba(255, 107, 129, .1); border: 1px solid rgba(255, 107, 129, .28); border-radius: 6px; padding: 5px 8px; word-break: break-word }
+.mp-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px }
+.mp-empty, .mp-more { font-size: 12px; color: var(--tx3); padding: 14px 8px; text-align: center }
+.mp-more { padding: 6px 8px; font-size: 11.5px }
+.mp-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 1px solid transparent; background: transparent; color: var(--tx); border-radius: 6px; padding: 6px 8px; cursor: pointer }
+.mp-item:hover, .mp-item.active { background: var(--panel2); border-color: var(--line) }
+.mp-item.sel { border-color: rgba(255, 122, 168, .55); background: rgba(255, 122, 168, .08) }
+.mp-main { min-width: 0; display: flex; flex-direction: column; gap: 1px }
+.mp-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--tx); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.mp-name { font-size: 11.5px; color: var(--tx3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.mp-badges { display: flex; align-items: center; gap: 4px; flex-shrink: 0 }
+.mp-tag { font-size: 10.5px; color: var(--tx2); background: var(--bg2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px }
+.mp-tag.def { color: var(--ok); border-color: rgba(74, 222, 128, .4) }

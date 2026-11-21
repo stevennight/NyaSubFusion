@@ -40,6 +40,107 @@ def _web_dist() -> Path:
 WEB_DIST = _web_dist()
 
 
+def _extract_model_modalities(item: dict) -> list[str]:
+    """从上游 /models 条目中提取输入模态（如 text / image / audio / video）。"""
+    mods: list[str] = []
+    arch = item.get("architecture")
+    sources: list[object] = [item.get("input_modalities"), item.get("modalities")]
+    if isinstance(arch, dict):
+        sources.insert(0, arch.get("input_modalities"))
+        mod_str = arch.get("modality")
+        if isinstance(mod_str, str) and mod_str:
+            lhs = mod_str.split("->", 1)[0]
+            sources.append([p.strip() for p in lhs.split("+")])
+    for src in sources:
+        if isinstance(src, str):
+            parts = [p.strip().lower() for p in src.split("+") if p.strip()]
+        elif isinstance(src, list):
+            parts = [str(p).strip().lower() for p in src if isinstance(p, str) and p.strip()]
+        else:
+            continue
+        for p in parts:
+            if p and p not in mods:
+                mods.append(p)
+    return mods
+
+
+def _parse_openai_models(payload: object) -> list[dict]:
+    """解析 OpenAI / OpenRouter / 中转站返回的 /models JSON。"""
+    if isinstance(payload, dict):
+        raw = payload.get("data")
+        if not isinstance(raw, list):
+            raw = payload.get("models")
+    elif isinstance(payload, list):
+        raw = payload
+    else:
+        raw = None
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    models: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or item.get("name") or "").strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        name = str(item.get("name") or "").strip() or mid
+        entry: dict = {"id": mid, "name": name}
+        mods = _extract_model_modalities(item)
+        if mods:
+            entry["modalities"] = mods
+        ctx = item.get("context_length") or item.get("context_window")
+        if not ctx and isinstance(item.get("top_provider"), dict):
+            ctx = item["top_provider"].get("context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            entry["context_length"] = ctx
+        owned = item.get("owned_by")
+        if isinstance(owned, str) and owned.strip():
+            entry["owned_by"] = owned.strip()
+        models.append(entry)
+    models.sort(key=lambda m: m["id"].lower())
+    return models
+
+
+def _fetch_openai_models(base_url: str, key: str) -> dict:
+    """请求 OpenAI 兼容接口的 GET /models 并归一化模型列表。"""
+    import httpx
+
+    clean_base = base_url.strip().rstrip("/")
+    if not clean_base:
+        return {"ok": False, "error": "请先填写接口地址", "models": []}
+    url = clean_base if clean_base.endswith("/models") else f"{clean_base}/models"
+    headers = {"User-Agent": f"NyaSubFusion/{__version__}", "Accept": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+            resp = client.get(url, headers=headers)
+        if resp.status_code >= 400:
+            msg = ""
+            try:
+                err_body = resp.json()
+                if isinstance(err_body, dict):
+                    err_obj = err_body.get("error")
+                    if isinstance(err_obj, dict):
+                        msg = str(err_obj.get("message") or "")
+                    elif isinstance(err_obj, str):
+                        msg = err_obj
+                    msg = msg or str(err_body.get("message") or err_body.get("detail") or "")
+            except Exception:
+                pass
+            detail = (msg or resp.text or resp.reason_phrase or "请求失败").strip()[:200]
+            return {"ok": False, "error": f"HTTP {resp.status_code}：{detail}", "models": []}
+        data = resp.json()
+        models = _parse_openai_models(data)
+        if not models:
+            return {"ok": False, "error": "接口未返回可用模型列表", "models": []}
+        return {"ok": True, "models": models, "error": ""}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300], "models": []}
+
+
 # ---------------- 项目登记 ----------------
 
 
@@ -268,6 +369,9 @@ def create_app(token: str | None = None) -> FastAPI:
             for qs in hub.subs.values():
                 for q in list(qs):
                     hub.loop.call_soon_threadsafe(q.put_nowait, None)
+        from ..llm import cli_backend
+
+        cli_backend.close_all()
         if server:
             server.should_exit = True
         return {"ok": True, "running": [pid for pid, j in hub.jobs.items() if j.status == "running"]}
@@ -276,9 +380,14 @@ def create_app(token: str | None = None) -> FastAPI:
     def _user_cfg_path():
         return env.home() / "config.toml"
 
+    def _ep_summary(eff, purpose="translate"):
+        ep = eff.endpoint(purpose)
+        return {**{k: v for k, v in ep.items() if k != "key"}, "kind": ep.get("kind", "openai")}
+
     @app.get("/api/settings")
     def get_settings():
         from .. import secrets
+        from ..llm import cli_backend
 
         path = _user_cfg_path()
         raw = config_mod.read_toml(path) if path.exists() else {}
@@ -286,7 +395,11 @@ def create_app(token: str | None = None) -> FastAPI:
         return {"user_config": raw, "effective": eff.model_dump(mode="json"), "path": str(path),
                 "keys": {p.name: bool(secrets.get(p.name)) for p in eff.llm.providers},
                 "env_keys": {p.name: bool(p.api_key_env and os.environ.get(p.api_key_env)) for p in eff.llm.providers},
-                "keyring": secrets.available(), "translate": {k: v for k, v in eff.endpoint().items() if k != "key"}}
+                "keyring": secrets.available(),
+                "translate": _ep_summary(eff, "translate"),
+                "organize": _ep_summary(eff, "organize"),
+                "vision": _ep_summary(eff, "vision"),
+                "cli": {k: cli_backend.detect_cli(k, check_version=False) for k in ("agy", "codex")}}
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):
@@ -319,20 +432,61 @@ def create_app(token: str | None = None) -> FastAPI:
         secrets.delete(name)
         return {"ok": True}
 
-    @app.post("/api/settings/test")
-    def test_provider(body: dict = Body(...)):
-        """测试接口：{"name"} 用已保存的接口，或直接给 {"base_url", "model", "key"?, "name"?}。"""
-        import time as _t
-
-        from openai import OpenAI
-
+    @app.post("/api/settings/models")
+    def provider_models(body: dict = Body(...)):
+        """统一获取接口可用模型：支持 OpenAI 兼容 /models 与本机 CLI（agy / codex）。"""
         from .. import secrets
+        from ..llm import cli_backend
 
         eff, _ = config_mod.load(None)
         p = next((x for x in eff.llm.providers if x.name == body.get("name")), None)
-        base_url = body.get("base_url") or (p.base_url if p else "")
+        kind = (body.get("kind") or (p.kind if p else "openai")).strip()
+        if kind in ("agy", "codex"):
+            command = body.get("command") if "command" in body else (p.command if p else "")
+            return cli_backend.list_cli_models(kind, command or "")
+        if kind != "openai":
+            raise HTTPException(400, f"不支持的接口类型：{kind}")
+
+        base_url = str(body.get("base_url") or (p.base_url if p else "")).strip()
+        env_name = str(body.get("api_key_env") or (p.api_key_env if p else "")).strip()
+        key = str(
+            body.get("key")
+            or (secrets.get(p.name) if p else "")
+            or (os.environ.get(env_name, "") if env_name else "")
+        ).strip()
+        return _fetch_openai_models(base_url, key)
+
+    @app.post("/api/settings/cli/models")
+    def cli_models(body: dict = Body(...)):
+        """探测本机 CLI 路径、版本和当前登录账号可用的模型列表。"""
+        from ..llm import cli_backend
+
+        kind = (body.get("kind") or "").strip()
+        if kind not in ("agy", "codex"):
+            raise HTTPException(400, f"不支持的本机 CLI 类型：{kind}")
+        return cli_backend.list_cli_models(kind, body.get("command") or "")
+
+    @app.post("/api/settings/test")
+    def test_provider(body: dict = Body(...)):
+        """测试接口：{"name"} 用已保存的接口，或直接给 {"kind"?, "base_url"?, "command"?, "model", "key"?, "name"?}。"""
+        import time as _t
+
+        from .. import secrets
+        from ..llm import cli_backend
+
+        eff, _ = config_mod.load(None)
+        p = next((x for x in eff.llm.providers if x.name == body.get("name")), None)
+        kind = body.get("kind") or (p.kind if p else "openai")
         model = body.get("model") or (p.model if p else "")
-        key = body.get("key") or (secrets.get(p.name) if p else "") or             (os.environ.get(p.api_key_env, "") if p and p.api_key_env else "")
+        if kind in ("agy", "codex"):
+            command = body.get("command") if "command" in body else (p.command if p else "")
+            return cli_backend.test_cli_provider(kind, model, command)
+
+        from openai import OpenAI
+
+        base_url = body.get("base_url") or (p.base_url if p else "")
+        key = body.get("key") or (secrets.get(p.name) if p else "") or \
+            (os.environ.get(p.api_key_env, "") if p and p.api_key_env else "")
         if not (base_url and model and key):
             return {"ok": False, "error": "缺少接口地址、模型或 API Key"}
         t0 = _t.time()
