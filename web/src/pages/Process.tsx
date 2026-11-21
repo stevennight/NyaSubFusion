@@ -1,5 +1,5 @@
 // 处理：左边是步骤列表（就是原来的步骤图，竖着排），点一步，右边是这一步的设置、状态和上次的日志。改了自动保存。
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { ModelPicker } from "../components/ModelPicker";
@@ -36,6 +36,79 @@ const TOGGLE: Partial<Record<StepId, [string, unknown, unknown]>> = {
   subs: ["subs.enabled", true, false], asr: ["asr.enabled", true, false], ocr: ["ocr.enabled", true, false], ocr_refine: ["ocr.refine", "vlm", "none"],
 };
 
+type ModelCache = Record<string, { loading?: boolean; loaded?: boolean; error?: string; models: ModelOption[] }>;
+const DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"];
+const AGY_SUFFIX_RE = /-(low|medium|high|xhigh|max)$/i;
+
+function resolveAgyModel(model: string, effort: string, models?: ModelOption[]) {
+  if (!model) return { actual: "", overridden: false, missing: false };
+  const availIds = new Set((models ?? []).map((m) => m.id));
+  const eff = effort.trim().toLowerCase();
+  if (eff) {
+    const base = model.replace(AGY_SUFFIX_RE, "");
+    const cand = `${base}-${eff}`;
+    if (availIds.size > 0) {
+      if (availIds.has(cand)) return { actual: cand, overridden: cand !== model && AGY_SUFFIX_RE.test(model), missing: false };
+      return { actual: model, overridden: false, missing: true };
+    }
+    return { actual: cand, overridden: cand !== model && AGY_SUFFIX_RE.test(model), missing: false };
+  }
+  if (availIds.size > 0 && !availIds.has(model)) {
+    const pref = `${model}-`;
+    for (const suf of ["medium", "high", "low"]) {
+      if (availIds.has(pref + suf)) return { actual: pref + suf, overridden: false, missing: false };
+    }
+    const first = [...availIds].sort().find((id) => id.startsWith(pref));
+    if (first) return { actual: first, overridden: false, missing: false };
+  }
+  return { actual: model, overridden: false, missing: false };
+}
+
+function EffortField({
+  value,
+  onChange,
+  kind,
+  effectiveModel,
+  models,
+  tip,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  kind?: string;
+  effectiveModel?: string;
+  models?: ModelOption[];
+  tip?: string;
+}) {
+  const listId = useId();
+  const base = (effectiveModel ?? "").replace(AGY_SUFFIX_RE, "");
+  const matched = models?.find((m) => m.id === effectiveModel)
+    ?? (base ? models?.find((m) => m.id.replace(AGY_SUFFIX_RE, "") === base && (m.efforts?.length ?? 0) > 0) : undefined);
+  const opts = matched?.efforts?.length ? matched.efforts : DEFAULT_EFFORTS;
+  const preview = kind === "agy" && effectiveModel ? resolveAgyModel(effectiveModel, value, models) : null;
+  return (
+    <div className="row">
+      <input
+        className="inp"
+        list={listId}
+        style={{ maxWidth: 160 }}
+        placeholder="不设（默认）"
+        value={value}
+        onChange={(e) => onChange(e.target.value.trim())}
+      />
+      <datalist id={listId}>{opts.map((x) => <option key={x} value={x} />)}</datalist>
+      {value && <button type="button" className="btn sm ghost" title="清空思考程度（改回默认）" onClick={() => onChange("")}>×</button>}
+      {tip && <Tip text={tip} />}
+      {preview && (
+        preview.missing
+          ? <span className="hint" style={{ color: "var(--warn)" }}>该模型无 {value} 档，将回退到 {preview.actual || effectiveModel}</span>
+          : value
+            ? <span className="hint">实际调用：<code>{preview.actual}</code>{preview.overridden ? "（已覆盖模型后缀）" : ""}</span>
+            : <span className="hint">留空 = 按模型自带档位（<code>{preview.actual}</code>）</span>
+      )}
+    </div>
+  );
+}
+
 export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes") => void }) {
   const s = useStore();
   const doc = useDoc();
@@ -44,6 +117,7 @@ export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes
   const { v: draft, update, state } = useDraft<Cfg>(doc, (d) => structuredClone(d.raw),
     (raw, v) => [...touched.current].reduce((out, p) => setIn(out, p, deepGet(v, p)), raw));
   const [step, setStep] = useState<StepId>(() => (localStorage.getItem("nyasub.step") as StepId) || "basic");
+  const [modelLists, setModelLists] = useState<ModelCache>({});
   useEffect(() => { localStorage.setItem("nyasub.step", step); }, [step]);
   const episode = doc?.kind === "episode";
 
@@ -56,8 +130,37 @@ export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes
   }, [s.summary, s.live]);
   if (!doc || !draft) return <div className="empty">加载中…</div>;
   const eff = doc.effective;
+  const rawVal = (path: string) => deepGet(draft, path);
   const val = (path: string) => deepGet(draft, path) ?? deepGet(eff, path);
   const set = (path: string, value: unknown) => { touched.current.add(path); update((d) => setIn(d, path, value)); };
+  const modelKey = (p?: Provider, legacyBase = "") =>
+    p ? `${p.name}|${p.kind ?? "openai"}|${p.base_url}|${p.command ?? ""}` : (legacyBase ? `__legacy__|${legacyBase}` : "__none__");
+  const fetchModels = async (p?: Provider, legacyBase = "", blockReason = "") => {
+    const k = modelKey(p, legacyBase);
+    setModelLists((m) => ({ ...m, [k]: { ...(m[k] ?? { models: [] }), loading: true, error: "" } }));
+    if (blockReason) {
+      setModelLists((m) => ({ ...m, [k]: { loading: false, loaded: true, error: blockReason, models: [] } }));
+      return;
+    }
+    if (!p && !legacyBase) {
+      setModelLists((m) => ({ ...m, [k]: { loading: false, loaded: true, error: "请先在「设置」中添加可用接口", models: [] } }));
+      return;
+    }
+    try {
+      const pk = p?.kind ?? "openai";
+      const r = await api.providerModels(p
+        ? (pk === "agy" || pk === "codex"
+          ? { name: p.name, kind: pk, command: p.command ?? "" }
+          : { name: p.name, kind: "openai", base_url: p.base_url, api_key_env: p.api_key_env ?? "" })
+        : { kind: "openai", base_url: legacyBase });
+      setModelLists((m) => ({
+        ...m,
+        [k]: { loading: false, loaded: true, error: r.ok ? "" : (r.error || "读取失败"), models: r.models ?? [] },
+      }));
+    } catch (e) {
+      setModelLists((m) => ({ ...m, [k]: { ...(m[k] ?? { models: [] }), loading: false, loaded: true, error: (e as Error).message } }));
+    }
+  };
   const seconds = (st: string) => (st in s.liveSec ? s.liveSec[st] : ["pending", "running"].includes(status[st]) ? null
     : s.summary?.plan.find((p) => p.stage === st)?.seconds);
   const note = (st: string) => (st === "render" ? s.summary?.render?.note : s.summary?.plan.find((p) => p.stage === st)?.note);
@@ -65,7 +168,7 @@ export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes
   const stepStatus = (id: StepId): string => (id === "basic" ? "" : id === "video" ? (vmode === "off" ? "off" : status[vmode] ?? "missing") : status[id] ?? "missing");
   const changes = doc.template?.changes ?? [];
   const diffs = (id: StepId) => changes.filter((c) => stepOf(c.keys) === id);
-  const ctx: StepCtx = { doc, val, set, episode, onTab, status: stepStatus, note, seconds, diffs };
+  const ctx: StepCtx = { doc, val, rawVal, set, modelLists, modelKey, fetchModels, episode, onTab, status: stepStatus, note, seconds, diffs };
 
   return (
     <div className="page"><div className="wide">
@@ -88,9 +191,18 @@ export function ProcessPage({ onTab }: { onTab: (t: "review" | "output" | "notes
 }
 
 interface StepCtx {
-  doc: ConfigDoc; val: (p: string) => unknown; set: (p: string, v: unknown) => void; episode: boolean;
+  doc: ConfigDoc;
+  val: (p: string) => unknown;
+  rawVal: (p: string) => unknown;
+  set: (p: string, v: unknown) => void;
+  modelLists: ModelCache;
+  modelKey: (p?: Provider, legacyBase?: string) => string;
+  fetchModels: (p?: Provider, legacyBase?: string, blockReason?: string) => Promise<void>;
+  episode: boolean;
   onTab: (t: "review" | "output" | "notes") => void;
-  status: (id: StepId) => string; note: (st: string) => string | undefined; seconds: (st: string) => number | null | undefined;
+  status: (id: StepId) => string;
+  note: (st: string) => string | undefined;
+  seconds: (st: string) => number | null | undefined;
   diffs: (id: StepId) => Change[];   // 这一步里和模板不一样的项
 }
 
@@ -121,7 +233,7 @@ function summary(id: StepId, val: (p: string) => unknown, langs: { code: string;
     case "organize": return `合并来源、分类、丢杂字 · 只出原文${val("subs.skip_sound_annotations") ? " · 跳过声音说明" : ""}`;
     case "translate": {
       const effort = String(val("llm.reasoning_effort") ?? "");
-      const how = isFine(val) ? " · 精翻" : `${val("llm.grouped") ? " · 分组翻" : ""}${effort ? ` · 思考 ${effort}` : ""}`;
+      const how = `${val("llm.grouped") ? " · 分组翻" : ""}${effort ? ` · 思考 ${effort}` : ""}`;
       return `${LLM_MODE[String(val("llm.mode") ?? "auto")]}${how}${val("llm.frames") ? " · 附画面" : ""}${val("llm.listen_audio") ? " · 听原声" : ""}`;
     }
     case "annotate": {
@@ -275,62 +387,32 @@ const providerOpt = (p: Provider, vision = false) => {
 };
 
 function AsrStep({ ctx }: { ctx: StepCtx }) {
-  const { val, set, doc } = ctx;
+  const { val, set, doc, modelLists, modelKey, fetchModels } = ctx;
   const [models, setModels] = useState<{ id: string; label: string; desc: string }[]>([]);
-  const [apiModelLists, setApiModelLists] = useState<Record<string, { loading?: boolean; loaded?: boolean; error?: string; models: ModelOption[] }>>({});
   useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
   const backend = String(val("asr.backend") ?? "local");
   const kind = (String(val("asr.api_kind") ?? "transcribe") in ASR_API_KINDS ? String(val("asr.api_kind") ?? "transcribe") : "transcribe") as keyof typeof ASR_API_KINDS;
   const allProviders = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
   const providers = allProviders.filter((p) => !p.kind || p.kind === "openai" || p.kind === "agy");
   const translateName = String(deepGet(doc.effective, "llm.translate") ?? "");
-  const asrProviderName = String(val("asr.api_provider") ?? "").trim() || translateName;
+  const asrProviderName = String(val("asr.api_provider") ?? "").trim() || String(deepGet(doc.effective, "llm.asr") ?? "").trim() || translateName;
   const asrProvider = allProviders.find((p) => p.name === asrProviderName);
   const asrKind = asrProvider?.kind ?? "openai";
   const legacyBase = String(deepGet(doc.effective, "llm.base_url") ?? "");
-  const cacheKey = asrProvider
-    ? `${asrProvider.name}|${asrKind}|${asrProvider.base_url}|${asrProvider.command ?? ""}`
-    : (legacyBase ? `__legacy__|${legacyBase}` : "__none__");
-  const apiFetched = apiModelLists[cacheKey];
-  const fetchApiModels = async () => {
-    setApiModelLists((m) => ({ ...m, [cacheKey]: { ...(m[cacheKey] ?? { models: [] }), loading: true, error: "" } }));
-    if (asrProvider && asrKind === "codex") {
-      setApiModelLists((m) => ({
-        ...m,
-        [cacheKey]: { loading: false, loaded: true, error: "当前翻译接口为 Codex CLI（不支持音频），请在上方选 OpenAI 兼容接口或 Antigravity CLI", models: [] },
-      }));
-      return;
-    }
-    if (!asrProvider && !legacyBase) {
-      setApiModelLists((m) => ({
-        ...m,
-        [cacheKey]: { loading: false, loaded: true, error: "请先在「设置」中添加 OpenAI 兼容接口或 Antigravity CLI", models: [] },
-      }));
-      return;
-    }
-    try {
-      const r = await api.providerModels(asrProvider
-        ? (asrKind === "agy"
-          ? { name: asrProvider.name, kind: "agy", command: asrProvider.command ?? "" }
-          : { name: asrProvider.name, kind: "openai", base_url: asrProvider.base_url, api_key_env: asrProvider.api_key_env ?? "" })
-        : { kind: "openai", base_url: legacyBase });
-      setApiModelLists((m) => ({
-        ...m,
-        [cacheKey]: { loading: false, loaded: true, error: r.ok ? "" : (r.error || "读取失败"), models: r.models ?? [] },
-      }));
-    } catch (e) {
-      setApiModelLists((m) => ({
-        ...m,
-        [cacheKey]: { ...(m[cacheKey] ?? { models: [] }), loading: false, loaded: true, error: (e as Error).message },
-      }));
-    }
-  };
+  const cacheKey = modelKey(asrProvider, legacyBase);
+  const apiFetched = modelLists[cacheKey];
+  const onFetch = () => fetchModels(
+    asrProvider,
+    legacyBase,
+    asrProvider && asrKind === "codex" ? "当前翻译接口为 Codex CLI（不支持音频），请在上方选 OpenAI 兼容接口或 Antigravity CLI" : "",
+  );
   const setKind = (k: keyof typeof ASR_API_KINDS) => {
     set("asr.api_kind", k);
     const m = String(val("asr.api_model") ?? "");
     if (!m || Object.values(ASR_API_KINDS).some((x) => x.model === m)) set("asr.api_model", ASR_API_KINDS[k].model);
   };
   const cur = models.find((m) => m.id === val("asr.model"));
+  const effectiveAsrModel = String(val("asr.api_model") || ASR_API_KINDS[kind].model);
   return (
     <div className="card">
       <div className="kv">
@@ -358,12 +440,21 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
               loading={apiFetched?.loading}
               error={apiFetched?.error}
               loaded={apiFetched?.loaded}
-              onFetch={fetchApiModels}
+              onFetch={onFetch}
               onChange={(v) => set("asr.api_model", v)}
             />
             <Tip text="要选给时间戳的模型。OpenRouter 可以填 mistralai/voxtral-mini-transcribe-3-0；用 Antigravity CLI 可选 gemini-4-argon-medium / gemini-4-hydrogen-medium 等 Gemini 模型" />
           </div>
           {kind === "gemini" && (<>
+            <Lbl ctx={ctx} k="asr.api_effort">思考程度</Lbl>
+            <EffortField
+              value={String(val("asr.api_effort") ?? "")}
+              onChange={(v) => set("asr.api_effort", v)}
+              kind={asrKind}
+              effectiveModel={effectiveAsrModel}
+              models={apiFetched?.models}
+              tip="多模态大模型听音转写时的思考程度（空 = 使用模型/接口默认）。通常 low 或不设即可。"
+            />
             <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
             <div className="row">
               <ModelPicker
@@ -375,7 +466,7 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
                 loading={apiFetched?.loading}
                 error={apiFetched?.error}
                 loaded={apiFetched?.loaded}
-                onFetch={fetchApiModels}
+                onFetch={onFetch}
                 onChange={(v) => set("asr.api_timing_model", v.trim())}
               />
               <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差半秒以上。填一个转写模型（同一个接口）时，会再用它识别一遍：字用大模型的，句子的起止对到转写模型的逐字时间上，大模型漏掉的短感叹（「え？」「うわあ！」）也补上。八犬伝第 1 集对字幕组的人工时间轴：开头差半秒以上的从 48% 降到 18%。多花一次转写模型的钱（mai-transcribe 很便宜）。" />
@@ -441,18 +532,53 @@ function OcrStep({ ctx }: { ctx: StepCtx }) {
 }
 
 function RefineStep({ ctx }: { ctx: StepCtx }) {
-  const { val, set, doc } = ctx;
+  const { val, rawVal, set, doc, modelLists, modelKey, fetchModels } = ctx;
   const on = val("ocr.refine") === "vlm";
   const crop = val("ocr.refine_mode") === "crop";
   const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const rawName = String(rawVal("llm.vision") ?? "").trim();
+  const effName = String(deepGet(doc.effective, "llm.vision") ?? "").trim();
+  const trName = String(val("llm.translate") ?? "").trim();
+  const visName = rawName || effName || trName;
+  const visProvider = providers.find((p) => p.name === visName);
+  const legacyBase = String(deepGet(doc.effective, "llm.base_url") ?? "");
+  const mKey = modelKey(visProvider, legacyBase);
+  const fetched = modelLists[mKey];
+  const defaultModel = visProvider ? (visProvider.vision_model || visProvider.model) : String(deepGet(doc.effective, "llm.vision_model") || deepGet(doc.effective, "llm.model") || "");
+  const effectiveModel = String(val("llm.refine_model") || defaultModel).trim();
   return (
     <div className="card">
-      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型重新看画面字，纠正错字，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。可以和「翻译」分开选不同接口（比如复核用 API、翻译用本机 CLI）。</div>
+      <div className="hint" style={{ marginBottom: 10 }}>视觉大模型重新看画面字，纠正错字，并判断是后期叠加的字幕还是实物上的字（招牌、瓶子标签…）。可以和「翻译」分开选不同接口、模型与思考程度。</div>
       <div className="kv" style={on ? undefined : { opacity: 0.45, pointerEvents: "none" }}>
         <Lbl ctx={ctx} k="llm.vision">接口</Lbl>
-        <div className="row"><select className="inp" value={String(val("llm.vision") ?? "")} onChange={(e) => set("llm.vision", e.target.value)}>
-          <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p, true)}</option>)}</select>
+        <div className="row"><select className="inp" value={rawName} onChange={(e) => set("llm.vision", e.target.value || undefined)}>
+          <option value="">跟随默认{effName ? `（${effName}）` : trName ? `（同翻译：${trName}）` : ""}</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p, true)}</option>)}</select>
           <span className="hint">可单独指定 OpenAI 兼容接口或本机 CLI</span></div>
+        <Lbl ctx={ctx} k="llm.refine_model">模型</Lbl>
+        <div className="row">
+          <ModelPicker
+            value={String(val("llm.refine_model") ?? "")}
+            placeholder={defaultModel ? `默认：${defaultModel}` : "可留空（用接口视觉/默认模型）"}
+            filterModality="image"
+            allowClear
+            models={fetched?.models}
+            loading={fetched?.loading}
+            error={fetched?.error}
+            loaded={fetched?.loaded}
+            onFetch={() => fetchModels(visProvider, legacyBase)}
+            onChange={(v) => set("llm.refine_model", v)}
+          />
+          <Tip text="当前作品或剧集覆盖复核模型；留空时使用全局接口的视觉模型/默认模型。" />
+        </div>
+        <Lbl ctx={ctx} k="llm.vision_effort">思考程度</Lbl>
+        <EffortField
+          value={String(val("llm.vision_effort") ?? "")}
+          onChange={(v) => set("llm.vision_effort", v)}
+          kind={visProvider?.kind ?? "openai"}
+          effectiveModel={effectiveModel}
+          models={fetched?.models}
+          tip="画面字复核时的思考程度（空 = 不设/使用默认）。一般不需要高思考。"
+        />
         <Lbl ctx={ctx} k="ocr.refine_mode">复核方式</Lbl>
         <div className="row"><select className="inp" value={crop ? "crop" : "frame"} onChange={(e) => set("ocr.refine_mode", e.target.value)}>
           <option value="frame">整帧画面（默认）</option><option value="crop">本地截图（省）</option></select>
@@ -484,12 +610,31 @@ function RefineStep({ ctx }: { ctx: StepCtx }) {
 
 function TranslateStep({ ctx }: { ctx: StepCtx }) {
   const s = useStore();
-  const { val, set, doc } = ctx;
+  const { val, rawVal, set, doc, modelLists, modelKey, fetchModels } = ctx;
   const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const audioProviders = providers.filter((p) => !p.kind || p.kind === "openai" || p.kind === "agy");
+  const rawTrName = String(rawVal("llm.translate") ?? "").trim();
+  const effTrName = String(deepGet(doc.effective, "llm.translate") ?? "").trim();
+  const activeTrName = rawTrName || effTrName;
+  const trProvider = providers.find((p) => p.name === activeTrName);
+  const legacyBase = String(deepGet(doc.effective, "llm.base_url") ?? "");
+  const trKey = modelKey(trProvider, legacyBase);
+  const trFetched = modelLists[trKey];
+  const defaultTrModel = trProvider?.model || String(deepGet(doc.effective, "llm.model") ?? "");
+  const effectiveTrModel = String(val("llm.translate_model") || defaultTrModel).trim();
+
+  const rawLiName = String(rawVal("llm.listen") ?? "").trim();
+  const effLiName = String(deepGet(doc.effective, "llm.listen") ?? "").trim();
+  const activeLiName = rawLiName || effLiName || activeTrName;
+  const liProvider = providers.find((p) => p.name === activeLiName);
+  const liKey = modelKey(liProvider, legacyBase);
+  const liFetched = modelLists[liKey];
+  const defaultLiModel = liProvider ? (liProvider.listen_model || ((rawLiName || effLiName) ? liProvider.model : "")) : "";
+  const effectiveLiModel = String(val("llm.listen_model") || defaultLiModel).trim();
+
   const mode = String(val("llm.mode") ?? "auto");
   const context = String(val("project.context") ?? "");
   const terms = s.data?.glossary?.terms.length ?? 0;
-  const fine = isFine(val);
   return (
     <div className="card">
       <div className="kv">
@@ -497,26 +642,76 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
         <div className="row"><Seg value={mode} options={Object.entries(LLM_MODE)} onChange={(v) => set("llm.mode", v)} />
           <span className="hint">{mode === "export" ? "把翻译任务写成文件，交给 Claude Code 之类的助手完成后再运行一次" : mode === "off" ? "只做识别和合并，不输出译文" : mode === "auto" ? "配了接口就调接口，否则导出任务文件" : ""}</span></div>
         <Lbl ctx={ctx} k="llm.translate">接口</Lbl>
-        <div className="row"><select className="inp" value={String(val("llm.translate") ?? "")} onChange={(e) => set("llm.translate", e.target.value)}>
-          <option value="">跟随设置</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
+        <div className="row"><select className="inp" value={rawTrName} onChange={(e) => set("llm.translate", e.target.value || undefined)}>
+          <option value="">跟随全局设置{effTrName ? `（${effTrName}）` : ""}</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
           <span className="hint">支持 OpenAI 兼容接口和本机 CLI（agy / codex）；在「设置」里管理</span></div>
+        <Lbl ctx={ctx} k="llm.translate_model">模型</Lbl>
+        <div className="row">
+          <ModelPicker
+            value={String(val("llm.translate_model") ?? "")}
+            placeholder={defaultTrModel ? `默认：${defaultTrModel}` : "可留空（用接口默认模型）"}
+            allowClear
+            models={trFetched?.models}
+            loading={trFetched?.loading}
+            error={trFetched?.error}
+            loaded={trFetched?.loaded}
+            onFetch={() => fetchModels(trProvider, legacyBase)}
+            onChange={(v) => set("llm.translate_model", v)}
+          />
+          <Tip text="可在当前作品 / 剧集上单独覆盖翻译模型；留空则使用全局接口默认模型。" />
+        </div>
+        <Lbl ctx={ctx} k="llm.reasoning_effort">思考程度</Lbl>
+        <EffortField
+          value={String(val("llm.reasoning_effort") ?? "")}
+          onChange={(v) => set("llm.reasoning_effort", v)}
+          kind={trProvider?.kind ?? "openai"}
+          effectiveModel={effectiveTrModel}
+          models={trFetched?.models}
+          tip="请求里的 reasoning_effort，只用在翻译正文（普通分段 / 分组翻）；整理、人物表、分组、补翻不用。若所选接口为 agy，设了此项会优先覆盖模型名里的后缀。"
+        />
+        <Lbl ctx={ctx} k="llm.grouped">分组按顺序翻</Lbl>
+        <label className="row"><input type="checkbox" checked={!!val("llm.grouped")} onChange={(e) => set("llm.grouped", e.target.checked)} />按话题几句一组，从头到尾一组一组翻
+          <Tip text="代替普通翻译（不是再翻一遍）：先整理一份人物表（同一个人 / 动物的各种叫法对到同一个译名），再按话题把字幕分成几句一组，从头到尾一组一组翻，每次带上前后文、前面已经翻好的译法和这几句的画面。省略主语、改口、调侃这类要看上下文的句子更准，名字和前后译法更统一。比普通翻译慢，请求次数多（每组一次），前后文会重复发送；某一组失败时，那几句之后逐条补翻。" /></label>
         <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
           <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网、省略的主语是谁）。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
         <Lbl ctx={ctx} k="llm.listen_audio">参考语音</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.listen_audio")} onChange={(e) => set("llm.listen_audio", e.target.checked)} />翻译前先听对话原声，标出问句 / 陈述、语气
-          <Tip text="翻译前把对话的原声一段段（几十秒）发给能听音频的模型，逐条标出问句还是陈述、说话的语气（生气地骂、开玩笑……），只有语音识别来源的句子还标出听到的说法，翻译时附在每条后面作参考。解决光看文字分不出的：「…あれなの」是在讲解还是在问、「いじめて」是骂还是逗。要在「设置」里给接口填“听音模型”（比如 OpenRouter 的 google/gemini-4-argon），翻译用的模型不用换。只听对话，不听旁白；一集大约多花 1 美元左右。没设听音模型、接口收不到音频时自动跳过。" /></label>
-        <Lbl ctx={ctx} k={["llm.grouped", "llm.reasoning_effort"]}>精翻</Lbl>
-        <label className="row"><input type="checkbox" checked={fine} onChange={(e) => { set("llm.grouped", e.target.checked); set("llm.reasoning_effort", e.target.checked ? "high" : ""); }} />分组按顺序翻 + 思考程度 high
-          <Tip text="快捷开关：勾上 = 下面两项设成“分组按顺序翻”和思考程度 high（测试里效果最好的组合），去掉 = 两项都关。也可以在下面分别设。" /></label>
-        <Lbl ctx={ctx} k="llm.grouped">分组按顺序翻</Lbl>
-        <label className="row"><input type="checkbox" checked={!!val("llm.grouped")} onChange={(e) => set("llm.grouped", e.target.checked)} />按话题几句一组，从头到尾一组一组翻
-          <Tip text="代替普通翻译（不是再翻一遍）：先整理一份人物表（同一个人 / 动物的各种叫法对到同一个译名），再按话题把字幕分成几句一组，从头到尾一组一组翻，每次带上前后文、前面已经翻好的译法和这几句的画面。省略主语、改口、调侃这类要看上下文的句子更准，名字和前后译法更统一。配合较高的思考程度效果才明显。比普通翻译慢，请求次数多（每组一次），前后文会重复发送；某一组失败时，那几句之后逐条补翻。" /></label>
-        <Lbl ctx={ctx} k="llm.reasoning_effort">思考程度</Lbl>
-        <div className="row"><input className="inp" list="llm-efforts" style={{ maxWidth: 160 }} placeholder="不设（接口默认）" value={String(val("llm.reasoning_effort") ?? "")}
-            onChange={(e) => set("llm.reasoning_effort", e.target.value.trim())} />
-          <datalist id="llm-efforts">{["low", "medium", "high", "xhigh"].map((x) => <option key={x} value={x} />)}</datalist>
-          <Tip text="请求里的 reasoning_effort，只对会思考的模型有用。各模型支持的档不一样（常见 low / medium / high，有的还有 xhigh、minimal），接口查不到列表，按模型说明填；填了接口不认会自动改成不设。越高想得越久、越慢，思考部分按输出计费。只用在翻译那一次（普通翻译的每一段，或分组翻的每一组）；整理、人物表、分组、补翻、分段这些不用。" /></div>
+          <Tip text="翻译前把对话的原声一段段（几十秒）发给能听音频的模型，逐条标出问句还是陈述、说话的语气（生气地骂、开玩笑……），只有语音识别来源的句子还标出听到的说法，翻译时附在每条后面作参考。解决光看文字分不出的：「…あれなの」是在讲解还是在问、「いじめて」是骂还是逗。支持 OpenAI 兼容接口和 Antigravity CLI（agy）。" /></label>
+        {!!val("llm.listen_audio") && (<>
+          <Lbl ctx={ctx} k="llm.listen">听音接口</Lbl>
+          <div className="row">
+            <select className="inp" value={rawLiName} onChange={(e) => set("llm.listen", e.target.value || undefined)}>
+              <option value="">跟随默认{effLiName ? `（${effLiName}）` : activeTrName ? `（同翻译：${activeTrName}）` : ""}</option>
+              {audioProviders.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}
+            </select>
+            {liProvider?.kind === "codex" && <span className="hint" style={{ color: "var(--warn)" }}>Codex CLI 不支持音频，请在左侧选 OpenAI 接口或 agy</span>}
+          </div>
+          <Lbl ctx={ctx} k="llm.listen_model">听音模型</Lbl>
+          <div className="row">
+            <ModelPicker
+              value={String(val("llm.listen_model") ?? "")}
+              placeholder={defaultLiModel ? `默认：${defaultLiModel}` : "必填：支持音频的模型（或先在设置页填听音模型）"}
+              filterModality="audio"
+              allowClear
+              models={liFetched?.models}
+              loading={liFetched?.loading}
+              error={liFetched?.error}
+              loaded={liFetched?.loaded}
+              onFetch={() => fetchModels(liProvider, legacyBase, liProvider?.kind === "codex" ? "Codex CLI 不支持音频" : "")}
+              onChange={(v) => set("llm.listen_model", v)}
+            />
+          </div>
+          <Lbl ctx={ctx} k="llm.listen_effort">听音思考</Lbl>
+          <EffortField
+            value={String(val("llm.listen_effort") ?? "")}
+            onChange={(v) => set("llm.listen_effort", v)}
+            kind={liProvider?.kind ?? "openai"}
+            effectiveModel={effectiveLiModel}
+            models={liFetched?.models}
+            tip="听音标注阶段的思考程度（空 = 不设/使用模型默认）。通常 low 或 medium 就够用。"
+          />
+        </>)}
         {ctx.episode && (<>
           <span className="lbl">背景资料</span>
           <div className="col" style={{ gap: 4 }}>
@@ -530,22 +725,51 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
   );
 }
 
-/** 精翻 = 分组按顺序翻 + 思考程度 high（快捷开关，看的是这两项） */
-function isFine(val: (p: string) => unknown) {
-  return !!val("llm.grouped") && String(val("llm.reasoning_effort") ?? "") === "high";
-}
-
 function OrganizeStep({ ctx }: { ctx: StepCtx }) {
-  const { val, set, doc } = ctx;
+  const { val, rawVal, set, doc, modelLists, modelKey, fetchModels } = ctx;
   const providers = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
+  const rawName = String(rawVal("llm.organize") ?? "").trim();
+  const effName = String(deepGet(doc.effective, "llm.organize") ?? "").trim();
+  const trName = String(val("llm.translate") ?? "").trim();
+  const orgName = rawName || effName || trName;
+  const orgProvider = providers.find((p) => p.name === orgName);
+  const legacyBase = String(deepGet(doc.effective, "llm.base_url") ?? "");
+  const mKey = modelKey(orgProvider, legacyBase);
+  const fetched = modelLists[mKey];
+  const defaultModel = orgProvider?.model || String(deepGet(doc.effective, "llm.model") ?? "");
+  const effectiveModel = String(val("llm.organize_model") || defaultModel).trim();
   return (
     <div className="card">
       <div className="hint" style={{ marginBottom: 10 }}>用大模型把合成后的字幕整理成一条条字幕，只整理原文、不翻译：几路来源说的同一句话合成一条（半句在字幕、半句在画面字里的也接上），按上下文和术语表纠正画面字、语音识别的错字，分出台词、旁白、说明，丢掉画面上的杂字和重复的语音。原来分开的几屏照样分开，要不要合成一条、怎么分屏，翻译时按译文再定。</div>
       <div className="kv">
         <Lbl ctx={ctx} k="llm.organize">接口</Lbl>
-        <div className="row"><select className="inp" value={String(val("llm.organize") ?? "")} onChange={(e) => set("llm.organize", e.target.value)}>
-          <option value="">和翻译用同一个</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
-          <span className="hint">可与翻译拆开，例如整理用便宜快速的 API、翻译用本机 CLI 或旗舰模型</span></div>
+        <div className="row"><select className="inp" value={rawName} onChange={(e) => set("llm.organize", e.target.value || undefined)}>
+          <option value="">跟随默认{effName ? `（${effName}）` : trName ? `（同翻译：${trName}）` : ""}</option>{providers.map((p) => <option key={p.name} value={p.name}>{providerOpt(p)}</option>)}</select>
+          <span className="hint">可与翻译拆开，例如整理用便宜快速的模型、翻译用旗舰模型</span></div>
+        <Lbl ctx={ctx} k="llm.organize_model">模型</Lbl>
+        <div className="row">
+          <ModelPicker
+            value={String(val("llm.organize_model") ?? "")}
+            placeholder={defaultModel ? `默认：${defaultModel}` : "可留空（用接口默认模型）"}
+            allowClear
+            models={fetched?.models}
+            loading={fetched?.loading}
+            error={fetched?.error}
+            loaded={fetched?.loaded}
+            onFetch={() => fetchModels(orgProvider, legacyBase)}
+            onChange={(v) => set("llm.organize_model", v)}
+          />
+          <Tip text="可在当前作品或剧集上覆盖整理阶段用的模型；留空则用该接口的默认模型。" />
+        </div>
+        <Lbl ctx={ctx} k="llm.organize_effort">思考程度</Lbl>
+        <EffortField
+          value={String(val("llm.organize_effort") ?? "")}
+          onChange={(v) => set("llm.organize_effort", v)}
+          kind={orgProvider?.kind ?? "openai"}
+          effectiveModel={effectiveModel}
+          models={fetched?.models}
+          tip="整理阶段（含生成术语表、说话人拆分辅助判断）的思考程度；空 = 不设/使用默认。"
+        />
         <Lbl ctx={ctx} k="subs.skip_sound_annotations">声音说明</Lbl>
         <label className="row">
           <input type="checkbox" checked={!!val("subs.skip_sound_annotations")} onChange={(e) => set("subs.skip_sound_annotations", e.target.checked)} />

@@ -35,6 +35,8 @@ _AUDIO_TOOL_GUARD = (
     "然后严禁调用其他任何工具、严禁读写其他文件或执行命令，也不要附加任何解释或额外文字，只直接返回用户要求的纯 JSON。"
 )
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_AGY_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
+_AGY_EFFORT_RE = re.compile(r"-(low|medium|high|xhigh|max)$")
 _POOL_LOCK = threading.Lock()
 _POOL: dict[tuple[str, str], "_BaseWorker"] = {}
 
@@ -383,11 +385,25 @@ class AgyAcpWorker(_BaseWorker):
                 except Exception:
                     pass
             cur = (r0.get("models") or {}).get("currentModelId") or ""
-            avail = (r0.get("models") or {}).get("availableModels") or []
-            return [
-                {"id": m["modelId"], "name": m.get("name") or m["modelId"], "default": m["modelId"] == cur}
-                for m in avail if isinstance(m, dict) and m.get("modelId")
-            ]
+            avail = [m for m in ((r0.get("models") or {}).get("availableModels") or []) if isinstance(m, dict) and m.get("modelId")]
+            avail_ids = {m["modelId"] for m in avail}
+            base_efforts: dict[str, list[str]] = {}
+            for mid in avail_ids:
+                hit = _AGY_EFFORT_RE.search(mid)
+                if hit:
+                    base = _AGY_EFFORT_RE.sub("", mid)
+                    base_efforts.setdefault(base, []).append(hit.group(1))
+            rank = {e: idx for idx, e in enumerate(_AGY_EFFORT_ORDER)}
+            out = []
+            for m in avail:
+                mid = m["modelId"]
+                base = _AGY_EFFORT_RE.sub("", mid)
+                effs = sorted(set(base_efforts.get(base, [])), key=lambda x: (rank.get(x, 99), x))
+                item = {"id": mid, "name": m.get("name") or mid, "default": mid == cur}
+                if effs:
+                    item["efforts"] = effs
+                out.append(item)
+            return out
 
     def call(self, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0):
         with self.lock:

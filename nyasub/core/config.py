@@ -64,6 +64,7 @@ class AsrCfg(_M):
     # 多模态大模型识别时，再用这个转写模型（同一个接口，比如 microsoft/mai-transcribe-2）识别一遍，借它的时间：
     # 大模型的字准、时间是估的（常差半秒以上），转写模型有逐字时间；句子起止对到转写模型的时间上，大模型漏掉的短感叹也补上。空 = 不用
     api_timing_model: str = ""
+    api_effort: str = ""                     # 多模态大模型识别时的思考程度；空 = 不设（使用模型默认）
 
 
 class Region(_M):
@@ -123,10 +124,17 @@ class LlmCfg(_M):
     mode: Literal["auto", "api", "export", "off"] = "auto"  # auto：配了接口就调接口，否则导出任务文件
     providers: list[ProviderCfg] = []        # 接口列表（设置页管理，存在用户全局配置里）
     translate: str = ""                      # 翻译用哪个接口（providers 里的 name）；空 = 用下面的旧写法
+    translate_model: str = ""                # 翻译时覆盖接口默认模型；空 = 用接口默认
     organize: str = ""                       # 整理用哪个接口；空 = 和翻译用同一个
+    organize_model: str = ""                 # 整理时覆盖模型；空 = 用接口默认
+    organize_effort: str = ""                # 整理时思考程度；空 = 不设
     vision: str = ""                         # 视觉复核用哪个接口；空 = 和翻译用同一个
+    refine_model: str = ""                   # 视觉复核时在作品 / 剧集上覆盖模型；空 = 用接口 vision_model / 默认
+    vision_effort: str = ""                  # 视觉复核时思考程度；空 = 不设
     asr: str = ""                            # 云端语音识别默认用哪个接口；空 = 和翻译用同一个（一集里可以用 asr.api_provider 单独换）
     listen: str = ""                         # 听音标注用哪个接口；空 = 和翻译用同一个（那个接口要设了听音模型）
+    listen_model: str = ""                   # 听音标注时在作品 / 剧集上覆盖模型；空 = 用接口 listen_model
+    listen_effort: str = ""                  # 听音标注时思考程度；空 = 不设
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     api_key_env: str = "OPENAI_API_KEY"
@@ -332,22 +340,41 @@ class Config(_M):
             name = self.asr.api_provider or c.asr or c.translate
         p = next((x for x in c.providers if x.name == name), None) if name else None
         if p:
-            model = (p.vision_model or p.model) if purpose == "vision" else p.model
-            if purpose == "asr":
+            model = c.translate_model.strip() or p.model
+            if purpose == "organize":
+                model = c.organize_model.strip() or p.model
+            elif purpose == "vision":
+                model = c.refine_model.strip() or p.vision_model or p.model
+            elif purpose == "asr":
                 model = self.asr_api_model()
-            if purpose == "listen":  # 单独选了听音接口时没填听音模型就用它的模型；跟着翻译接口时要填了听音模型才算设了
-                model = p.listen_model or (p.model if c.listen else "")
+            elif purpose == "listen":  # 单独选了听音接口时没填听音模型就用它的模型；跟着翻译接口时要填了听音模型才算设了
+                model = c.listen_model.strip() or p.listen_model or (p.model if c.listen else "")
             if p.kind != "openai":
                 return {"name": p.name, "kind": p.kind, "command": p.command, "base_url": "", "model": model, "key": ""}
             key = secrets.get(p.name) or (os.environ.get(p.api_key_env, "") if p.api_key_env else "") or p.api_key
             return {"name": p.name, "base_url": p.base_url, "model": model, "key": key}
-        model = (c.vision_model or c.model) if purpose == "vision" else c.model
-        if purpose == "asr":
+        model = c.translate_model.strip() or c.model
+        if purpose == "organize":
+            model = c.organize_model.strip() or c.model
+        elif purpose == "vision":
+            model = c.refine_model.strip() or c.vision_model or c.model
+        elif purpose == "asr":
             model = self.asr_api_model()
-        if purpose == "listen":
-            model = ""
+        elif purpose == "listen":
+            model = c.listen_model.strip()
         key = c.api_key or (os.environ.get(c.api_key_env, "") if c.api_key_env else "")
         return {"name": "", "base_url": c.base_url, "model": model, "key": key}
+
+    def effort(self, purpose="translate") -> str:
+        """某个用途设置的思考程度（reasoning_effort）；空 = 不设（使用接口 / 模型默认）。"""
+        m = {
+            "translate": self.llm.reasoning_effort,
+            "organize": self.llm.organize_effort,
+            "vision": self.llm.vision_effort,
+            "listen": self.llm.listen_effort,
+            "asr": self.asr.api_effort,
+        }
+        return (m.get(purpose, "") or "").strip()
 
     def endpoint_ready(self, purpose="translate") -> bool:
         """某个用途的接口是否已经配好可用。"""

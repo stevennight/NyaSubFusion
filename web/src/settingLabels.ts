@@ -7,13 +7,16 @@ const LBL: Record<string, string> = {
   "subs.skip_sound_annotations": "整理 › 跳过声音说明",
   "asr.enabled": "语音识别 › 开关", "asr.backend": "语音识别 › 识别方式", "asr.model": "语音识别 › 模型", "asr.separate": "语音识别 › 人声分离",
   "asr.vad_threshold": "语音识别 › 人声门槛", "asr.api_provider": "语音识别 › 云端接口", "asr.api_kind": "语音识别 › 接口类型",
-  "asr.api_model": "语音识别 › 云端模型", "asr.api_chunk_seconds": "语音识别 › 每块时长",
+  "asr.api_model": "语音识别 › 云端模型", "asr.api_effort": "语音识别 › 思考程度", "asr.api_chunk_seconds": "语音识别 › 每块时长",
   "ocr.enabled": "画面字识别 › 开关", "ocr.fps": "画面字识别 › 每秒看几帧", "ocr.regions": "画面字识别 › 识别区域",
   "ocr.refine": "画面字复核 › 开关", "ocr.refine_mode": "画面字复核 › 复核方式", "ocr.refine_frame_width": "画面字复核 › 整帧画面宽度",
   "ocr.refine_boxed": "画面字复核 › 框出要转写的字", "ocr.refine_batch": "画面字复核 › 每批几处",
   "ocr.refine_context": "画面字复核 › 附整帧画面", "ocr.refine_context_width": "画面字复核 › 附的整帧画面宽度",
-  "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.organize": "整理 › 接口", "llm.vision": "画面字复核 › 接口",
+  "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.translate_model": "翻译 › 模型",
+  "llm.organize": "整理 › 接口", "llm.organize_model": "整理 › 模型", "llm.organize_effort": "整理 › 思考程度",
+  "llm.vision": "画面字复核 › 接口", "llm.refine_model": "画面字复核 › 模型", "llm.vision_effort": "画面字复核 › 思考程度",
   "llm.frames": "翻译 › 参考画面", "asr.api_timing_model": "语音识别 › 对时用", "llm.listen_audio": "翻译 › 参考语音",
+  "llm.listen": "翻译 › 听音接口", "llm.listen_model": "翻译 › 听音模型", "llm.listen_effort": "翻译 › 听音思考程度",
   "llm.grouped": "翻译 › 分组按顺序翻", "llm.reasoning_effort": "翻译 › 思考程度",
   "render.profiles": "输出 › 字幕文件（整份）", "render.strip_marks": "输出 › 文字清理", "render.fallback_style": "输出 › 兜底样式",
   "render.broadcast": "输出 › 广播字幕原样", "render.broadcast_font": "输出 › 广播字幕原样的字体",
@@ -43,7 +46,11 @@ export function stepOf(keys: string[]): string {
   if (a === "asr") return "asr";
   if (a === "ocr") return b?.startsWith("refine") ? "ocr_refine" : "ocr";
   if (a === "fusion") return "fuse";
-  if (a === "llm") return b === "vision" ? "ocr_refine" : b === "organize" ? "organize" : "translate";
+  if (a === "llm") {
+    if (["vision", "vision_model", "refine_model", "vision_effort"].includes(b)) return "ocr_refine";
+    if (["organize", "organize_model", "organize_effort"].includes(b)) return "organize";
+    return "translate";
+  }
   return "output";
 }
 

@@ -261,7 +261,7 @@ def names_text(terms):
     return "\n".join(rows)
 
 
-def _chat_audio_agy(ep, path, fmt, seconds, user):
+def _chat_audio_agy(ep, path, fmt, seconds, user, effort=""):
     """通过本机 Antigravity CLI（agy acp）读取临时音频文件完成多模态语音识别。"""
     from ..llm import cli_backend
     from ..llm.client import FatalLLMError
@@ -277,13 +277,19 @@ def _chat_audio_agy(ep, path, fmt, seconds, user):
                 SYSTEM,
                 user,
                 audio=(path, fmt),
+                effort=effort,
                 timeout=max(180.0, float(seconds) * 2.5),
             )
             return text or ""
         except Cancelled:
             raise
         except FatalLLMError as e:
-            raise AsrApiError(str(e)) from e
+            msg = str(e)
+            if effort and any(w in msg.lower() for w in ("effort", "reasoning")) and getattr(e, "status", None) in (400, 422):
+                log(f"  本机 CLI 不接受思考程度「{effort}」（{msg[:150]}），改为不设")
+                effort = ""
+                continue
+            raise AsrApiError(msg) from e
         except Exception as e:
             last_err = e
             if attempt == RETRIES:
@@ -294,7 +300,7 @@ def _chat_audio_agy(ep, path, fmt, seconds, user):
     raise AsrApiError(f"Antigravity CLI 语音识别多次失败：{last_err}") from last_err
 
 
-def _chat_audio(ep, path, fmt, language, seconds, context=""):
+def _chat_audio(ep, path, fmt, language, seconds, context="", effort=""):
     """多模态大模型（chat/completions + input_audio，或本机 Antigravity CLI）：返回 {"language", "segments": [...]}。
     context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。"""
     from ..llm.client import parse_json
@@ -303,7 +309,7 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
     if context.strip():
         user += CONTEXT_NOTE.format(context=context.strip())
     if ep.get("kind") == "agy":
-        text = _chat_audio_agy(ep, path, fmt, seconds, user)
+        text = _chat_audio_agy(ep, path, fmt, seconds, user, effort=effort)
     else:
         b64 = base64.b64encode(Path(path).read_bytes()).decode()
         body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
@@ -311,6 +317,8 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": [{"type": "text", "text": user},
                                                           {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
+        if (effort or "").strip():
+            body["reasoning_effort"] = effort.strip()
 
         def call():
             with _client() as c:
@@ -321,6 +329,9 @@ def _chat_audio(ep, path, fmt, language, seconds, context=""):
             if r.status_code == 400 and "max_tokens" in r.text and "max_tokens" in body:
                 body.pop("max_tokens")
                 raise _Retry("不支持 max_tokens，去掉再试")
+            if r.status_code in (400, 422) and "reasoning" in r.text.lower() and "reasoning_effort" in body:
+                body.pop("reasoning_effort")
+                raise _Retry("不支持 reasoning_effort，去掉再试")
             _check(r)
             return r.json()
         try:
@@ -546,6 +557,7 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     tmp = tempfile.TemporaryDirectory(prefix="nyasub-asr-", ignore_cleanup_errors=True)
     state = {"timed": True, "lang": None, "done": 0.0, "hits": 0, "calls": 0}
     lock = threading.Lock()
+    effort = (c.get("api_effort") or "").strip() if kind == "gemini" else ""
     ep_id = ep["base_url"] if ep_kind == "openai" else f"cli:{ep_kind}"
 
     def key_of(path, extra):
@@ -557,9 +569,17 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         path, f = _encode(wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
         try:
             if kind == "gemini":
+                if context or effort:
+                    extra = ["chat"]
+                    if context:
+                        extra.append(hashlib.sha1(context.encode()).hexdigest())
+                    if effort:
+                        extra.append(f"effort:{effort}")
+                else:
+                    extra = "chat"
                 try:
-                    resp, hit = _cached(cache_dir, key_of(path, ["chat", hashlib.sha1(context.encode()).hexdigest()] if context else "chat"),
-                                        lambda: _chat_audio(ep, path, f, language, b - a, context))
+                    resp, hit = _cached(cache_dir, key_of(path, extra),
+                                        lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort))
                 except _Truncated as e:
                     if b - a < SPLIT_MIN * 2:
                         raise AsrApiError(f"语音识别：{e}，这一块已经很短，没法再切") from e

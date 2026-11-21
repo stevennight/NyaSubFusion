@@ -539,7 +539,7 @@ def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, 
     unread：本地找到位置但认不出字的地方（sources/ocr.scan），有原视频时也去看。"""
     from .client import LLM, FatalLLMError
 
-    llm = LLM(cfg, vision=True, cache_dir=cache_dir)
+    llm = LLM(cfg, vision=True, cache_dir=cache_dir, effort=cfg.effort("vision"))
     frames = bool(video and os.path.exists(str(video)) and size)
     # 按画面复核时从原视频重新截画面，用不着识别时存的截图：没存下截图的（跟踪时拆开 / 合并的轨迹偶尔会丢）也要看，
     # 否则它们整个跳过复核，乱码直接进字幕（「加熱用のわに」读成「加他用のbに」，整理时还被编成了一句台词）

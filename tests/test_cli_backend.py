@@ -573,3 +573,108 @@ def test_provider_models_endpoint(isolated_home, monkeypatch):
             assert r6["ok"] is True and r6["models"][0]["id"] == "codex-default"
     finally:
         srv.shutdown()
+
+
+def test_step_model_and_effort_overrides(tmp_path, monkeypatch):
+    import wave
+    from nyasub.core import pipeline
+
+    # 1) endpoint() 与 effort() 优先级 + 旧 legacy vision_model 不越权覆盖 providers
+    cfg = config.Config.model_validate({
+        "llm": {
+            "translate": "api1",
+            "vision_model": "legacy-vision-should-not-hijack",
+            "providers": [
+                {"name": "api1", "base_url": "https://api.example/v1", "model": "base-m", "vision_model": "prov-v", "listen_model": "prov-l", "api_key": "k"},
+            ],
+            "translate_model": "step-tr",
+            "organize_model": "step-org",
+            "refine_model": "",
+            "listen_model": "step-li",
+            "reasoning_effort": "high",
+            "organize_effort": "low",
+            "vision_effort": "medium",
+            "listen_effort": "low",
+        },
+        "asr": {"api_kind": "gemini", "api_model": "step-asr", "api_effort": "low"},
+    })
+    assert cfg.endpoint("translate")["model"] == "step-tr"
+    assert cfg.endpoint("organize")["model"] == "step-org"
+    assert cfg.endpoint("vision")["model"] == "prov-v"   # 未设 refine_model 时只用 provider.vision_model，不被旧 vision_model 抢走
+    assert cfg.endpoint("listen")["model"] == "step-li"
+    assert cfg.endpoint("asr")["model"] == "step-asr"
+    assert cfg.effort("translate") == "high"
+    assert cfg.effort("organize") == "low"
+    assert cfg.effort("vision") == "medium"
+    assert cfg.effort("listen") == "low"
+    assert cfg.effort("asr") == "low"
+
+    cfg_over_ref = cfg.model_copy(deep=True)
+    cfg_over_ref.llm.refine_model = "step-vis"
+    assert cfg_over_ref.endpoint("vision")["model"] == "step-vis"
+
+    # 2) AgyAcpWorker.list_models 推导 efforts 列表
+    script = tmp_path / "mock_acp.py"
+    script.write_text(MOCK_ACP_SCRIPT, encoding="utf-8")
+    monkeypatch.setattr(cli_backend, "find_executable", lambda kind, configured="": str(script))
+    monkeypatch.setattr(cli_backend.AgyAcpWorker, "_spawn_cmd", lambda self: [sys.executable, "-u", str(script), "ok"])
+    try:
+        ms = cli_backend.list_cli_models("agy")
+        assert ms["ok"] and ms["models"][0]["efforts"] == ["low", "medium", "high"]
+    finally:
+        cli_backend.close_all()
+
+    # 3) listen.annotate 与 asr_api.transcribe 正确传递 step effort
+    seen_calls: list[tuple[str, str]] = []
+
+    def fake_call_cli(kind, command, model, system, user, images=None, audio=None, effort="", timeout=180.0):
+        seen_calls.append((model, effort))
+        if "逐字转写员" in system:
+            return json.dumps({"language": "ja", "segments": [{"start": "00:00.10", "end": "00:00.80", "text": "テスト"}]}), None
+        return json.dumps({"notes": [{"id": "q1", "end": "下降", "kind": "陈述", "tone": "", "heard": ""}]}), None
+
+    monkeypatch.setattr(cli_backend, "call_cli", fake_call_cli)
+    wav = tmp_path / "b.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(b"\x01\x00" * 16000)
+    cfg_agy = config.Config.model_validate({
+        "llm": {
+            "translate": "agy",
+            "listen": "agy",
+            "listen_model": "gemini-4-argon-medium",
+            "listen_effort": "low",
+            "providers": [{"name": "agy", "kind": "agy", "model": "gemini-4-neon-medium"}],
+        },
+        "asr": {"backend": "api", "api_provider": "agy", "api_kind": "gemini", "api_model": "gemini-4-hydrogen-medium", "api_effort": "medium"},
+    })
+    cues = [{"id": "q1", "type": "dialogue", "start": 0.1, "end": 0.8, "orig": {"text": "てすと"}}]
+    assert listen.annotate(cues, cfg_agy, tmp_path / "c1", wav, tmp_path / "clips") == 1
+    segs, _ = asr_api.transcribe(wav, cfg_agy.asr.model_dump(), cfg_agy.endpoint("asr"), cache_dir=tmp_path / "c2")
+    assert len(segs) == 1 and seen_calls == [("gemini-4-argon-medium", "low"), ("gemini-4-hydrogen-medium", "medium")]
+
+    # 4) pipeline._extra 仅在非空时写入 effort，留空时不破坏旧指纹键
+    vid = tmp_path / "ep.mp4"
+    vid.write_bytes(b"mp4")
+    r_plain = pipeline.Run(str(vid), config.Config.model_validate({
+        "ocr": {"refine": "vlm"},
+        "llm": {"listen_audio": True, "providers": [{"name": "a", "base_url": "https://x/v1", "model": "m", "vision_model": "v", "listen_model": "l", "api_key": "k"}], "translate": "a"},
+    }), pipeline.Options(workdir=str(tmp_path / "w1")))
+    r_plain.results["audio"] = {"wav": str(wav)}
+    assert "effort" not in r_plain._extra("organize")
+    assert "effort" not in r_plain._extra("ocr_refine")
+    assert "listen_effort" not in r_plain._extra("translate")
+
+    cfg_eff = cfg_agy.model_copy(deep=True)
+    cfg_eff.ocr.refine = "vlm"
+    cfg_eff.llm.listen_audio = True
+    cfg_eff.llm.organize_effort = "low"
+    cfg_eff.llm.vision_effort = "medium"
+    cfg_eff.llm.reasoning_effort = "high"
+    r_eff = pipeline.Run(str(vid), cfg_eff, pipeline.Options(workdir=str(tmp_path / "w2")))
+    r_eff.results["audio"] = {"wav": str(wav)}
+    assert r_eff._extra("asr")["api"]["effort"] == "medium"
+    assert r_eff._extra("ocr_refine")["effort"] == "medium"
+    assert r_eff._extra("organize")["effort"] == "low"
+    assert r_eff._extra("translate")["listen_effort"] == "low"
+    assert r_eff._extra("translate")["effort"] == "high"

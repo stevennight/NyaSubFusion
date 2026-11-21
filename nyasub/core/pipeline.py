@@ -159,6 +159,8 @@ class Run:
                 d["api"] = {"kind": self.cfg.asr.api_kind, "base_url": ep["base_url"], "model": ep["model"],
                             **({"backend": ep["kind"]} if ep.get("kind", "openai") != "openai" else {}),
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
+                if self.cfg.asr.api_kind == "gemini" and self.cfg.effort("asr"):
+                    d["api"]["effort"] = self.cfg.effort("asr")
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_timing_model.strip():
                     from ..sources.asr_api import ALIGN_V
 
@@ -179,32 +181,37 @@ class Run:
             vep = self.cfg.endpoint("vision")
             model = vep["model"] if o.refine == "vlm" else None
             vkind = vep.get("kind", "openai") if o.refine == "vlm" else "openai"
+            veffort = self.cfg.effort("vision") if self._refine_on() else ""
             if self._refine_on() and o.refine_mode == "crop":  # 本地截图方式：选项和 0.3 以前一样记进指纹
                 return {"model": model, "mode": "crop",
                         **({"kind": vkind} if vkind != "openai" else {}),
+                        **({"effort": veffort} if veffort else {}),
                         **({"context": True} if o.refine_context else {}),
                         **({"frame_width": o.refine_context_width} if o.refine_context and o.refine_context_width != 640 else {}),
                         **({"boxed": True} if o.refine_boxed else {}), **({"batch": o.refine_batch} if o.refine_batch != 4 else {})}
             unread = load_json(self.proj.stage("ocr_unread.json"), [])  # 本地认不出字的地方变了也要重新复核
             return {"model": model,
                     **({"kind": vkind} if vkind != "openai" else {}),
+                    **({"effort": veffort} if veffort else {}),
                     **({"unread": digest(unread)} if unread and self._refine_on() else {}),
                     **({"frame_width": o.refine_frame_width}
                        if self._refine_on() and o.refine_frame_width != 1280 else {})}
         if name in ("organize", "translate"):
             mode = self._llm_mode()
             c = self.cfg.llm
-            effort = c.reasoning_effort.strip() if mode == "api" else ""
+            effort = self.cfg.effort("translate") if mode == "api" else ""
             if name == "translate":  # 翻译：分组翻、思考程度、参考画面（默认开着，关掉才记）、参考语音（默认关着，开了才记）、作品术语表
                 tep = self.cfg.endpoint("translate")
                 tkind = tep.get("kind", "openai") if mode == "api" else "openai"
                 lep = self.cfg.endpoint("listen")
                 listen_fp = f"{lep['kind']}:{lep['model']}" if lep.get("kind", "openai") != "openai" else lep["model"]
+                leffort = self.cfg.effort("listen") if self._use_listen(mode) else ""
                 return {"src": self.src, "mode": mode, "series": self._series_terms_digest(),
                         "model": tep["model"] if mode == "api" else None,
                         **({"kind": tkind} if tkind != "openai" else {}),
                         **({} if self._use_frames(mode) or mode != "api" else {"frames": False}),
                         **({"listen": listen_fp} if self._use_listen(mode) else {}),
+                        **({"listen_effort": leffort} if leffort else {}),
                         **({"grouped": 1} if c.grouped and mode == "api" else {}),
                         **({"effort": effort} if effort else {})}
             jobs = None
@@ -212,9 +219,11 @@ class Run:
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
             oep = self.cfg.endpoint("organize")
             okind = oep.get("kind", "openai") if mode == "api" else "openai"
+            oe = self.cfg.effort("organize") if mode == "api" else ""
             return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
                     "model": oep["model"] if mode == "api" else None,
                     **({"kind": okind} if okind != "openai" else {}),
+                    **({"effort": oe} if oe else {}),
                     **({"lang_options": digest(self.cfg.render.lang_options)} if mode == "export" else {}),
                     **({"skip_sound_annotations": True} if self.cfg.subs.skip_sound_annotations else {})}
         return None
@@ -849,7 +858,7 @@ class Run:
             from ..llm.client import LLM
             from ..llm.speakers import judge
 
-            judge(LLM(self.cfg, cache_dir=self.proj / "llm_cache", purpose="organize"), subs, segs)
+            judge(LLM(self.cfg, cache_dir=self.proj / "llm_cache", effort=self.cfg.effort("organize"), purpose="organize"), subs, segs)
         subs = split_speakers(subs, segs)
         n = len({c["split_from"] for c in subs if c.get("split_from")})
         if n:

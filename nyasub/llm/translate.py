@@ -381,7 +381,7 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     要看译文才能定的合并、分屏放在翻译那一步。返回 (cues, glossary)。"""
     from .client import LLM
 
-    llm = LLM(cfg, cache_dir=cache_dir, purpose="organize")
+    llm = LLM(cfg, cache_dir=cache_dir, effort=cfg.effort("organize"), purpose="organize")
     src = lang.get(src_code)
     tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)
@@ -547,7 +547,7 @@ def translate_api(cues, glossary, items, cfg, cache_dir, src_code, known_terms, 
     from .consistency import unify
 
     llm = LLM(cfg, cache_dir=cache_dir)
-    deep = LLM(cfg, cache_dir=cache_dir, effort=cfg.llm.reasoning_effort)
+    deep = LLM(cfg, cache_dir=cache_dir, effort=cfg.effort("translate"))
     src = lang.get(src_code)
     targets = [lang.canonical(t) for t in cfg.project.targets]
     tgt_code = targets[0]

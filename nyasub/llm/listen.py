@@ -98,7 +98,7 @@ def annotate(cues, cfg, cache_dir, wav, clip_dir):
     wins = windows(cues)
     if not wins:
         return 0
-    llm = LLM(cfg, cache_dir=cache_dir, purpose="listen")
+    llm = LLM(cfg, cache_dir=cache_dir, effort=cfg.effort("listen"), purpose="listen")
     clip_dir = Path(clip_dir)
     clip_dir.mkdir(parents=True, exist_ok=True)
     log(f"参考语音：{len(wins)} 段原声（{sum(b - a for a, b, _ in wins) / 60:.0f} 分钟）交给 {ep['model']} 听")

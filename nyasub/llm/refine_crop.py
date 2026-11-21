@@ -303,7 +303,7 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
     batch = max(1, int(batch))
     from .client import LLM, FatalLLMError
 
-    llm = LLM(cfg, vision=True, cache_dir=cache_dir)
+    llm = LLM(cfg, vision=True, cache_dir=cache_dir, effort=cfg.effort("vision"))
     todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
     log(f"视觉大模型复核画面字：{len(todo)} 条")
     has_video = bool(todo and video and os.path.exists(str(video)))
