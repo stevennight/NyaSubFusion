@@ -4,7 +4,7 @@ import type { Cfg } from "./types";
 const LBL: Record<string, string> = {
   "project.source": "语言 › 源语言", "project.targets": "语言 › 翻译成",
   "subs.enabled": "读取字幕 › 开关", "subs.ruby_size_ratio": "读取字幕 › 振假名小字比例",
-  "subs.skip_sound_annotations": "读取字幕 › 跳过声音说明",
+  "subs.skip_sound_annotations": "整理 › 跳过声音说明",
   "asr.enabled": "语音识别 › 开关", "asr.backend": "语音识别 › 识别方式", "asr.model": "语音识别 › 模型", "asr.separate": "语音识别 › 人声分离",
   "asr.vad_threshold": "语音识别 › 人声门槛", "asr.api_provider": "语音识别 › 云端接口", "asr.api_kind": "语音识别 › 接口类型",
   "asr.api_model": "语音识别 › 云端模型", "asr.api_chunk_seconds": "语音识别 › 每块时长",
@@ -38,7 +38,7 @@ export function settingLabel(keys: string[]): string {
 export function stepOf(keys: string[]): string {
   const [a, b] = keys;
   if (a === "project") return "basic";
-  if (a === "subs") return "subs";
+  if (a === "subs") return b === "skip_sound_annotations" ? "organize" : "subs";
   if (a === "asr") return "asr";
   if (a === "ocr") return b?.startsWith("refine") ? "ocr_refine" : "ocr";
   if (a === "fusion") return "fuse";

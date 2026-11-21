@@ -17,7 +17,7 @@ synopsis = ""                 # 本集简介：先帮助生成“本集概要”
 enabled = true
 path = ""                     # 指定字幕文件；空 = 自动找同名字幕 / 内封字幕
 ruby_size_ratio = 0.7         # 字号小于正文 70% 的行视为振假名小字，丢弃
-skip_sound_annotations = false # true = 跳过（笑い声）等声音说明，台词和歌词照常处理
+skip_sound_annotations = false # true = 整理时由大模型跳过（笑い声）等声音说明，台词、歌词和说话人标注照常保留
 
 [asr]
 enabled = true

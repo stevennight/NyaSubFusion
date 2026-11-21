@@ -45,31 +45,133 @@ def test_full_run_two_targets(sample, api_config, fake):
     assert "main" in subs.styles and "sub" in subs.styles
 
 
-def test_skip_sound_annotations_before_translation(sample, api_config, fake):
+def test_skip_sound_annotations_judged_in_organize(sample, api_config, fake, monkeypatch):
+    from nyasub.llm import client
+
     subtitle = sample.with_suffix(".srt")
     subtitle.write_text(
         "1\n00:00:00,200 --> 00:00:01,800\n♪（祭り囃子）\n\n"
         "2\n00:00:02,000 --> 00:00:03,800\n（田中）こんにちは（笑）\n（拍手）\n\n"
         "3\n00:00:04,000 --> 00:00:05,800\n♪ 春が来た（伴奏）\n\n"
         "4\n00:00:06,000 --> 00:00:07,800\n[波の音]\n\n"
-        "5\n00:00:08,000 --> 00:00:09,800\n（男性の声）聞こえますか？\n",
+        "5\n00:00:08,000 --> 00:00:09,800\n（競りの声）\n\n"
+        "6\n00:00:10,000 --> 00:00:11,800\n(一同)フフフフフッ｡\n\n"
+        "7\n00:00:12,000 --> 00:00:13,800\n（男性の声）聞こえますか？\n",
         encoding="utf-8",
     )
     assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
     stages = sample.with_name("sample.nyasub") / "stages"
-    before = (stages / "subs.json").read_bytes()
+    before_subs = (stages / "subs.json").read_bytes()
+    before_align = fp(sample, "align")
+    before_fuse = fp(sample, "fuse")
     assert "祭り囃子" in (stages / "translate.json").read_text(encoding="utf-8")
 
+    # 开启后由整理阶段的大模型结合上下文决定删留，不再在 align 硬删
+    def judge_sound(self, system, user, images=None):
+        res = fake.respond(system, user)
+        if "不翻译" in system and "跳过声音说明" in system:
+            cues, drop = [], list(res["drop"])
+            for cue in res["cues"]:
+                text = cue["orig"]
+                if text in ("♪（祭り囃子）", "（競りの声）", "(一同)フフフフフッ｡"):
+                    drop.extend(cue["src"])
+                elif text == "[波の音]":
+                    # 即使模型仍标成 sfx，apply_result 也会兜底丢掉
+                    cues.append({**cue, "type": "sfx"})
+                elif "こんにちは" in text:
+                    cues.append({**cue, "orig": "（田中）こんにちは"})
+                elif "春が来た" in text:
+                    cues.append({**cue, "orig": "♪ 春が来た"})
+                else:
+                    cues.append(cue)
+            return {"cues": cues, "drop": drop}
+        return res
+
+    monkeypatch.setattr(client.LLM, "_call", judge_sound)
     cfg = api_config.with_name("skip_sound.toml")
     cfg.write_text(api_config.read_text(encoding="utf-8") + "\n[subs]\nskip_sound_annotations = true\n", encoding="utf-8")
     fake.CALLS.clear()
     assert run(sample, "--no-asr", "--no-ocr", "--config", cfg) == 0
 
+    # subs / align / fuse 全部复用，只有整理及后续步骤重跑
+    assert (stages / "subs.json").read_bytes() == before_subs
+    assert fp(sample, "align") == before_align
+    assert fp(sample, "fuse") == before_fuse
+
+    org_calls = [(s, u) for s, u in fake.CALLS if "不翻译" in s]
+    tr_calls = [(s, u) for s, u in fake.CALLS if '"items": [{"ids"' in s]
+    assert len(org_calls) == 1 and len(tr_calls) == 1
+    org_sys, org_user = org_calls[0]
+    assert "跳过声音说明" in org_sys and "|sfx" not in org_sys
+    # 整理阶段收到了完整原文，交由模型判断
+    assert all(note in org_user for note in ("祭り囃子", "（笑）", "拍手", "伴奏", "波の音", "競りの声", "フフフフフッ"))
+    # 翻译阶段只收到模型保留并清理后的台词 / 歌词
+    assert all(not any(note in u for note in ("祭り囃子", "（笑）", "拍手", "伴奏", "波の音", "競りの声", "フフフフフッ")) for _, u in tr_calls)
+
     data = json.loads((stages / "translate.json").read_text(encoding="utf-8"))
     assert [c["orig"]["text"] for c in data["cues"]] == ["（田中）こんにちは", "♪ 春が来た", "（男性の声）聞こえますか？"]
-    assert [(c["start"], c["end"]) for c in data["cues"]] == [(2.0, 3.8), (4.0, 5.8), (8.0, 9.8)]
-    assert all(not any(note in user for note in ("祭り囃子", "（笑）", "拍手", "伴奏", "波の音")) for _, user in fake.CALLS)
-    assert (stages / "subs.json").read_bytes() == before
+    assert [(c["start"], c["end"]) for c in data["cues"]] == [(2.0, 3.8), (4.0, 5.8), (12.0, 13.8)]
+
+
+def test_skip_sound_annotations_postprocess_and_export(sample, tmp_path, fake):
+    from nyasub import lang
+    from nyasub.llm import prompts
+    from nyasub.llm.translate import apply_result, keep_subs_lines, keep_subs_wording
+
+    ja, zh = lang.get("ja"), lang.get("zh-Hans")
+    assert prompts.organize_system(ja, "") == prompts.organize_system(ja, "", skip_sound_annotations=False)
+    assert "|sfx" in prompts.organize_system(ja, "")
+    assert "|sfx" not in prompts.organize_system(ja, "", skip_sound_annotations=True)
+    assert "跳过声音说明" in prompts.organize_system(ja, "", skip_sound_annotations=True)
+    assert prompts.chunk_system(ja, zh, "", {}) == prompts.chunk_system(ja, zh, "", {}, skip_sound_annotations=False)
+    assert "跳过声音说明" in prompts.chunk_system(ja, zh, "", {}, skip_sound_annotations=True)
+
+    # 删掉句中声音说明留下空格/标点时，keep_subs_wording 不能把它补回去；真正写错的名字照旧改回
+    mid = [{"src": "subs", "start": 0.0, "end": 2.0, "text": "こんにちは（笑）また明日"}]
+    assert keep_subs_wording(mid, "こんにちは また明日") == "こんにちは また明日"
+    assert keep_subs_wording(mid, "こんにちは、また明日") == "こんにちは、また明日"
+    typo = [{"src": "subs", "start": 0.0, "end": 2.0, "text": "亡きキミイさんが笑う"}]
+    assert keep_subs_wording(typo, "亡き一美さんが笑う") == "亡きキミイさんが笑う"
+
+    # 多行字幕删掉长括号说明或方括号/【】声音行时，keep_subs_lines 不能补回
+    short_plus_note = [{"src": "subs", "start": 0.0, "end": 2.0, "text": "みんな集まって\nおはよう（盛大な拍手と歓声）"}]
+    assert keep_subs_lines(short_plus_note, "みんな集まって\nおはよう") == "みんな集まって\nおはよう"
+    bracket_line = [{"src": "subs", "start": 0.0, "end": 2.0, "text": "（田中）こんにちは\n【拍手喝采】"}]
+    assert keep_subs_lines(bracket_line, "（田中）こんにちは") == "（田中）こんにちは"
+
+    # apply_result：开启跳过声音说明时兜底丢掉 sfx 和空 orig；关闭时照常保留 sfx
+    chunk = [
+        {"id": "c1", "src": "subs", "start": 0.0, "end": 1.0, "text": "（拍手）"},
+        {"id": "c2", "src": "subs", "start": 1.0, "end": 2.0, "text": "（波の音）"},
+        {"id": "c3", "src": "subs", "start": 2.0, "end": 3.0, "text": "こんにちは"},
+    ]
+    res = {"cues": [
+        {"src": ["c1"], "type": "sfx", "orig": "（拍手）"},
+        {"src": ["c2"], "type": "dialogue", "orig": ""},
+        {"src": ["c3"], "type": "dialogue", "orig": "こんにちは"},
+    ], "drop": []}
+    cues_keep, missing_keep = apply_result(chunk, res, "zh-Hans", "ja", skip_sound_annotations=False)
+    assert missing_keep == [] and [c["orig"]["text"] for c in cues_keep] == ["（拍手）", "（波の音）", "こんにちは"]
+    cues_skip, missing_skip = apply_result(chunk, res, "zh-Hans", "ja", skip_sound_annotations=True)
+    assert missing_skip == [] and [c["orig"]["text"] for c in cues_skip] == ["こんにちは"]
+
+    # 导出任务模式：开启开关会重新导出带规则的 TASK.md，且导回时同样兜底丢掉 sfx
+    assert run(sample, "--no-asr", "--no-ocr", "--translate", "export") == 0
+    jobs = sample.with_name("sample.nyasub") / "jobs"
+    assert "跳过声音说明" not in (jobs / "TASK.md").read_text(encoding="utf-8")
+
+    cfg = tmp_path / "export_skip_sound.toml"
+    cfg.write_text("[subs]\nskip_sound_annotations = true\n", encoding="utf-8")
+    assert run(sample, "--no-asr", "--no-ocr", "--translate", "export", "--config", cfg) == 0
+    assert "跳过声音说明" in (jobs / "TASK.md").read_text(encoding="utf-8")
+    prompt = (jobs / "job_001.input.txt").read_text(encoding="utf-8")
+    exported = fake.respond("融合", prompt)
+    exported["cues"][0]["type"] = "sfx"
+    (jobs / "job_001.result.json").write_text(json.dumps(exported, ensure_ascii=False), encoding="utf-8")
+    (jobs / "glossary.result.json").write_text('{"summary": "s", "terms": []}', encoding="utf-8")
+    assert run(sample, "--no-asr", "--no-ocr", "--translate", "export", "--config", cfg) == 0
+    tr = json.loads((sample.with_name("sample.nyasub") / "stages" / "translate.json").read_text(encoding="utf-8"))
+    assert len(tr["cues"]) == len(exported["cues"]) - 1 and all(c["type"] != "sfx" for c in tr["cues"])
 
 
 def test_cache_reuse_and_partial_redo(sample, api_config, fake):

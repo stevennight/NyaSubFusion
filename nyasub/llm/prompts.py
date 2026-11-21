@@ -51,8 +51,28 @@ def _name_rule(tgt) -> str:
     return ""
 
 
-def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "") -> str:
+def _sound_annotation_rule(num: int, with_tr: bool = False) -> str:
+    where = "orig 和 tr 里" if with_tr else "orig 里"
+    return (
+        f"{num}. 跳过声音说明（仅这一项可以删去字幕里的标注，其余文字仍按第 4 条照抄）："
+        "结合上下文判断字幕或其他来源里的声音 / 音效 / 环境音 / 音乐说明（常见于括号标注，如笑声、掌声、欢呼、喊声、叹气、哭声、脚步、环境声、乐器伴奏、背景音乐等）：\n"
+        "   - 整条只是声音 / 音效 / 音乐说明、没有实际台词或歌词的（例如「（笑い声）」「（拍手）」「（掛け声）」「（切る音）」「（汽笛）」「♪（祭り囃子）」「[波の音]」「（競りの声）」等），"
+        "以及整条只有纯笑声等非台词拟声、没有实际话语的（例如「フフフフッ｡」「（一同）フフフフフッ｡」等），"
+        "放进 drop，不要输出为 cue（也不要标成 sfx）。\n"
+        f"   - 同一条里既有台词或歌词、又夹杂括号声音 / 伴奏说明的（例如「（田中）こんにちは（笑）」「♪ 春が来た（伴奏）」），"
+        f"{where}只去掉括号声音说明部分（以及由此剩下的孤立音乐符号 ♪/♬），保留实际台词和歌词。\n"
+        "   - 不要误删以下非声音说明内容：说话人或声音来源标注+实际台词（例如「（田中）」「（取材者）」「（一同）いただきま〜す！」「（男性の声）聞こえますか？」「（電話の声）」「（アナウンス）」后面跟着实际台词，以及「⚟」「≪」）、"
+        "带着笑声说出来的实际台词（例如「ハハ やめて｡」「（取材者）だめ？ フフッ｡」）、"
+        "真正唱出来的歌词（含句首 ♪）、台词 / 旁白本身，以及画面说明文字里的括号注释（例如年份、年龄、补充说明）。"
+    )
+
+
+def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "", skip_sound_annotations: bool = False) -> str:
     notes = src.prompt_source_notes()
+    types = "dialogue|narration|info|song" if skip_sound_annotations else "dialogue|narration|info|song|sfx"
+    rule7 = (f"画外音、歌曲按{tgt.name}字幕习惯表达，歌曲前加 ♪；声音 / 音效 / 伴奏说明按第 10 条跳过。"
+             if skip_sound_annotations else f"音效、画外音、歌曲按{tgt.name}字幕习惯表达，例如音效写在括号里，歌曲前加 ♪。")
+    extra = f"\n{_sound_annotation_rule(10, with_tr=True)}" if skip_sound_annotations else ""
     return f"""你是资深{src.name}→{tgt.name}影视字幕译者兼校对。背景资料：
 {_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
@@ -63,7 +83,7 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "") -> 
   另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。
 {notes}
 你的任务：把这些条目整理成最终字幕，并翻译成{tgt.name}。输出 JSON：
-{{"cues": [{{"src": ["c12", "o5"], "type": "dialogue|narration|info|song|sfx", "orig": "整理后的{src.name}原文", "tr": "{tgt.name}译文"}}],
+{{"cues": [{{"src": ["c12", "o5"], "type": "{types}", "orig": "整理后的{src.name}原文", "tr": "{tgt.name}译文"}}],
   "drop": ["a3", "o9"],
   "new_terms": [{{"src": "术语表里没有的人名等（原文写法，不带敬称）", "tr": "你采用的译名"}}]}}
 
@@ -82,11 +102,11 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "") -> 
 6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
    拿不准时宁可 drop。绝不能输出“地图文字”“画面文字”之类的占位译文。
-7. 音效、画外音、歌曲按{tgt.name}字幕习惯表达，例如音效写在括号里，歌曲前加 ♪。
+7. {rule7}
 8. 人名、地名、专有名词、动植物和食物名称严格按术语表统一（同一个名字全集只用一种译法，不同的人不能混用名字）；
    本段第一次出现、术语表里没有的人名 / 地名 / 专有名词，在 new_terms 里给出你采用的译名，后面各段会沿用；术语表里没有的，用{tgt.name}观众最熟悉的常用叫法，
    常用叫法不明确时用学名 / 正式名，不要含糊地译成上位词。当地特有叫法第一次出现时可以在括号里简短注明，之后不再重复注释。
-9. {tgt.prompt_target_rules(tgt_opts)}
+9. {tgt.prompt_target_rules(tgt_opts)}{extra}
 {SUBTITLE_FLOW_RULES}"""
 
 
@@ -188,8 +208,10 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> 
 
 
 # ---------- 整理（只出原文）→ 翻译（只翻一次）。上面的 chunk_system / chunk_prompt 是两件事一起做的，导出任务模式还在用 ----------
-def organize_system(src, context: str, synopsis: str = "") -> str:
+def organize_system(src, context: str, synopsis: str = "", skip_sound_annotations: bool = False) -> str:
     notes = src.prompt_source_notes(with_tr=False)
+    types = "dialogue|narration|info|song" if skip_sound_annotations else "dialogue|narration|info|song|sfx"
+    extra = f"\n{_sound_annotation_rule(8, with_tr=False)}" if skip_sound_annotations else ""
     return f"""你是资深{src.name}影视字幕编辑。背景资料：
 {_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
@@ -200,7 +222,7 @@ def organize_system(src, context: str, synopsis: str = "") -> str:
   另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。
 {notes}
 你的任务：只整理{src.name}原文（不翻译），把这些条目整理成一条条字幕。输出 JSON：
-{{"cues": [{{"src": ["c12", "o5"], "type": "dialogue|narration|info|song|sfx", "orig": "整理后的{src.name}原文"}}],
+{{"cues": [{{"src": ["c12", "o5"], "type": "{types}", "orig": "整理后的{src.name}原文"}}],
   "drop": ["a3", "o9"]}}
 
 规则：
@@ -222,7 +244,7 @@ def organize_system(src, context: str, synopsis: str = "") -> str:
 6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
    拿不准时宁可 drop。
-7. 人名、地名、专有名词的原文写法按术语表纠正 OCR / 语音识别的错字（字幕里的字照抄，不改）。"""
+7. 人名、地名、专有名词的原文写法按术语表纠正 OCR / 语音识别的错字（字幕里的字照抄，不改）。{extra}"""
 
 
 def organize_prompt(chunk, gl_text, summary, context_cues) -> str:

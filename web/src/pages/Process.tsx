@@ -117,7 +117,7 @@ function summary(id: StepId, val: (p: string) => unknown, langs: { code: string;
     case "ocr_refine": return val("ocr.refine") === "vlm" ? (val("ocr.refine_mode") === "crop" ? "看本地截图逐处确认" : "看整帧画面逐处确认") : "关 · 用视觉大模型逐处确认";
     case "align": return "按语音校准字幕时间";
     case "fuse": return "几路结果合成一份";
-    case "organize": return "合并来源、分类、丢杂字 · 只出原文";
+    case "organize": return `合并来源、分类、丢杂字 · 只出原文${val("subs.skip_sound_annotations") ? " · 跳过声音说明" : ""}`;
     case "translate": {
       const effort = String(val("llm.reasoning_effort") ?? "");
       const how = isFine(val) ? " · 精翻" : `${val("llm.grouped") ? " · 分组翻" : ""}${effort ? ` · 思考 ${effort}` : ""}`;
@@ -160,7 +160,7 @@ function StepDetail({ id, ctx }: { id: StepId; ctx: StepCtx }) {
     basic: () => <BasicStep ctx={ctx} />, subs: () => <SubsStep ctx={ctx} />, asr: () => <AsrStep ctx={ctx} />, ocr: () => <OcrStep ctx={ctx} />,
     ocr_refine: () => <RefineStep ctx={ctx} />, align: () => <Plain text="按语音识别的时间校准自带字幕的时间（广播字幕常整体偏移 1~2 秒）。没有可调的设置。" />,
     fuse: () => <><Plain text="把字幕、语音、画面字三路结果按时间合成一份：去重、分出台词和说明、补上字幕漏掉的话。没有可调的设置。" />{ctx.episode && <FuseStats />}</>,
-    organize: () => <OrganizeStep />, translate: () => <TranslateStep ctx={ctx} />, annotate: () => <JumpStep ctx={ctx} text="注音是按图层设的：在「输出」里选一个字幕文件，点开图层就能设注音（振假名、拼音……）。读音不对的写进「资料」里的读音词典。" />,
+    organize: () => <OrganizeStep ctx={ctx} />, translate: () => <TranslateStep ctx={ctx} />, annotate: () => <JumpStep ctx={ctx} text="注音是按图层设的：在「输出」里选一个字幕文件，点开图层就能设注音（振假名、拼音……）。读音不对的写进「资料」里的读音词典。" />,
     render: () => <JumpStep ctx={ctx} text="输出哪些字幕文件、每个文件里有哪些图层、用什么样式，都在「输出」里。" />,
     video: () => <JumpStep ctx={ctx} text="封装 MKV、压制硬字幕，以及运行完要不要自动做，都在「输出」里。" />,
   };
@@ -262,12 +262,6 @@ function SubsStep({ ctx }: { ctx: StepCtx }) {
         <span className="lbl">用哪条字幕</span>
         <input className="inp" placeholder="空 = 自动找同名外挂字幕 / 内封字幕；也可以写字幕文件的路径" value={String(val("subs.path") ?? "")} onChange={(e) => set("subs.path", e.target.value)} />
         <span /><span className="hint">最可信的来源：有字幕时以它为准，语音和画面字用来补漏、对时间。来自电视广播时还能输出“广播字幕原样”（在「输出」里）。</span>
-        <Lbl ctx={ctx} k="subs.skip_sound_annotations">声音说明</Lbl>
-        <label className="row">
-          <input type="checkbox" checked={!!val("subs.skip_sound_annotations")} onChange={(e) => set("subs.skip_sound_annotations", e.target.checked)} />
-          跳过声音说明
-          <span className="hint">过滤笑声、掌声、伴奏等标注，台词和歌词照常翻译。</span>
-        </label>
       </div>
     </div>
   );
@@ -459,8 +453,21 @@ function isFine(val: (p: string) => unknown) {
   return !!val("llm.grouped") && String(val("llm.reasoning_effort") ?? "") === "high";
 }
 
-function OrganizeStep() {
-  return <Plain text="用大模型把合成后的字幕整理成一条条字幕，只整理原文、不翻译：几路来源说的同一句话合成一条（半句在字幕、半句在画面字里的也接上），按上下文和术语表纠正画面字、语音识别的错字，分出台词、旁白、说明，丢掉画面上的杂字和重复的语音。原来分开的几屏照样分开，要不要合成一条、怎么分屏，翻译时按译文再定。接口和方式在「翻译」里设。" />;
+function OrganizeStep({ ctx }: { ctx: StepCtx }) {
+  const { val, set } = ctx;
+  return (
+    <div className="card">
+      <div className="hint" style={{ marginBottom: 10 }}>用大模型把合成后的字幕整理成一条条字幕，只整理原文、不翻译：几路来源说的同一句话合成一条（半句在字幕、半句在画面字里的也接上），按上下文和术语表纠正画面字、语音识别的错字，分出台词、旁白、说明，丢掉画面上的杂字和重复的语音。原来分开的几屏照样分开，要不要合成一条、怎么分屏，翻译时按译文再定。接口和方式在「翻译」里设。</div>
+      <div className="kv">
+        <Lbl ctx={ctx} k="subs.skip_sound_annotations">声音说明</Lbl>
+        <label className="row">
+          <input type="checkbox" checked={!!val("subs.skip_sound_annotations")} onChange={(e) => set("subs.skip_sound_annotations", e.target.checked)} />
+          跳过声音说明
+          <span className="hint">整理时由大模型结合上下文跳过笑声、掌声、环境音、伴奏等标注，保留台词、歌词和说话人标注。</span>
+        </label>
+      </div>
+    </div>
+  );
 }
 
 function FuseStats() {

@@ -2,7 +2,6 @@
 import os
 import re
 import statistics
-import unicodedata
 
 import pysubs2
 
@@ -13,51 +12,6 @@ _POS = re.compile(r"\\pos\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)")
 _COLOR = re.compile(r"\\1?c&H([0-9A-Fa-f]+)&")
 # 行首的说话人标记：“- ”（SRT 常见的对话格式）、“（名字）”、⚟（画外音）、≪（电话 / 广播里的声音）
 _LABEL = re.compile(r"^\s*(?:[-－‐]\s*\S|[（(][^）)]{1,12}[）)]|[⚟≪])")
-_BRACKETED = re.compile(r"（[^（）\n]+）|\([^()\n]+\)|［[^［］\n]+］|\[[^\[\]\n]+\]|【[^【】\n]+】")
-# 按声音说明识别，避免把（田中）、（男性の声）这种说话人标签一起删掉。
-_SOUND = re.compile(
-    r"(?:(?:一同|全員|観客|みんな)(?:の)?)?(?:笑|笑い|笑い声|爆笑|拍手|歓声|歓呼|悲鳴|泣き声|はしゃぎ声|掛け声|かけ声|"
-    r"ため息|溜め息|咳|せき|くしゃみ|足音|物音|効果音|汽笛|かしわ手|ノック|シャッター音|\w+(?:の音|鳴き声|[くぐすつぬぶむるう]音)|"
-    r"音楽|BGM|歌|演奏|伴奏|\w+(?:演奏|伴奏|囃子)|三味線|太鼓|読経|お経|無音|"
-    r"笑声|大笑|掌声|欢呼声|哭声|咳嗽声|叹气声|脚步声|敲门声|背景音乐|音乐)", re.IGNORECASE,
-)
-_SOUND_MARKS = re.compile(r"[♪♫♬🎵🎶〜～~➡→⚟\s、。,.…・:：!！?？]*")
-
-
-def strip_sound_annotations(line):
-    """去掉一行里的括号声音说明。整行只剩音乐或接续记号时返回空串。"""
-    def replace(match):
-        note = unicodedata.normalize("NFKC", match[0][1:-1])
-        note = re.sub(r"\s+", "", note).strip("、。,.…♪♬")
-        parts = re.split(r"[と、・,]", note)
-        if _SOUND.fullmatch(note) or all(_SOUND.fullmatch(part) for part in parts):
-            return ""
-        return match[0]
-
-    text = _BRACKETED.sub(replace, line)
-    if text == line:
-        return line
-    return "" if _SOUND_MARKS.fullmatch(text) else text.strip()
-
-
-def without_sound_annotations(cue):
-    """去掉字幕的声音说明，并同步按行记录的说话人线索。"""
-    lines = cue["text"].split("\n")
-    cleaned = [strip_sound_annotations(line) for line in lines]
-    if cleaned == lines:
-        return cue
-    kept = [(i, line) for i, line in enumerate(cleaned) if line.strip()]
-    if not kept:
-        return None
-    result = dict(cue, text="\n".join(line for _, line in kept))
-    voices = result.pop("voices", None)
-    check = result.pop("speaker_check", None)
-    if len(kept) > 1:
-        if voices and len(voices) == len(lines):
-            result["voices"] = [voices[i] for i, _ in kept]
-        if check and len(check) == len(lines):
-            result["speaker_check"] = [dict(check[i], text=line) for i, line in kept]
-    return result
 
 
 def _moved(a, b):

@@ -136,8 +136,6 @@ class Run:
         if name == "subs":
             path = self._subs_file()
             return {"arg": self.opts.subs_path, "file": file_stamp(path) if path else None}
-        if name == "align" and self.cfg.subs.skip_sound_annotations:
-            return {"skip_sound_annotations": True}
         if name == "ocr":  # 识别语言和实际用的模型（auto 时取决于有没有 GPU）都会影响结果
             models = None
             if self.cfg.ocr.det_model == "auto" or self.cfg.ocr.rec_model == "auto":
@@ -203,7 +201,8 @@ class Run:
                 jobs = [file_stamp(f)["mtime"] for f in sorted((self.proj / "jobs").glob("*.result.json"))]
             return {"src": self.src, "mode": mode, "series": self._series_terms_digest(), "jobs": jobs,
                     "model": self.cfg.endpoint()["model"] if mode == "api" else None,
-                    **({"lang_options": digest(self.cfg.render.lang_options)} if mode == "export" else {})}
+                    **({"lang_options": digest(self.cfg.render.lang_options)} if mode == "export" else {}),
+                    **({"skip_sound_annotations": True} if self.cfg.subs.skip_sound_annotations else {})}
         return None
 
     def input_fp(self, name):
@@ -823,15 +822,6 @@ class Run:
         from ..fusion.align import apply_offset, estimate_offset
         from ..fusion.speakers import split_speakers
 
-        if self.cfg.subs.skip_sound_annotations:
-            from ..sources.subtitle import without_sound_annotations
-
-            cleaned = [without_sound_annotations(c) for c in subs]
-            removed = sum(c is None for c in cleaned)
-            trimmed = sum(c is not None and c is not orig for orig, c in zip(subs, cleaned))
-            subs = [c for c in cleaned if c is not None]
-            if removed or trimmed:
-                log(f"声音说明：跳过 {removed} 条，清理混合字幕 {trimmed} 条")
         segs = asr["segments"]
         off = 0.0
         if subs and segs and self.cfg.fusion.auto_sync:
@@ -938,6 +928,8 @@ class Run:
             cues, missing, glossary = jobs.import_jobs(job_dir, self.cfg, self.src, known)
             stamp = job_dir / "source.fp"
             fp = self.fps["fuse"]["out"]
+            if self.cfg.subs.skip_sound_annotations:
+                fp = f"{fp}:skip_sound_annotations"
             stale = not stamp.exists() or stamp.read_text(encoding="utf-8").strip() != fp
             if cues is None or stale:
                 job_dir, n = jobs.export_jobs(items, self.cfg, job_dir, str(self.proj.video), self.src, known, fp,

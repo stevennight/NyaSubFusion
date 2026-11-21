@@ -42,7 +42,7 @@ class SubsCfg(_M):
     path: str = ""                           # 指定字幕文件；空 = 自动找同名字幕 / 内封字幕
     track: int | None = None                 # 指定第几条内封字幕轨（从 0 开始）
     ruby_size_ratio: float = 0.7             # 字号小于正文这个比例的行视为振假名小字，丢弃
-    skip_sound_annotations: bool = False    # 跳过（笑い声）等声音说明，保留台词和歌词
+    skip_sound_annotations: bool = False    # 整理时由大模型跳过（笑い声）等声音说明，保留台词、歌词和说话人标注
 
 
 class AsrCfg(_M):

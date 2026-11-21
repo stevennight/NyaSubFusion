@@ -14,6 +14,7 @@ from ..textutil import covered, fmt_time, full_sim, norm, sim
 from . import prompts
 
 SPEECH, SCREEN = ("subs", "asr"), ("telop", "info")
+_BRACKET_NOTE = re.compile(r"（[^（）]*）|\([^()]*\)|［[^［］]*］|\[[^\[\]]*\]|【[^【】]*】")
 
 
 def chunk_items(items, seconds, max_items):
@@ -109,7 +110,7 @@ def shown(cues):
     return [c for c in cues if c.get("type") != "drop"]
 
 
-def apply_result(chunk, result, tgt, src_lang):
+def apply_result(chunk, result, tgt, src_lang, *, skip_sound_annotations=False):
     """校验大模型结果，返回 (cues, 漏掉的 id)。时间由 src 计算。"""
     by_id = {it["id"]: it for it in chunk}
     seen, cues = set(), []
@@ -120,8 +121,13 @@ def apply_result(chunk, result, tgt, src_lang):
         seen.update(src)
         if c.get("type") == "drop":  # 模型有时把要丢掉的条目写成 type 为 drop 的字幕，而不是放进 drop 列表
             continue
+        if skip_sound_annotations and c.get("type") == "sfx":  # 跳过声音说明时，模型仍标成 sfx 的整条也一并丢弃
+            continue
         srcs = [by_id[s] for s in src]
-        orig = (c.get("orig") or c.get("ja") or "").strip().replace(" / ", "\n") or "\n".join(s["text"] for s in srcs)  # “ / ”是提示词里的换行
+        raw_orig = (c.get("orig") or c.get("ja") or "").strip().replace(" / ", "\n")  # “ / ”是提示词里的换行
+        if skip_sound_annotations and not raw_orig:
+            continue
+        orig = raw_orig or "\n".join(s["text"] for s in srcs)
         if invented(srcs, orig):
             log(f"  {'、'.join(src)}：画面上认出的是「{srcs[0]['text'][:20]}」，整理成了「{orig[:20]}」，没有来源作证，不要")
             continue
@@ -207,10 +213,11 @@ def keep_subs_wording(srcs, orig):
         if op == "insert":
             continue
         start = len(out)
-        # 只改“夹在两段相同文字中间、长短差不多”的替换（字被换掉了）；只是全角半角、空格不同的不改
+        # 只改“夹在两段相同文字中间、长短差不多”的替换（字被换掉了）；只是全角半角、空格不同的不改；
+        # 删掉括号说明后只剩空白或标点的也不补回。
         swap = (op == "replace" and max(i2 - i1, j2 - j1) <= 6 and abs((i2 - i1) - (j2 - j1)) <= 2
                 and 0 < k < len(ops) - 1 and ops[k - 1][0] == "equal" and ops[k + 1][0] == "equal"
-                and "\n" not in flat[i1:i2] and norm(flat[i1:i2]) != norm(ref[j1:j2]))
+                and "\n" not in flat[i1:i2] and bool(norm(flat[i1:i2])) and norm(flat[i1:i2]) != norm(ref[j1:j2]))
         if swap:
             for i in range(i1, i2):
                 moved[i] = start if i == i1 else start + (j2 - j1)
@@ -233,8 +240,8 @@ def keep_subs_lines(srcs, orig):
     lines = [ln.replace("➡", "").strip() for s in subs for ln in s["text"].replace(" / ", "\n").split("\n")]
     lines = [ln for ln in lines if ln]
     for k, ln in enumerate(lines):
-        bare = re.sub(r"[（(][^）)]*[）)]", "", ln)
-        if len(norm(bare)) < 4 or covered(ln, orig) >= 0.5:
+        bare = _BRACKET_NOTE.sub("", ln)
+        if len(norm(bare)) < 4 or covered(ln, orig) >= 0.5 or covered(bare, orig) >= 0.5:
             continue
         prev = next((p for p in reversed(lines[:k]) if covered(p, orig) >= 0.9 and p in orig), None)
         nxt = next((p for p in lines[k + 1:] if covered(p, orig) >= 0.9 and p in orig), None)
@@ -386,18 +393,22 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     glossary = {"summary": gl.get("summary", ""), "terms": terms, "new": len(terms) - len(known_terms or [])}
     gl_text = prompts.glossary_text(terms)
 
-    system = prompts.organize_system(src, cfg.project.context, cfg.project.synopsis)
+    skip_sound = bool(cfg.subs.skip_sound_annotations)
+    system = prompts.organize_system(src, cfg.project.context, cfg.project.synopsis,
+                                     skip_sound_annotations=skip_sound)
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
     for i, chunk in enumerate(chunks, 1):
         progress(i - 1, len(chunks), f"整理 {i}/{len(chunks)} 段", every=0)
         log(f"整理第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
         prompt = prompts.organize_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:])
-        cues, missing = apply_result(chunk, llm.chat_json(system, prompt), tgt_code, src.code)
+        cues, missing = apply_result(chunk, llm.chat_json(system, prompt), tgt_code, src.code,
+                                     skip_sound_annotations=skip_sound)
         if missing:
             log(f"  模型漏了 {len(missing)} 条，补问一次")
             retry = llm.chat_json(system, prompt + f"\n\n上次输出漏掉了这些 id：{', '.join(missing)}。请重新完整输出。")
-            cues2, missing2 = apply_result(chunk, retry, tgt_code, src.code)
+            cues2, missing2 = apply_result(chunk, retry, tgt_code, src.code,
+                                           skip_sound_annotations=skip_sound)
             if len(missing2) < len(missing):
                 cues, missing = cues2, missing2
             cues += fallback(chunk, missing, tgt_code, src.code)

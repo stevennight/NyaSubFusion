@@ -69,7 +69,8 @@ def export_jobs(items, cfg, job_dir: Path, video, src_code, known_terms, fingerp
     src = lang.get(src_code)
     tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)
-    system = prompts.chunk_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}), cfg.project.synopsis)
+    system = prompts.chunk_system(src, tgt, cfg.project.context, cfg.render.lang_options.get(tgt_code, {}), cfg.project.synopsis,
+                                  skip_sound_annotations=bool(cfg.subs.skip_sound_annotations))
     finish = finish_command(video, config_path)
     write_text(job_dir / "TASK.md", TASK_MD.format(src=src.name, tgt=tgt.name, finish=finish,
                                                    glossary=prompts.glossary_system(src, tgt, cfg.project.context, cfg.project.synopsis), chunk=system))
@@ -98,7 +99,8 @@ def import_jobs(job_dir: Path, cfg, src_code, known_terms):
             missing_jobs.append(base)
             continue
         chunk = load_json(n)
-        cues, missing = apply_result(chunk, parse_json(res_path.read_text(encoding="utf-8")), tgt_code, src_code)
+        cues, missing = apply_result(chunk, parse_json(res_path.read_text(encoding="utf-8")), tgt_code, src_code,
+                                     skip_sound_annotations=bool(cfg.subs.skip_sound_annotations))
         if missing:
             log(f"  警告：{base} 漏了 {', '.join(missing)}")
             cues += fallback(chunk, missing, tgt_code, src_code)
