@@ -302,10 +302,12 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
     batch：几处一批问。一批越多越省，但模型偶尔会把同一批另一张图上的字写过来（串图）；1 = 每处单独问。"""
     batch = max(1, int(batch))
     from .client import LLM, FatalLLMError
+    from .refine import parallel_map, refine_workers
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir, effort=cfg.effort("vision"))
+    workers = refine_workers(cfg, llm)
     todo = [e for e in events if e.get("crop") and "text_local" not in e and not e.get("prefiltered")]
-    log(f"视觉大模型复核画面字：{len(todo)} 条")
+    log(f"视觉大模型复核画面字：{len(todo)} 条" + (f"，并发 {workers}" if workers > 1 else ""))
     has_video = bool(todo and video and os.path.exists(str(video)))
     context, boxed = context and has_video, boxed and has_video
     groups = plan_groups(todo, batch, context or boxed)
@@ -315,13 +317,9 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
     marked_dir = os.path.join(workdir, "crops", "marked")
     recrop_dir = os.path.join(workdir, "crops", "recrop")
     n_boxed = 0
-    short = []  # 复核结果只有半截的：换一帧重新截图再问
-    n_done = 0
+    # 主线程预先完成切图与带框整帧生成，并发阶段只读临时图并发起请求
+    prepared = []
     for gi, (group, at) in enumerate(groups):
-        check_cancel()
-        progress(n_done, len(todo), "复核", every=0)
-        n_done += len(group)
-
         def frames_for(idx, group=group, at=at):
             """这几处（这一批里的序号）的整帧画面：同一时刻的共用一张，编号按 idx 里的先后。"""
             out = []
@@ -339,17 +337,40 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
             paths.append(p or os.path.join(workdir, e["crop"]))
             box.append(bool(p))
         n_boxed += sum(box)
+        init_frames = frames_for(list(range(len(group)))) if context else None
+        prepared.append((gi, group, paths, box, frames_for if context else None, init_frames))
+
+    def ask_group(item):
+        gi, group, paths, box, ff, init_frames = item
+        if ff is not None:
+            full_idx = list(range(len(group)))
+            frames_arg = lambda idx: init_frames if idx == full_idx else ff(idx)
+        else:
+            frames_arg = None
         try:
-            got = _ask(llm, group, paths, frames_for if context else None, box)
-        except FatalLLMError as ex:
-            log(f"  {ex}")
-            log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
-            return events
-        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            return _ask(llm, group, paths, frames_arg, box)
+        except (Cancelled, FatalLLMError):
             raise
         except Exception as ex:
             log(f"  第 {gi + 1} 批复核失败（{ex}），逐条单独复核")
-            got = _ask_each(llm, group, paths, frames_for if context else None, box)
+            return _ask_each(llm, group, paths, frames_arg, box)
+
+    n_done = 0
+
+    def on_done(idx, _res):
+        nonlocal n_done
+        n_done += len(prepared[idx][1])
+        progress(n_done, len(todo), "复核", every=0)
+
+    short = []  # 复核结果只有半截的：换一帧重新截图再问
+    try:
+        progress(0, len(todo), "复核", every=0)
+        results = parallel_map(prepared, ask_group, workers, on_done=on_done)
+    except FatalLLMError as ex:
+        log(f"  {ex}")
+        log("  视觉复核已跳过，继续使用本地 OCR 结果。请检查 [llm] vision_model / model")
+        return events
+    for (_, group, _, _, _, _), got in zip(prepared, results):
         for e, g in zip(group, got):
             e["text_local"] = e["text"]
             if truncated(g.get("text") or "", e["text"]):
@@ -362,17 +383,19 @@ def refine_ocr(events, cfg, workdir, cache_dir, batch=4, video=None, context=Fal
         log(f"  {n_boxed} 条用截图那一帧重新截了特写、框出了要转写的字"
             + (f"（另外 {len(todo) - n_boxed} 条是旧的识别结果、字又挪过，用原来的特写）" if n_boxed < len(todo) else ""))
     if short:
-        _retry_short(llm, short, workdir, video, batch, float(cfg.ocr.fps))
+        _retry_short(llm, short, workdir, video, batch, float(cfg.ocr.fps), workers=workers)
     # 整帧画面一批一张、占地方，复核完删掉（中途停止的留着，下次接着用；重新截出来的一样，请求缓存照样命中）
     for d in ("frames", "marked", "recrop"):
         shutil.rmtree(os.path.join(workdir, "crops", d), ignore_errors=True)
     return events
 
 
-def _retry_short(llm, short, workdir, video, batch, fps):
+def _retry_short(llm, short, workdir, video, batch, fps, workers=1):
     """截图那一帧字还没出全：换字最完整的那一帧、截宽一点重新截图，再复核一次。
     重截不了 / 再问失败时保留本地 OCR 的完整文字（宁可有错字也不能少半句，翻译时大模型还会结合上下文纠正）。"""
     from ..sources.ocr import crop_at
+    from .client import FatalLLMError
+    from .refine import parallel_map
 
     log(f"  {len(short)} 条截图里的字没出全（逐字出现的字幕），换一帧重新截图复核")
     ready = []
@@ -389,14 +412,19 @@ def _retry_short(llm, short, workdir, video, batch, fps):
         if video and crop_at(video, box, t, path):
             e["crop"] = os.path.relpath(path, workdir).replace("\\", "/")
             ready.append(e)
-    for i in range(0, len(ready), batch):
-        group = ready[i:i + batch]
+    batches = [ready[i:i + batch] for i in range(0, len(ready), batch)]
+
+    def ask_short(group):
         try:
-            got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
-        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            return _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
+        except (Cancelled, FatalLLMError):  # 停止按钮 / 配置错误：不能吞掉
             raise
         except Exception as ex:
             log(f"  重新复核失败：{ex}")
+            return None
+
+    for group, got in zip(batches, parallel_map(batches, ask_short, workers)):
+        if got is None:
             continue
         for e, g in zip(group, got):
             # 还是半截：几行字幕先后出现、没有哪一帧同时有全部的字。本地识别把各帧的字都记下了，置信度高就信本地的

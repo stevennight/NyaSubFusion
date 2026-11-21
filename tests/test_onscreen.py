@@ -1139,3 +1139,185 @@ def test_organize_drops_lines_its_sources_do_not_support():
                     {"src": ["o559"], "type": "info", "orig": "西和賀の良さを\n全国に発信しよう"}]}
     cues, missing = apply_result(items, res, "zh-Hans", "ja")
     assert not missing and [c["sources"] for c in cues] == [["o244"], ["o559"]]
+
+
+def test_refine_frames_concurrency_preserves_exact_results(tmp_path, monkeypatch):
+    """frame 模式并发复核：OpenAI 接口确实并发请求，且结果与串行完全一致。"""
+    import copy
+    import threading
+    import time
+
+    import cv2
+    import numpy as np
+
+    import nyasub.llm.client as client
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((1080, 1920, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (round(t - 1, 3), round(t + 1, 3)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+
+    # 3 个时刻（其中第 1 帧放 2 条与本地差距大的字触发同帧并发特写），加 1 条本地漏检
+    base_events = [
+        {"id": "o1", "start": 10.0, "end": 12.0, "snap_t": 11.0, "rect": [0.1, 0.8, 0.4, 0.9], "text": "误认甲",
+         "vertical": False, "lines": 1, "crop": "crops/o1.jpg", "pieces": [[0.1, 0.8, 0.4, 0.9, "误认甲"]]},
+        {"id": "o2", "start": 10.0, "end": 12.0, "snap_t": 11.0, "rect": [0.5, 0.8, 0.8, 0.9], "text": "误认乙",
+         "vertical": False, "lines": 1, "crop": "crops/o2.jpg", "pieces": [[0.5, 0.8, 0.8, 0.9, "误认乙"]]},
+        {"id": "o3", "start": 20.0, "end": 22.0, "snap_t": 21.0, "rect": [0.1, 0.8, 0.5, 0.9], "text": "正字丙",
+         "vertical": False, "lines": 1, "crop": "crops/o3.jpg", "pieces": [[0.1, 0.8, 0.5, 0.9, "正字丙"]]},
+        {"id": "o4", "start": 30.0, "end": 32.0, "snap_t": 31.0, "rect": [0.1, 0.8, 0.5, 0.9], "text": "误认丁",
+         "vertical": False, "lines": 1, "crop": "crops/o4.jpg", "pieces": [[0.1, 0.8, 0.5, 0.9, "误认丁"]]},
+    ]
+
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+
+    class Fake:
+        kind = "openai"
+
+        def chat_json(self, system, user, images=None):
+            with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            try:
+                time.sleep(0.05)
+                if system == refine.READ_SYSTEM:
+                    name = Path_name(images[0]["path"])
+                    if name.startswith("000011000"):
+                        return {"items": [
+                            {"text": "正解甲", "kind": "caption", "bbox": [100, 800, 400, 900]},
+                            {"text": "正解乙", "kind": "caption", "bbox": [500, 800, 800, 900]},
+                            {"text": "招牌丁", "kind": "scene", "bbox": [150, 200, 450, 350]},
+                        ]}
+                    if name.startswith("000021000"):
+                        return {"items": [{"text": "正字丙", "kind": "caption", "bbox": [100, 800, 500, 900]}]}
+                    return {"items": [{"text": "正解丁", "kind": "caption", "bbox": [100, 800, 500, 900]}]}
+                if "误认甲" in user:
+                    return {"text": "正解甲", "kind": "caption"}
+                if "误认乙" in user:
+                    return {"text": "正解乙", "kind": "caption"}
+                if "误认丁" in user:
+                    return {"text": "正解丁", "kind": "caption"}
+                return {"text": "招牌丁", "kind": "scene"}
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+    def Path_name(p):
+        import os
+        return os.path.basename(p)
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    cfg1 = Config()
+    cfg1.ocr.refine_concurrency = 1
+    out1 = refine.refine_ocr(copy.deepcopy(base_events), cfg1, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert state["peak"] == 1
+
+    state["active"] = state["peak"] = 0
+    cfg4 = Config()
+    cfg4.ocr.refine_concurrency = 4
+    out4 = refine.refine_ocr(copy.deepcopy(base_events), cfg4, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert state["peak"] >= 2
+    assert out4 == out1
+
+
+def test_refine_crop_concurrency_and_cancel_and_cli_serial(tmp_path, monkeypatch):
+    """crop 模式并发一致、取消事件及时中断排队任务，以及本机 CLI 保持串行。"""
+    import copy
+    import threading
+    import time
+
+    import cv2
+    import numpy as np
+    import pytest
+
+    import nyasub.llm.client as client
+    from nyasub import env
+    from nyasub.core.config import Config
+    from nyasub.llm import refine, refine_crop
+    from nyasub.sources import media
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((720, 1280, 3), 120, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    base_events = []
+    for i in range(4):
+        (crops / f"e{i}.jpg").write_bytes(b"img%d" % i)
+        base_events.append({
+            "id": f"e{i}", "start": i * 10.0, "end": i * 10.0 + 2.0, "snap_t": i * 10.0 + 1.0,
+            "rect": [0.1, 0.8, 0.4, 0.9], "snap_rect": [0.1, 0.8, 0.4, 0.9],
+            "text": f"错字{i}", "vertical": False, "lines": 1, "crop": f"crops/e{i}.jpg",
+        })
+
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+
+    class FakeCrop:
+        kind = "openai"
+
+        def chat_json(self, system, user, images=None):
+            with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            try:
+                time.sleep(0.05)
+                # 根据 hint 里的 "错字N" 精准返回
+                for i in range(4):
+                    if f"错字{i}" in user:
+                        return {"items": [{"no": 1, "text": f"正字{i}", "kind": "scene"}]}
+                return {"items": [{"no": 1, "text": "未知", "kind": "scene"}]}
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: FakeCrop())
+    cfg1 = Config()
+    cfg1.ocr.refine_concurrency = 1
+    out1 = refine_crop.refine_ocr(copy.deepcopy(base_events), cfg1, str(tmp_path), None, batch=1,
+                                  video=str(video), context=True, boxed=True)
+    assert state["peak"] == 1
+
+    state["active"] = state["peak"] = 0
+    cfg4 = Config()
+    cfg4.ocr.refine_concurrency = 4
+    out4 = refine_crop.refine_ocr(copy.deepcopy(base_events), cfg4, str(tmp_path), None, batch=1,
+                                  video=str(video), context=True, boxed=True)
+    assert state["peak"] >= 2
+    assert out4 == out1
+
+    # 本机 CLI（agy / codex）自动保持串行
+    class FakeCli:
+        kind = "agy"
+
+    assert refine.refine_workers(cfg4, FakeCli()) == 1
+
+    # 取消信号可及时中断 parallel_map
+    cancel_ev = threading.Event()
+    started = threading.Event()
+
+    def slow_job(x):
+        started.set()
+        for _ in range(40):
+            env.check_cancel()
+            time.sleep(0.02)
+        return x
+
+    env.set_cancel(cancel_ev)
+    try:
+        threading.Timer(0.05, cancel_ev.set).start()
+        with pytest.raises(env.Cancelled):
+            refine.parallel_map(list(range(8)), slow_job, workers=4)
+        assert started.is_set()
+    finally:
+        env.set_cancel(None)
+

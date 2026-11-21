@@ -98,6 +98,7 @@ class OcrCfg(_M):
     refine_context_width: int = 640          # 本地截图方式：附的整帧画面缩到多宽：640 一张约 300 token，看清字在什么东西上够了；1024 / 1280 更清楚，约 2 / 4 倍
     refine_boxed: bool = True                # 本地截图方式：用截图那一帧重新截特写、框出要转写的字（镜头移动时原来的特写会带进片名等别处的字）
     refine_batch: int = 4                    # 本地截图方式：几处一批问：越多越省；1 = 每处单独问，不会把别的图上的字写过来（串图）
+    refine_concurrency: int = Field(4, ge=1, le=16)  # 视觉复核并发数（仅 OpenAI 兼容接口生效，本机 CLI 保持串行；不影响结果）
 
 
 class FusionCfg(_M):

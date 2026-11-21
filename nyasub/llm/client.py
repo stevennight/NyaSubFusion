@@ -120,7 +120,9 @@ class LLM:
                     break
                 wait = min(60, 3 * 2 ** attempt)
                 log(f"  接口调用失败（{msg[:200]}），{wait}s 后重试")
-                time.sleep(wait)
+                for _ in range(wait * 4):
+                    check_cancel()
+                    time.sleep(0.25)
         raise RuntimeError(f"大模型接口多次失败：{last_err}")
 
     def _call_cli(self, system, user, images, audio=None):

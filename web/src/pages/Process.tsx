@@ -627,6 +627,13 @@ function RefineStep({ ctx }: { ctx: StepCtx }) {
             <option value={1024}>1024 宽（省）</option><option value={1280}>1280 宽（默认）</option></select>
             <Tip text="给模型读的整帧画面缩到多宽。每张的输入用量：1024 约 700 token，1280 约 1300。1024 时细字体、小字容易读错；再宽也不会更准（手写字反而乱读）。" /></div>
         </>}
+        <Lbl ctx={ctx} k="ocr.refine_concurrency">并发数</Lbl>
+        <div className="row"><select className="inp" value={Number(val("ocr.refine_concurrency") ?? 4)}
+          onChange={(e) => set("ocr.refine_concurrency", Number(e.target.value))}>
+          <option value={1}>1（串行，最稳）</option><option value={2}>2</option>
+          <option value={4}>4（默认）</option><option value={6}>6</option>
+          <option value={8}>8（最快，注意接口限流）</option></select>
+          <Tip text="同时发出的视觉复核请求数量，不影响识别准确度。仅对 OpenAI 兼容 HTTP 接口生效；本机 CLI 后端（Antigravity / Codex）自动保持串行。" /></div>
       </div>
     </div>
   );

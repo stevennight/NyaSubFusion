@@ -11,13 +11,77 @@
 import os
 import re
 import shutil
+import threading
 import unicodedata
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from difflib import SequenceMatcher
 
 from ..env import Cancelled, check_cancel, log, progress
 from ..textutil import covered, full_sim, norm, sim
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
+
+
+def refine_workers(cfg, llm):
+    """视觉复核并发数：OpenAI 兼容接口按配置并发；本机 CLI 单会话顺序执行，固定为 1。"""
+    if getattr(llm, "kind", "openai") != "openai":
+        return 1
+    return max(1, min(16, int(getattr(cfg.ocr, "refine_concurrency", 4) or 1)))
+
+
+def parallel_map(items, fn, workers, on_done=None):
+    """按原顺序并发执行 fn(item)，支持用户取消，任意任务抛错立即停止其余排队任务。"""
+    items = list(items)
+    if not items:
+        return []
+    workers = max(1, min(int(workers or 1), len(items)))
+    if workers <= 1:
+        out = []
+        for i, item in enumerate(items):
+            check_cancel()
+            res = fn(item)
+            out.append(res)
+            if on_done:
+                on_done(i, res)
+        return out
+
+    from .. import env
+
+    check_cancel()
+    user = env.cancel_event()
+    fresh = env.fresh()
+    stage = env.current_stage()
+    stop = threading.Event()
+    out = [None] * len(items)
+
+    def run(item):
+        env.set_cancel(stop)
+        env.set_fresh(fresh)
+        # env._local.stage_lines 是普通 list，仅继承 stage 名称打标实时日志，避免多线程写同一列表
+        if stage:
+            env._local.stage = stage
+        return fn(item)
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futs = {pool.submit(run, item): i for i, item in enumerate(items)}
+    try:
+        pending = set(futs)
+        while pending:
+            if user is not None and user.is_set():
+                raise Cancelled()
+            done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for f in done:
+                idx = futs[f]
+                res = f.result()
+                out[idx] = res
+                if on_done:
+                    on_done(idx, res)
+    except BaseException:
+        stop.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return out
 
 _KINDS = """   - "caption"：节目后期叠加在画面上的字，比如采访台词字幕、人名条、地名、说明文字、标题、资料来源、片尾字幕。
      特征：浮在画面最上层，字体规整清晰，通常有描边或阴影，横平竖直，不随镜头透视变形，不受画面光影影响。
@@ -486,9 +550,8 @@ class _Frame:
         return p if _imwrite(p, c) else None
 
 
-def _recheck(llm, frame, r, cands, name):
-    """截特写再问一次。返回 {"text", "kind"}（问不出来返回 {}）。"""
-    p = frame.crop(r, name) if frame.img is not None else None
+def _recheck_path(llm, p, cands):
+    """给定已裁好的特写图路径，问视觉模型并返回 {"text", "kind"}（失败或无图返回 {}）。"""
     if not p:
         return {}
     cand = "\n".join(f"候选 {i + 1}：{c.replace(chr(10), ' / ')}" for i, c in enumerate(dict.fromkeys(c for c in cands if c)))
@@ -503,6 +566,12 @@ def _recheck(llm, frame, r, cands, name):
         return {}
     return {"text": (g.get("text") or "").strip().replace(" / ", "\n"),
             **({"kind": g["kind"]} if g.get("kind") in ("caption", "scene") else {})}
+
+
+def _recheck(llm, frame, r, cands, name):
+    """截特写再问一次。返回 {"text", "kind"}（问不出来返回 {}）。"""
+    p = frame.crop(r, name) if frame.img is not None else None
+    return _recheck_path(llm, p, cands)
 
 
 def _merge_into(keep, others):
@@ -540,6 +609,7 @@ def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, 
     from .client import LLM, FatalLLMError
 
     llm = LLM(cfg, vision=True, cache_dir=cache_dir, effort=cfg.effort("vision"))
+    workers = refine_workers(cfg, llm)
     frames = bool(video and os.path.exists(str(video)) and size)
     # 按画面复核时从原视频重新截画面，用不着识别时存的截图：没存下截图的（跟踪时拆开 / 合并的轨迹偶尔会丢）也要看，
     # 否则它们整个跳过复核，乱码直接进字幕（「加熱用のわに」读成「加他用のbに」，整理时还被编成了一句台词）
@@ -553,8 +623,8 @@ def refine_ocr(events, cfg, workdir, cache_dir, video=None, size=None, batch=4, 
         return events
     try:
         if frames:
-            return _refine_frames(llm, events, todo, cfg, workdir, video, size, unread)
-        return _refine_crops(llm, events, todo, workdir, batch)
+            return _refine_frames(llm, events, todo, cfg, workdir, video, size, unread, workers=workers)
+        return _refine_crops(llm, events, todo, workdir, batch, workers=workers)
     except FatalLLMError as ex:
         _fatal(ex)
         return events
@@ -581,7 +651,7 @@ def plan_unread(moments, unread):
     return hints
 
 
-def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
+def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=(), workers=1):
     from .client import FatalLLMError
 
     W, H = size
@@ -592,7 +662,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     hints = plan_unread(moments, unread)
     times = sorted(moments)
     log(f"  按画面复核：{len(times)} 个画面时刻" + (f"（其中 {len(hints)} 个是专门看本地认不出字的地方）" if hints else "")
-        + f"，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截")
+        + f"，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截" + (f"，并发 {workers}" if workers > 1 else ""))
     frame_dir = os.path.join(workdir, "crops", "frames")
     read_dir = os.path.join(workdir, "crops", "read")
     os.makedirs(read_dir, exist_ok=True)
@@ -602,7 +672,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
     chunk = 12  # 原分辨率的整帧一张几 MB：一次截一小批，用完就删
     try:
         _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                     gone, added, short, n, workdir, hints)
+                     gone, added, short, n, workdir, hints, workers=workers)
     except FatalLLMError as ex:  # 已经复核的留着结果（合并、补出的照样生效），没复核的保持本地结果
         _fatal(ex)
         short = []
@@ -613,40 +683,222 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=()):
         + (f"；模型改的字特写没作证、保留本地读法 {n['kept_local']} 条" if n["kept_local"] else "")
         + (f"；整帧读到、特写没读出同样字的 {n['unconfirmed']} 处不补" if n["unconfirmed"] else ""))
     if short:
-        _retry_short(llm, short, workdir, video, 4, float(cfg.ocr.fps))
+        _retry_short(llm, short, workdir, video, 4, float(cfg.ocr.fps), workers=workers)
     events[:] = sorted([e for e in events if e["id"] not in gone] + added, key=lambda e: (e["start"], e["rect"][1]))
     fold_dups(events)
     return events
 
 
-def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                 gone, added, short, n, workdir, hints=None):
-    from ..sources import media
+def _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t, gone, logo, n, workers):
+    """处理一帧内与本地 OCR 对上/未对上的组；同一帧内需要截特写再问的多处并发执行，再按原顺序写回结果。"""
     from ..sources.ocr import _zone, track_region
+
+    entries = []
+    for evs, its in groups:
+        keep = evs[0]
+        local = "\n".join(e["text"] for e in evs)
+        keep["text_local"] = local
+        if len(evs) > 1:
+            _merge_into(keep, evs[1:])
+            gone.update(e["id"] for e in evs[1:])
+            n["merged"] += len(evs) - 1
+            log(f"  {keep['id']}：和 {'、'.join(e['id'] for e in evs[1:])} 是同一块字（本地切开了），合成一条")
+        if not its and keep.get("dropped") == "junk":
+            continue  # 判成杂讯的、模型也没读到：照旧当杂讯
+        if not its:  # 模型没读到这处字：截特写再问；还是读不出就保持本地结果
+            n["unseen"] += 1
+            p = frame.crop(boxes[keep["id"]], f"{key}_{keep['id']}") if frame.img is not None else None
+            entries.append(("unseen", evs, keep, local, None, None, None, 0.0, p, [local]))
+            continue
+        n["matched"] += 1
+        its = _reading_order(its, keep.get("vertical"))
+        text = "\n".join(it["text"] for it in its)
+        kind = max(its, key=lambda it: _area(it["box"]))["kind"]
+        box = _union([it["box"] for it in its])
+        score = max(e.get("score", 0) for e in evs)
+        need_settle = _fold(text) != _fold(local) and (score >= TRUST_LOCAL or (kind == "caption" and full_sim(text, local) < 90))
+        need_check = need_settle or _differs(text, local) or _doubt(text, local, score, kind) \
+            or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE
+        p = frame.crop(box, f"{key}_{keep['id']}") if (need_check and frame.img is not None) else None
+        mode = "settle" if need_settle else ("recheck" if need_check else "none")
+        entries.append((mode, evs, keep, local, text, kind, box, score, p, [text, local]))
+
+    recheck_idx = [i for i, ent in enumerate(entries) if ent[8] is not None]
+    got_list = parallel_map([entries[i] for i in recheck_idx], lambda ent: _recheck_path(llm, ent[8], ent[9]), workers)
+    rechecks = {i: g for i, g in zip(recheck_idx, got_list)}
+    n["recheck"] += sum(1 for g in got_list if g)
+
+    for i, (mode, evs, keep, local, text, kind, box, score, _, _) in enumerate(entries):
+        g = rechecks.get(i, {})
+        if mode == "unseen":
+            if g.get("text") and logo_text(g["text"], local, logo):
+                log(f"  {keep['id']}：特写读成了台标上的字「{g['text']}」，不用，保持本地结果")
+                g = {}
+            if truncated(g.get("text") or "", local):
+                short.append(keep)
+                g = {"kind": g["kind"]} if g.get("kind") else {}
+            if g.get("text") and max(e.get("score", 0) for e in evs) >= TRUST_LOCAL:
+                g["text"] = _keep_local(g["text"], "", local)  # 只有特写一次读法，本地有把握的字照留
+            _apply(keep, g)
+            continue
+        if mode == "settle":
+            # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）。
+            # 本地有把握的不管模型说是字幕还是背景字都这样定：模型把两行字幕的大块判成背景字时，
+            # 走下面那条路会照用特写读的，丢了本地读清楚的「言う時ある」
+            close = g.get("text") if g.get("text") and not logo_text(g["text"], local, logo) else ""
+            kind = g.get("kind", kind)
+            text, sure = _settle(text, close, local, score, keep.get("moving"))
+            if not sure:
+                keep["unverified"] = True
+            elif text == local and _fold(local) != _fold(close):
+                n["kept_local"] += 1
+        elif mode == "recheck":
+            if g.get("text") and not logo_text(g["text"], local, logo):
+                text = g["text"]
+            kind = g.get("kind", kind)
+        if truncated(text, local):  # 这一帧字还没出全（逐字出现的字幕）：换一帧再问
+            short.append(keep)
+            if kind in ("caption", "scene"):
+                keep["kind"] = kind
+            continue
+        _apply(keep, {"text": text, "kind": kind})
+        keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
+        if not keep.get("moving"):  # 位置用模型框的（本地框常常不全）；滚动的字只有那一刻的框，不动
+            mine_box = _union([boxes[e["id"]] for e in evs])
+            if norm(text) == norm(local) and _covered(mine_box, box) >= 0.8 \
+                    and _clipped(box, text, keep.get("vertical"), aspect) and not _clipped(mine_box, text, keep.get("vertical"), aspect):
+                box = mine_box  # 模型的框只框住了字的一部分（扁得装不下这几个字）、字和本地一样：用本地的框
+            if _covered(mine_box, box) < 0.6:
+                # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
+                # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
+                # 最多往前后各放宽 RETIME_MAX 秒：背景满是边缘时（雪中的树林）按边缘找会找过头，
+                # 片尾的「新日本風土記」本地 58:58 才认出，按框找成了 58:51，比字出现早了 7 秒，盖住旁白
+                start, end = track_region(str(video), t, box, aspect)
+                start, end = max(start, keep["start"] - RETIME_MAX), min(end, keep["end"] + RETIME_MAX)
+                keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
+                n["retimed"] += 1
+            keep["rect_local"] = keep["rect"]
+            keep["rect"] = keep["snap_rect"] = box
+            keep["zone"] = _zone(box, keep.get("vertical"))
+
+
+def _apply_frame_misses(llm, frame, key, misses, only, events, gone, added, W, H, aspect, video, workdir, t, n, workers):
+    """处理一帧内本地 OCR 漏掉的字；需要截特写确认的多处并发执行，再按原顺序补进 added。"""
+    from ..sources.ocr import _zone, track_region
+
+    cands = []
+    for mi, it in enumerate(misses):
+        b = it["box"]
+        if max(b[2] - b[0], b[3] - b[1]) < TINY_MISS:
+            continue
+        if only and not any(overlap(b, r) >= MATCH for r in only):
+            continue  # 专门看本地认不出字的那块地方：别处的字（背景里的招牌…）本地都没找到过，不补
+        if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
+            continue  # 前面的画面时刻已经补过这块字
+        if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH
+               for e in events if e["id"] not in gone):
+            continue  # 本地有（滚动的字这一刻的框对不上，按整段范围算）
+        late = next((e for e in events if e["id"] not in gone and e["start"] - NEAR_T <= t <= e["end"] + NEAR_T
+                     and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH and sim(it["text"], e["text"]) >= 80), None)
+        if late:
+            # 本地也有这块字，只是隔一下才认出来（刚淡入、本地按间隔取帧）：不另补一条（另补的那条找不到时间时
+            # 按前后各 1 秒算，字没出来译文就先出来了），本地那条的时间放宽到这一刻
+            late["start"], late["end"] = round(min(late["start"], t), 3), round(max(late["end"], t), 3)
+            continue
+        vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
+        text, kind = it["text"], it["kind"]
+        need_recheck = kind == "caption" or _line_px(b, text, vertical, aspect) < SMALL_LINE
+        p = frame.crop(b, f"{key}_m{mi}") if (need_recheck and frame.img is not None) else None
+        cands.append((mi, b, vertical, text, kind, p))
+
+    recheck_idx = [i for i, c in enumerate(cands) if c[5] is not None]
+    got_list = parallel_map([cands[i] for i in recheck_idx], lambda c: _recheck_path(llm, c[5], [c[3]]), workers)
+    rechecks = {i: g for i, g in zip(recheck_idx, got_list)}
+
+    for i, (_, b, vertical, text, kind, _) in enumerate(cands):
+        if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
+            continue
+        g = rechecks.get(i, {})
+        n["recheck"] += bool(g)
+        if kind == "caption":
+            # 有证据才补：本地一个字都没认出的地方，整帧读到的字幕要截特写再读一遍、读得一样才补
+            # （字幕淡出那一刻、满是纹理的背景上，模型整帧读时会编出一句）
+            if not (g.get("text") and _same(g["text"], text) and g.get("kind", kind) == "caption"):
+                n["unconfirmed"] += 1
+                log(f"  {t:.1f}s 整帧读到「{text.replace(chr(10), ' / ')}」，特写读成「{(g.get('text') or '').replace(chr(10), ' / ')}」，不补")
+                continue
+            text = g["text"]
+        elif _line_px(b, text, vertical, aspect) < SMALL_LINE:
+            text, kind = g.get("text") or text, g.get("kind", kind)
+        start, end = track_region(str(video), t, b, aspect)
+        ev = {"id": f"v{len(added) + 1}", "start": start, "end": end, "text": text, "text_local": "",
+              "rect": b, "vertical": vertical, "lines": len([ln for ln in text.split("\n") if ln.strip()]) or 1,
+              "zone": _zone(b, vertical), "score": 1.0, "crop_rect": b, "snap_t": round(t, 3), "snap_rect": b,
+              "pieces": [[*b, text]], "found_by": "vlm",
+              **({"kind": kind} if kind in ("caption", "scene") else {})}
+        p = frame.crop(b, f"{key}_v{len(added) + 1}")
+        if p:
+            dst = os.path.join(workdir, "crops", f"{ev['id']}.jpg")
+            shutil.copyfile(p, dst)
+            ev["crop"] = os.path.relpath(dst, workdir).replace("\\", "/")
+        added.append(ev)
+        log(f"  补出本地漏掉的字（{start:.1f}–{end:.1f}s）：{text.replace(chr(10), ' / ')}")
+
+
+def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
+                 gone, added, short, n, workdir, hints=None, workers=1):
+    from ..sources import media
     from .client import FatalLLMError
 
     logo = set()  # 排除区（台标）里读到过的字，见 logo_text
     for ci in range(0, len(times), chunk):
         part = times[ci:ci + chunk]
         got = media.grab_frames(str(video), part, frame_dir, width=W, exact=True, quality=2)
+        frames = [_Frame(got.get(round(t, 3)), read_dir, width, mask=regions) for t in part]
+        keys = [f"{round(t * 1000):09d}" for t in part]
+        read_jobs = [(i, frames[i].scaled(keys[i])) for i in range(len(part)) if frames[i].img is not None]
+
+        def read_one(job):
+            _, scaled_path = job
+            try:
+                return llm.chat_json(READ_SYSTEM, "这是画面。",
+                                     images=[{"path": scaled_path, "label": "画面", "detail": "high"}]), None
+            except (Cancelled, FatalLLMError):
+                raise
+            except Exception as ex:
+                return None, ex
+
+        completed = 0
+
+        def on_read(_idx, _res):
+            nonlocal completed
+            completed += 1
+            progress(ci + completed, len(times), "复核")
+
+        progress(ci, len(times), "复核")
+        read_results = parallel_map(read_jobs, read_one, workers, on_done=on_read)
+        raw_by_idx = {i: res for (i, _), res in zip(read_jobs, read_results)}
+
         for ti, t in enumerate(part):
             check_cancel()
-            progress(ci + ti, len(times), "复核")
             mine_events = [e for e in moments[t] if e["id"] not in gone]
-            frame = _Frame(got.get(round(t, 3)), read_dir, width, mask=regions)
-            key = f"{round(t * 1000):09d}"
+            frame, key = frames[ti], keys[ti]
             if frame.img is None:  # 截不出画面：这几条保持本地结果
                 for e in mine_events:
                     e["text_local"] = e["text"]
                 continue
-            try:
-                raw = llm.chat_json(READ_SYSTEM, "这是画面。", images=[{"path": frame.scaled(key), "label": "画面", "detail": "high"}])
-                items = read_items(raw, regions, logo)
-            except (Cancelled, FatalLLMError):
-                raise
-            except Exception as ex:
-                log(f"  {t:.1f}s 这一帧复核失败（{ex}），逐条截特写复核")
+            raw, err = raw_by_idx[ti]
+            if err is not None:
+                log(f"  {t:.1f}s 这一帧复核失败（{err}），逐条截特写复核")
                 items = None
+            else:
+                try:
+                    items = read_items(raw, regions, logo)
+                except (Cancelled, FatalLLMError):
+                    raise
+                except Exception as ex:
+                    log(f"  {t:.1f}s 这一帧复核失败（{ex}），逐条截特写复核")
+                    items = None
             visible = [(e, b) for e in events if e["id"] not in gone and (b := box_at(e, t)) is not None]
             mine = {e["id"] for e in mine_events}
             if items is None:
@@ -655,158 +907,51 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 n["read"] += len(items)
                 groups, misses = match_moment(items, visible, mine)
             boxes = dict((e["id"], b) for e, b in visible)
-            for evs, its in groups:
-                keep = evs[0]
-                local = "\n".join(e["text"] for e in evs)
-                keep["text_local"] = local
-                if len(evs) > 1:
-                    _merge_into(keep, evs[1:])
-                    gone.update(e["id"] for e in evs[1:])
-                    n["merged"] += len(evs) - 1
-                    log(f"  {keep['id']}：和 {'、'.join(e['id'] for e in evs[1:])} 是同一块字（本地切开了），合成一条")
-                if not its and keep.get("dropped") == "junk":
-                    continue  # 判成杂讯的、模型也没读到：照旧当杂讯
-                if not its:  # 模型没读到这处字：截特写再问；还是读不出就保持本地结果
-                    n["unseen"] += 1
-                    g = _recheck(llm, frame, boxes[keep["id"]], [local], f"{key}_{keep['id']}")
-                    n["recheck"] += bool(g)
-                    if g.get("text") and logo_text(g["text"], local, logo):
-                        log(f"  {keep['id']}：特写读成了台标上的字「{g['text']}」，不用，保持本地结果")
-                        g = {}
-                    if truncated(g.get("text") or "", local):
-                        short.append(keep)
-                        g = {"kind": g["kind"]} if g.get("kind") else {}
-                    if g.get("text") and max(e.get("score", 0) for e in evs) >= TRUST_LOCAL:
-                        g["text"] = _keep_local(g["text"], "", local)  # 只有特写一次读法，本地有把握的字照留
-                    _apply(keep, g)
-                    continue
-                n["matched"] += 1
-                its = _reading_order(its, keep.get("vertical"))
-                text = "\n".join(it["text"] for it in its)
-                kind = max(its, key=lambda it: _area(it["box"]))["kind"]
-                box = _union([it["box"] for it in its])
-                score = max(e.get("score", 0) for e in evs)
-                if _fold(text) != _fold(local) and (score >= TRUST_LOCAL or (kind == "caption" and full_sim(text, local) < 90)):
-                    # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）。
-                    # 本地有把握的不管模型说是字幕还是背景字都这样定：模型把两行字幕的大块判成背景字时，
-                    # 走下面那条路会照用特写读的，丢了本地读清楚的「言う時ある」
-                    g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
-                    n["recheck"] += bool(g)
-                    close = g.get("text") if g.get("text") and not logo_text(g["text"], local, logo) else ""
-                    kind = g.get("kind", kind)
-                    text, sure = _settle(text, close, local, score, keep.get("moving"))
-                    if not sure:
-                        keep["unverified"] = True
-                    elif text == local and _fold(local) != _fold(close):
-                        n["kept_local"] += 1
-                elif _differs(text, local) or _doubt(text, local, score, kind) \
-                        or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE:
-                    g = _recheck(llm, frame, box, [text, local], f"{key}_{keep['id']}")
-                    n["recheck"] += bool(g)
-                    if g.get("text") and not logo_text(g["text"], local, logo):
-                        text = g["text"]
-                    kind = g.get("kind", kind)
-                if truncated(text, local):  # 这一帧字还没出全（逐字出现的字幕）：换一帧再问
-                    short.append(keep)
-                    if kind in ("caption", "scene"):
-                        keep["kind"] = kind
-                    continue
-                _apply(keep, {"text": text, "kind": kind})
-                keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
-                if not keep.get("moving"):  # 位置用模型框的（本地框常常不全）；滚动的字只有那一刻的框，不动
-                    mine_box = _union([boxes[e["id"]] for e in evs])
-                    if norm(text) == norm(local) and _covered(mine_box, box) >= 0.8                             and _clipped(box, text, keep.get("vertical"), aspect) and not _clipped(mine_box, text, keep.get("vertical"), aspect):
-                        box = mine_box  # 模型的框只框住了字的一部分（扁得装不下这几个字）、字和本地一样：用本地的框
-                    if _covered(mine_box, box) < 0.6:
-                        # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
-                        # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
-                        # 最多往前后各放宽 RETIME_MAX 秒：背景满是边缘时（雪中的树林）按边缘找会找过头，
-                        # 片尾的「新日本風土記」本地 58:58 才认出，按框找成了 58:51，比字出现早了 7 秒，盖住旁白
-                        start, end = track_region(str(video), t, box, aspect)
-                        start, end = max(start, keep["start"] - RETIME_MAX), min(end, keep["end"] + RETIME_MAX)
-                        keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
-                        n["retimed"] += 1
-                    keep["rect_local"] = keep["rect"]
-                    keep["rect"] = keep["snap_rect"] = box
-                    keep["zone"] = _zone(box, keep.get("vertical"))
-            only = (hints or {}).get(t)
-            for it in misses:
-                b = it["box"]
-                if max(b[2] - b[0], b[3] - b[1]) < TINY_MISS:
-                    continue
-                if only and not any(overlap(b, r) >= MATCH for r in only):
-                    continue  # 专门看本地认不出字的那块地方：别处的字（背景里的招牌…）本地都没找到过，不补
-                if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
-                    continue  # 前面的画面时刻已经补过这块字
-                if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH
-                       for e in events if e["id"] not in gone):
-                    continue  # 本地有（滚动的字这一刻的框对不上，按整段范围算）
-                late = next((e for e in events if e["id"] not in gone and e["start"] - NEAR_T <= t <= e["end"] + NEAR_T
-                             and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH and sim(it["text"], e["text"]) >= 80), None)
-                if late:
-                    # 本地也有这块字，只是隔一下才认出来（刚淡入、本地按间隔取帧）：不另补一条（另补的那条找不到时间时
-                    # 按前后各 1 秒算，字没出来译文就先出来了），本地那条的时间放宽到这一刻
-                    late["start"], late["end"] = round(min(late["start"], t), 3), round(max(late["end"], t), 3)
-                    continue
-                vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
-                text, kind = it["text"], it["kind"]
-                if kind == "caption":
-                    # 有证据才补：本地一个字都没认出的地方，整帧读到的字幕要截特写再读一遍、读得一样才补
-                    # （字幕淡出那一刻、满是纹理的背景上，模型整帧读时会编出一句）
-                    g = _recheck(llm, frame, b, [text], f"{key}_m{len(added)}")
-                    n["recheck"] += bool(g)
-                    if not (g.get("text") and _same(g["text"], text) and g.get("kind", kind) == "caption"):
-                        n["unconfirmed"] += 1
-                        log(f"  {t:.1f}s 整帧读到「{text.replace(chr(10), ' / ')}」，特写读成「{(g.get('text') or '').replace(chr(10), ' / ')}」，不补")
-                        continue
-                    text = g["text"]
-                elif _line_px(b, text, vertical, aspect) < SMALL_LINE:
-                    g = _recheck(llm, frame, b, [text], f"{key}_m{len(added)}")
-                    n["recheck"] += bool(g)
-                    text, kind = g.get("text") or text, g.get("kind", kind)
-                start, end = track_region(str(video), t, b, aspect)
-                ev = {"id": f"v{len(added) + 1}", "start": start, "end": end, "text": text, "text_local": "",
-                      "rect": b, "vertical": vertical, "lines": len([ln for ln in text.split("\n") if ln.strip()]) or 1,
-                      "zone": _zone(b, vertical), "score": 1.0, "crop_rect": b, "snap_t": round(t, 3), "snap_rect": b,
-                      "pieces": [[*b, text]], "found_by": "vlm",
-                      **({"kind": kind} if kind in ("caption", "scene") else {})}
-                p = frame.crop(b, f"{key}_v{len(added) + 1}")
-                if p:
-                    dst = os.path.join(workdir, "crops", f"{ev['id']}.jpg")
-                    shutil.copyfile(p, dst)
-                    ev["crop"] = os.path.relpath(dst, workdir).replace("\\", "/")
-                added.append(ev)
-                log(f"  补出本地漏掉的字（{start:.1f}–{end:.1f}s）：{text.replace(chr(10), ' / ')}")
+            _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t, gone, logo, n, workers)
+            _apply_frame_misses(llm, frame, key, misses, (hints or {}).get(t), events, gone, added, W, H, aspect,
+                                video, workdir, t, n, workers)
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 
-def _refine_crops(llm, events, todo, workdir, batch):
+def _refine_crops(llm, events, todo, workdir, batch, workers=1):
     """没有原视频：一批几张识别时截的特写，附本地 OCR 参考。"""
     from .client import FatalLLMError
 
     batch = max(1, int(batch))
-    for i in range(0, len(todo), batch):
-        check_cancel()
-        progress(i, len(todo), "复核", every=0)
-        group = todo[i:i + batch]
+    batches = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+
+    def ask_batch(idx_group):
+        bi, group = idx_group
         paths = [os.path.join(workdir, e["crop"]) for e in group]
         try:
-            got = _ask(llm, group, paths)
+            return _ask(llm, group, paths)
         except (Cancelled, FatalLLMError):
             raise
         except Exception as ex:
-            log(f"  第 {i // batch + 1} 批复核失败（{ex}），逐条单独复核")
-            got = _ask_each(llm, group, paths)
+            log(f"  第 {bi + 1} 批复核失败（{ex}），逐条单独复核")
+            return _ask_each(llm, group, paths)
+
+    done_items = 0
+
+    def on_done(idx, _res):
+        nonlocal done_items
+        done_items += len(batches[idx])
+        progress(done_items, len(todo), "复核", every=0)
+
+    progress(0, len(todo), "复核", every=0)
+    results = parallel_map(list(enumerate(batches)), ask_batch, workers, on_done=on_done)
+    for group, got in zip(batches, results):
         for e, g in zip(group, got):
             e["text_local"] = e["text"]
             _apply(e, g)
     return events
 
 
-def _retry_short(llm, short, workdir, video, batch, fps):
+def _retry_short(llm, short, workdir, video, batch, fps, workers=1):
     """截图那一帧字还没出全：换字最完整的那一帧、截宽一点重新截图，再复核一次。
     重截不了 / 再问失败时保留本地 OCR 的完整文字（宁可有错字也不能少半句，翻译时大模型还会结合上下文纠正）。"""
     from ..sources.ocr import crop_at
+    from .client import FatalLLMError
 
     log(f"  {len(short)} 条截图里的字没出全（逐字出现的字幕），换一帧重新截图复核")
     ready = []
@@ -823,14 +968,19 @@ def _retry_short(llm, short, workdir, video, batch, fps):
         if video and crop_at(video, box, t, path):
             e["crop"] = os.path.relpath(path, workdir).replace("\\", "/")
             ready.append(e)
-    for i in range(0, len(ready), batch):
-        group = ready[i:i + batch]
+    batches = [ready[i:i + batch] for i in range(0, len(ready), batch)]
+
+    def ask_short(group):
         try:
-            got = _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
-        except Cancelled:  # 停止按钮：不能当成一次普通失败吞掉
+            return _ask(llm, group, [os.path.join(workdir, e["crop"]) for e in group])
+        except (Cancelled, FatalLLMError):  # 停止按钮 / 配置错误：不能吞掉
             raise
         except Exception as ex:
             log(f"  重新复核失败：{ex}")
+            return None
+
+    for group, got in zip(batches, parallel_map(batches, ask_short, workers)):
+        if got is None:
             continue
         for e, g in zip(group, got):
             # 还是半截：几行字幕先后出现、没有哪一帧同时有全部的字。本地识别把各帧的字都记下了，置信度高就信本地的
