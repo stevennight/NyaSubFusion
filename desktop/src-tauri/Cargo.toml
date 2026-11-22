@@ -1,6 +1,6 @@
 [package]
 name = "nyasubfusion"
-version = "0.5.24"
+version = "0.5.25"
 description = "NyaSubFusion 桌面版：多源字幕生成与翻译"
 edition = "2021"
 
