@@ -199,6 +199,21 @@ def test_words_added_in_front_after_a_while_is_another_line():
     assert len(_lines_run(["めちゃめちゃ"] * 6 + [full] * 6, fps=10, need=5)) == 1
 
 
+def test_sustained_single_char_replacement_splits_but_flicker_does_not():
+    """同位置只有一字之差的稳定切换（连续日期、上午/下午等）拆成独立条目；单帧错字、低置信抖动和逐字淡入不拆。"""
+    assert [t.best_text() for t in _lines_run(["7月15日"] * 10 + ["7月16日"] * 10 + ["7月17日"] * 10, fps=10, need=5)] == [
+        "7月15日", "7月16日", "7月17日"]
+    assert [t.best_text() for t in _lines_run(["午前"] * 10 + ["午後"] * 10, fps=10, need=5)] == ["午前", "午後"]
+    assert len(_lines_run(["7月15日"] * 10 + ["7月1S日"] + ["7月15日"] * 10, fps=10, need=5)) == 1
+    assert len(_lines_run(["追憶の"] * 10 + ["追憶のアジサイ"] * 10, fps=10, need=5)) == 1
+    # 置信度不高（< SHORT_SCORE）：哪怕连续出现也不按一字之差拆分
+    active, nid = [], 1
+    for i, (txt, sc) in enumerate([("7月15日", 0.99)] * 10 + [("7月1S日", 0.75)] * 8):
+        nid = ocr._step(active, [{"rect": LINE_RECT, "text": txt, "score": sc, "vertical": False}],
+                        i / 10.0, nid, 5, lambda i=i: f"f{i}")
+    assert len(ocr._rejoin(active)) == 1
+
+
 def test_moving_text_box_leaves_out_pieces_already_off_screen():
     """镜头扫过酒单：截图那一刻已经移出画面的块被夹在画面边上（[0, 1, 0, 1]），框不能因此撑到画面底下；字照旧留着。"""
     e = {"moving": True, "vertical": False, "text": "①七贤\n⑨神開", "rect": [0.0, 0.12, 0.98, 1.0],

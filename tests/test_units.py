@@ -112,6 +112,13 @@ def test_fuse_dup_needs_most_of_the_text():
     assert "o1" in kept and "o3" in kept and not ocr[0].get("dup_of")
     assert "o2" not in kept and ocr[1]["dup_of"] == ["c2"]
 
+    # 非底部居中的章节标题只和旁白共用了一个词（「追憶のアジサイ」对「アジサイと…」）：不算重复，留作说明
+    sub_nar = [{"id": "c459", "start": 3146.6, "end": 3151.2, "text": "アジサイと 心潤すラブストーリー｡"}]
+    title = _ocr("o2134", 3146.9, 3151.7, "追憶のアジサイ", rect=(0.5, 0.763, 0.891, 0.867), zone="bottom")
+    out2 = fuse(sub_nar, [title], [], FUSION, ja, 3600)
+    assert not title.get("dup_of")
+    assert [(it["id"], it["src"]) for it in out2["items"] if it["id"] == "o2134"] == [("o2134", "info")]
+
 
 def test_fuse_keeps_speech_when_screen_only_quotes_a_few_words():
     """没有字幕的预告：旁白一整句，画面上只打出其中两三个字（「伝統工芸」「建築」）。这句话单独成条、那几个字按重复去掉，

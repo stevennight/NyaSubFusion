@@ -194,7 +194,7 @@ def _shift(a, b):
 
 class Track:
     __slots__ = ("id", "first", "last", "rects", "times", "obs", "vertical", "snapshot", "rect", "snap_len",
-                 "snap_rect", "snap_t", "v", "chg", "p_snap", "parent")
+                 "snap_rect", "snap_t", "v", "chg", "p_snap", "parent", "chg_exact", "exact_split")
 
     def __init__(self, tid, t, d):
         self.id = tid
@@ -214,6 +214,8 @@ class Track:
         self.chg = None
         self.p_snap = None
         self.parent = None  # 从哪条轨迹拆出来的（拆完两条最后认定的字一样，说明是认错了一阵，再并回去）
+        self.chg_exact = False
+        self.exact_split = False
 
     def add(self, t, d):
         dt = t - self.last
@@ -236,7 +238,18 @@ class Track:
                 # 前面多出了字（「寒いです」→「めちゃめちゃ寒いです」）：原来那句已经稳定显示了一阵才算换了一句，
                 # 只认了一两帧的多半是开头几个字没认出来
                 if _other_line(prev, txt) or (_grew_in_front(prev, txt) and self._held(len(self.obs) - 2) >= CHANGE_SECONDS):
-                    self.chg, self.p_snap = len(self.obs) - 1, None
+                    self.chg, self.p_snap, self.chg_exact = len(self.obs) - 1, None, False
+                elif (prev and txt and prev != txt and prev not in txt and txt not in prev
+                      and self.obs[-1][1] >= SHORT_SCORE and self._held_exact(len(self.obs) - 2) >= CHANGE_SECONDS):
+                    # 只差 1 个字、但原字已稳定显示且新字连续高置信出现（如「7月15日」→「7月16日」、「午前」→「午後」）：也按换句观察
+                    self.chg, self.p_snap, self.chg_exact = len(self.obs) - 1, None, True
+            return
+        if self.chg_exact:
+            if txt == norm(self.obs[self.chg][0]) and self.obs[-1][1] >= SHORT_SCORE:
+                return
+            if txt == norm(self.obs[self.chg - 1][0]) and self.p_snap and self.p_snap[1] > self.snap_len:
+                self.snapshot, self.snap_len, self.snap_rect, self.snap_t = self.p_snap
+            self.chg, self.p_snap, self.chg_exact = None, None, False
             return
         if not _changed(norm(self.obs[self.chg][0]), txt):
             return  # 还是换上来的那一句
@@ -244,14 +257,21 @@ class Track:
             # 又回到原来那句：刚才是认错 / 闪了一下，不拆；那几帧里更完整的截图照样能用
             if self.p_snap and self.p_snap[1] > self.snap_len:
                 self.snapshot, self.snap_len, self.snap_rect, self.snap_t = self.p_snap
-            self.chg, self.p_snap = None, None
+            self.chg, self.p_snap, self.chg_exact = None, None, False
         else:  # 又换成了第三句：从这里重新算
-            self.chg, self.p_snap = len(self.obs) - 1, None
+            self.chg, self.p_snap, self.chg_exact = len(self.obs) - 1, None, False
 
     def _held(self, i):
         """第 i 次认出的那句（认错一个字的也算）已经连着显示了多久。"""
         a, j = norm(self.obs[i][0]), i
         while j > 0 and Levenshtein.distance(norm(self.obs[j - 1][0]), a) <= 1:
+            j -= 1
+        return self.times[i] - self.times[j]
+
+    def _held_exact(self, i):
+        """第 i 次认出的那句（完全一致才算）已经连着显示了多久。"""
+        a, j = norm(self.obs[i][0]), i
+        while j > 0 and norm(self.obs[j - 1][0]) == a:
             j -= 1
         return self.times[i] - self.times[j]
 
@@ -282,9 +302,10 @@ class Track:
         if self.p_snap:
             new.snapshot, new.snap_len, new.snap_rect, new.snap_t = self.p_snap
         new.parent = self
+        new.exact_split = self.chg_exact
         self.times, self.rects, self.obs = self.times[:k], self.rects[:k], self.obs[:k]
         self.last, self.rect = self.times[-1], self.rects[-1]
-        self.chg, self.p_snap = None, None
+        self.chg, self.p_snap, self.chg_exact = None, None, False
         return new
 
     def predict(self, t):
@@ -404,10 +425,13 @@ def _rejoin(tracks):
         p = tr.parent
         while p is not None and id(p) not in kept:  # 父轨迹自己也可能已经并进了更早的那条
             p = p.parent
-        # 拆出来以后原来那条又接着认出了原来的字（夹在中间的一段认错了）：也并回去
-        if p is not None and (p.last > tr.last or not _changed(norm(p.best_text()), norm(tr.best_text()))):
-            p.absorb(tr)
-            continue
+        # 拆出来以后原来那条又接着认出了原来的字（夹在中间的一段认错了）：也并回去；精确一字切换拆出来的只有文字一样或时间回退才并
+        if p is not None:
+            same = (norm(p.best_text()) == norm(tr.best_text())) if tr.exact_split else (
+                not _changed(norm(p.best_text()), norm(tr.best_text())))
+            if p.last > tr.last or same:
+                p.absorb(tr)
+                continue
         out.append(tr)
         kept.add(id(tr))
     return out

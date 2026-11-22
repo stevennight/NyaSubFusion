@@ -231,6 +231,15 @@ def test_refine_moments_shared_when_on_screen():
     m = plan_moments([later, pan, one, bottle])
     assert {t: [e["id"] for e in es] for t, es in m.items()} == {64.4: ["o18", "o19"], 64.6: ["o42"], 70.5: ["o50"]}
 
+    # 前一句还没消失的换字交界处（背景牌刚好在那 0.3s 截图）：下一句不能共用那张含上一句字的帧，要改用自己清晰的时刻
+    prev_cap = ev("o1476", 1844.45, 1847.55, 1846.20, [0.17, 0.85, 0.83, 0.98])
+    bg_sign = ev("o1482", 1847.35, 1851.55, 1847.50, [0.10, 0.20, 0.20, 0.30])
+    next_cap = ev("o1480", 1847.25, 1851.55, 1849.30, [0.07, 0.84, 0.93, 0.98])
+    m2 = plan_moments([prev_cap, bg_sign, next_cap])
+    assert {t: [e["id"] for e in es] for t, es in m2.items()} == {
+        1846.20: ["o1476"], 1847.50: ["o1482"], 1849.30: ["o1480"],
+    }
+
 
 def test_refine_match_merges_split_title_and_finds_misses():
     from nyasub.llm.refine import match_moment, read_items

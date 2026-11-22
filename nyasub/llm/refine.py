@@ -244,12 +244,24 @@ def box_at(e, t):
 # ---------------- 整帧复核 ----------------
 
 
+def _moment_clear(e, b, m, todo):
+    """时刻 m 同一位置不能还叠着另一条字（换句交界处的那零点几秒）：共用那一帧会读到上一句的字。"""
+    for o in todo:
+        if o is e or not (o["start"] <= m <= o["end"]) or _together(e, o):
+            continue
+        ob = box_at(o, m) or o.get("crop_rect") or o["rect"]
+        if overlap(b, ob) >= MATCH:
+            return False
+    return True
+
+
 def plan_moments(todo):
-    """给每处字定一个画面时刻：按截图时刻排，前面已有的时刻里它也在画面上（框对得上）就共用那一帧，否则用自己的截图时刻。
-    返回 {时刻: [在这一刻复核的字]}。"""
+    """给每处字定一个画面时刻：按截图时刻排，前面已有的时刻里它也在画面上（框对得上且同一位置没叠着另一条字）
+    就共用那一帧，否则用自己的截图时刻。返回 {时刻: [在这一刻复核的字]}。"""
     moments = {}
     for e in sorted(todo, key=lambda e: (_snap_t(e), e["start"])):
-        t = next((m for m in moments if box_at(e, m) is not None), None)
+        t = next((m for m in moments
+                  if (b := box_at(e, m)) is not None and _moment_clear(e, b, m, todo)), None)
         if t is None:
             t = _snap_t(e)
             moments[t] = []

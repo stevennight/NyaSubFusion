@@ -181,15 +181,20 @@ def _make_room(e, ocr_events):
             e["end"] = round(o["start"], 3)
 
 
-def _mostly_said(text, said):
-    """画面字的内容字幕基本都说到了：大部分（≥ 60%）出现在字幕里，或者没说到的不超过 3 个字（“1kg”和“１キロ”这种写法不同）。
-    只有一小段对得上（字幕只有“仮設。”，画面字是“おれ仮設におった”，是另一个人说的另一句话）不算重复。"""
-    if covered(text, said) >= 0.6:
+def _mostly_said(text, said, strict=False):
+    """画面字的内容字幕基本都说到了：绝大部分出现在字幕里，或只有很短的单位/数字写法差异（“1kg”和“１キロ”）。
+    非底部居中的标题 / 说明卡（strict=True）很容易和旁白共用关键词（「追憶のアジサイ」对「アジサイと…」），
+    不能靠“未命中 ≤ 3 字”放宽，只拦几乎整句一致的；底部台词花字（strict=False）门槛略宽。"""
+    cov = covered(text, said)
+    if cov >= (0.8 if strict else 0.6):
         return True
     a, b = norm(text), norm(said)
     hit = {i for x in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks() if x.size >= 2
            for i in range(x.a, x.a + x.size)}
-    return sum(1 for i, ch in enumerate(a) if i not in hit and ch.isalnum()) <= 3  # “＝”这种符号不算
+    miss = [ch for i, ch in enumerate(a) if i not in hit and ch.isalnum()]
+    if cov >= 0.5 and 1 <= len(miss) <= 3 and all(ch.isascii() for ch in miss):
+        return True  # 如 "1kg ＝ 8,000円" vs "１キロ８，０００円"（仅单位/英文缩写差几个 ASCII 字符）
+    return not strict and len(a) >= 10 and len(miss) <= 2
 
 
 _INTERJ = re.compile(r"^[ぁ-ゖー]{1,3}$")
@@ -367,7 +372,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         near = [c for c in hit if overlap(e["start"], e["end"], c["start"], c["end"]) >= 0.3]
         best = max((sim(e["text"], c["text"]) for c in near), default=0)
         said = "\n".join(c["text"] for c in near)
-        if near and (best >= dup_th or sim(e["text"], said) >= dup_th) and _mostly_said(e["text"], said):
+        if near and (best >= dup_th or sim(e["text"], said) >= dup_th) and _mostly_said(
+                e["text"], said, strict=not _bottom_center(e)):
             e["dup_of"] = [c["id"] for c in hit]
             continue
         a_hit, a_text = _concat(asr, e["start"], e["end"])
