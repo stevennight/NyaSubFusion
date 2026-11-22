@@ -626,6 +626,10 @@ function RefineStep({ ctx }: { ctx: StepCtx }) {
             onChange={(e) => set("ocr.refine_frame_width", Number(e.target.value))}>
             <option value={1024}>1024 宽（省）</option><option value={1280}>1280 宽（默认）</option></select>
             <Tip text="给模型读的整帧画面缩到多宽。每张的输入用量：1024 约 700 token，1280 约 1300。1024 时细字体、小字容易读错；再宽也不会更准（手写字反而乱读）。" /></div>
+          <Lbl ctx={ctx} k="ocr.refine_skip_small_scene">小字实物</Lbl>
+          <label className="row"><input type="checkbox" checked={!!val("ocr.refine_skip_small_scene")}
+            onChange={(e) => set("ocr.refine_skip_small_scene", e.target.checked)} />跳过小字实物（scene）的特写复核
+            <Tip text="模型看整帧已判为实物上的字（scene）且字很小时，不再额外截高清特写再问一遍（条目仍保留，后续可被融合逻辑兜底）。开启可减少绘马、远景招牌等无谓请求。" /></label>
         </>}
         <Lbl ctx={ctx} k="ocr.refine_concurrency">并发数</Lbl>
         <div className="row"><select className="inp" value={Number(val("ocr.refine_concurrency") ?? 4)}

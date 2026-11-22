@@ -657,12 +657,15 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=(), work
     W, H = size
     aspect = W / max(1, H)
     width = cfg.ocr.refine_frame_width if cfg.ocr.refine_frame_width >= 1024 else 1280
+    skip_small_scene = bool(getattr(cfg.ocr, "refine_skip_small_scene", False))
     regions = [g.model_dump() for g in cfg.ocr.regions]
     moments = plan_moments(todo)
     hints = plan_unread(moments, unread)
     times = sorted(moments)
     log(f"  按画面复核：{len(times)} 个画面时刻" + (f"（其中 {len(hints)} 个是专门看本地认不出字的地方）" if hints else "")
-        + f"，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截" + (f"，并发 {workers}" if workers > 1 else ""))
+        + f"，整帧画面 {width} 宽，特写按原视频 {W}x{H} 截"
+        + ("，跳过小字实物特写" if skip_small_scene else "")
+        + (f"，并发 {workers}" if workers > 1 else ""))
     frame_dir = os.path.join(workdir, "crops", "frames")
     read_dir = os.path.join(workdir, "crops", "read")
     os.makedirs(read_dir, exist_ok=True)
@@ -672,7 +675,7 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=(), work
     chunk = 12  # 原分辨率的整帧一张几 MB：一次截一小批，用完就删
     try:
         _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                     gone, added, short, n, workdir, hints, workers=workers)
+                     gone, added, short, n, workdir, hints, workers=workers, skip_small_scene=skip_small_scene)
     except FatalLLMError as ex:  # 已经复核的留着结果（合并、补出的照样生效），没复核的保持本地结果
         _fatal(ex)
         short = []
@@ -689,7 +692,14 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=(), work
     return events
 
 
-def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_tag):
+def _needs_small_recheck(box, text, vertical, kind, aspect, skip_small_scene):
+    """字高不足 SMALL_LINE 时需要截特写再问；开启跳过小字实物时，已判为 scene 的不额外重问。"""
+    if skip_small_scene and kind == "scene":
+        return False
+    return _line_px(box, text, vertical, aspect) < SMALL_LINE
+
+
+def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_tag, skip_small_scene=False):
     """规划一帧内所有组：就地完成合并与计数字段，将需要截特写再问的条目加入本批共享的 recheck_jobs。"""
     entries = []
     for ei, (evs, its) in enumerate(groups):
@@ -715,7 +725,7 @@ def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_
         score = max(e.get("score", 0) for e in evs)
         need_settle = _fold(text) != _fold(local) and (score >= TRUST_LOCAL or (kind == "caption" and full_sim(text, local) < 90))
         need_check = need_settle or _differs(text, local) or _doubt(text, local, score, kind) \
-            or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE
+            or _needs_small_recheck(box, text, keep.get("vertical"), kind, aspect, skip_small_scene)
         mode = "settle" if need_settle else ("recheck" if need_check else "none")
         entries.append((ei, mode, evs, keep, local, text, kind, box, score))
         if need_check and frame.img is not None:
@@ -795,7 +805,8 @@ def _apply_frame_groups(entries, boxes, short, aspect, video, t, logo, n, rechec
             keep["zone"] = _zone(box, keep.get("vertical"))
 
 
-def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspect, t, recheck_jobs, frame_tag):
+def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspect, t, recheck_jobs, frame_tag,
+                       skip_small_scene=False):
     """筛选一帧内本地 OCR 漏掉的字，并将需要截特写确认的候选排入本批共享的 recheck_jobs。"""
     cands = []
     for mi, it in enumerate(misses):
@@ -818,7 +829,7 @@ def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspe
             continue
         vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
         text, kind = it["text"], it["kind"]
-        if (kind == "caption" or _line_px(b, text, vertical, aspect) < SMALL_LINE) and frame.img is not None:
+        if (kind == "caption" or _needs_small_recheck(b, text, vertical, kind, aspect, skip_small_scene)) and frame.img is not None:
             p = frame.crop(b, f"{key}_m{mi}")
             if p:
                 recheck_jobs.append(((frame_tag, "m", mi), p, [text]))
@@ -826,7 +837,8 @@ def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspe
     return cands
 
 
-def _apply_frame_misses(frame, key, cands, events, gone, added, aspect, video, workdir, t, n, rechecks, frame_tag):
+def _apply_frame_misses(frame, key, cands, events, gone, added, aspect, video, workdir, t, n, rechecks, frame_tag,
+                        skip_small_scene=False):
     """按原顺序确认一帧内漏检候选项，补进 added 并回视频确定起止时间。"""
     from ..sources.ocr import _zone, track_region
 
@@ -851,7 +863,7 @@ def _apply_frame_misses(frame, key, cands, events, gone, added, aspect, video, w
                 log(f"  {t:.1f}s 整帧读到「{text.replace(chr(10), ' / ')}」，特写读成「{(g.get('text') or '').replace(chr(10), ' / ')}」，不补")
                 continue
             text = g["text"]
-        elif _line_px(b, text, vertical, aspect) < SMALL_LINE:
+        elif _needs_small_recheck(b, text, vertical, kind, aspect, skip_small_scene):
             text, kind = g.get("text") or text, g.get("kind", kind)
         start, end = track_region(str(video), t, b, aspect)
         ev = {"id": f"v{len(added) + 1}", "start": start, "end": end, "text": text, "text_local": "",
@@ -869,7 +881,7 @@ def _apply_frame_misses(frame, key, cands, events, gone, added, aspect, video, w
 
 
 def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width, regions, frame_dir, read_dir,
-                 gone, added, short, n, workdir, hints=None, workers=1):
+                 gone, added, short, n, workdir, hints=None, workers=1, skip_small_scene=False):
     from ..sources import media
     from .client import FatalLLMError
 
@@ -932,10 +944,11 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 n["read"] += len(items)
                 groups, misses = match_moment(items, visible, mine)
             boxes = dict((e["id"], b) for e, b in visible)
-            g_entries = _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, ti)
+            g_entries = _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, ti,
+                                           skip_small_scene=skip_small_scene)
             _plan_unseen_crops(g_entries, frame, key, boxes, recheck_jobs, ti)
             m_cands = _plan_frame_misses(frame, key, misses, (hints or {}).get(t), events, gone, added, W, H, aspect, t,
-                                         recheck_jobs, ti)
+                                         recheck_jobs, ti, skip_small_scene=skip_small_scene)
             plans.append((ti, t, frame, key, boxes, g_entries, m_cands))
 
         # 阶段 3：把这一批 12 帧里的所有特写打平并发请求，同时持续更新复核进度
@@ -953,7 +966,8 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
         for ti, t, frame, key, boxes, g_entries, m_cands in plans:
             check_cancel()
             _apply_frame_groups(g_entries, boxes, short, aspect, video, t, logo, n, rechecks, ti)
-            _apply_frame_misses(frame, key, m_cands, events, gone, added, aspect, video, workdir, t, n, rechecks, ti)
+            _apply_frame_misses(frame, key, m_cands, events, gone, added, aspect, video, workdir, t, n, rechecks, ti,
+                                skip_small_scene=skip_small_scene)
         progress(ci + len(part), len(times), "复核")
         shutil.rmtree(frame_dir, ignore_errors=True)
 

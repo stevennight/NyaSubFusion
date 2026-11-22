@@ -12,7 +12,7 @@ const LBL: Record<string, string> = {
   "ocr.enabled": "画面字识别 › 开关", "ocr.fps": "画面字识别 › 每秒看几帧", "ocr.regions": "画面字识别 › 识别区域",
   "ocr.refine": "画面字复核 › 开关", "ocr.refine_mode": "画面字复核 › 复核方式", "ocr.refine_frame_width": "画面字复核 › 整帧画面宽度",
   "ocr.refine_boxed": "画面字复核 › 框出要转写的字", "ocr.refine_batch": "画面字复核 › 每批几处",
-  "ocr.refine_concurrency": "画面字复核 › 并发数",
+  "ocr.refine_concurrency": "画面字复核 › 并发数", "ocr.refine_skip_small_scene": "画面字复核 › 跳过小字实物特写",
   "ocr.refine_context": "画面字复核 › 附整帧画面", "ocr.refine_context_width": "画面字复核 › 附的整帧画面宽度",
   "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.translate_model": "翻译 › 模型",
   "llm.organize": "整理 › 接口", "llm.organize_model": "整理 › 模型", "llm.organize_effort": "整理 › 思考程度",

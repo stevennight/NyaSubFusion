@@ -99,6 +99,7 @@ class OcrCfg(_M):
     refine_boxed: bool = True                # 本地截图方式：用截图那一帧重新截特写、框出要转写的字（镜头移动时原来的特写会带进片名等别处的字）
     refine_batch: int = 4                    # 本地截图方式：几处一批问：越多越省；1 = 每处单独问，不会把别的图上的字写过来（串图）
     refine_concurrency: int = Field(4, ge=1, le=16)  # 视觉复核并发数（仅 OpenAI 兼容接口生效，本机 CLI 保持串行；不影响结果）
+    refine_skip_small_scene: bool = False    # 整帧画面方式：模型已判为实物字（scene）且字很小时，不再额外截特写复核（仍保留条目）
 
 
 class FusionCfg(_M):

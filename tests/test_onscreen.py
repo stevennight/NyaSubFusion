@@ -1389,3 +1389,69 @@ def test_refine_crop_concurrency_and_cancel_and_cli_serial(tmp_path, monkeypatch
     finally:
         env.set_cancel(None)
 
+
+def test_refine_skip_small_scene_option(tmp_path, monkeypatch):
+    """开启 refine_skip_small_scene 后：整帧已判为 scene 且字很小的条不再发特写请求，小字 caption 照常特写复核。"""
+    import copy
+
+    import cv2
+    import numpy as np
+
+    import nyasub.llm.client as client
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((1080, 1920, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (round(t - 1, 3), round(t + 1, 3)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+
+    # 本地已有 1 条与整帧一致的小字 scene；同一帧模型另外新读出 1 条小字 scene 和 1 条小字 caption
+    base_events = [
+        {"id": "o1", "start": 10.0, "end": 12.0, "snap_t": 11.0, "rect": [0.1, 0.2, 0.25, 0.22],
+         "text": "神社絵馬", "vertical": False, "lines": 1, "crop": "crops/o1.jpg",
+         "pieces": [[0.1, 0.2, 0.25, 0.22, "神社絵馬"]]},
+    ]
+    recheck_calls = []
+
+    class Fake:
+        kind = "openai"
+
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [
+                    {"text": "神社絵馬", "kind": "scene", "bbox": [100, 200, 250, 220]},
+                    {"text": "遠景看板", "kind": "scene", "bbox": [600, 200, 750, 220]},
+                    {"text": "小字旁白", "kind": "caption", "bbox": [200, 880, 500, 905]},
+                ]}
+            recheck_calls.append(user)
+            if "小字旁白" in user:
+                return {"text": "小字旁白", "kind": "caption"}
+            if "遠景看板" in user:
+                return {"text": "遠景看板", "kind": "scene"}
+            return {"text": "神社絵馬", "kind": "scene"}
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+
+    # 默认关闭：3 处小字均触发特写
+    cfg_off = Config()
+    assert cfg_off.ocr.refine_skip_small_scene is False
+    out_off = refine.refine_ocr(copy.deepcopy(base_events), cfg_off, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert len(recheck_calls) == 3
+
+    # 开启后：小字 scene（o1 与漏检的「遠景看板」）跳过特写但仍保留条目，只有 caption 触发特写
+    recheck_calls.clear()
+    cfg_on = Config()
+    cfg_on.ocr.refine_skip_small_scene = True
+    out_on = refine.refine_ocr(copy.deepcopy(base_events), cfg_on, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert len(recheck_calls) == 1 and "小字旁白" in recheck_calls[0]
+    assert sorted((e["text"], e.get("kind")) for e in out_on) == [
+        ("小字旁白", "caption"), ("神社絵馬", "scene"), ("遠景看板", "scene"),
+    ]
+    assert len(out_on) == len(out_off)
+
+
