@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from ..core.store import digest, load_json, save_json
-from ..env import check_cancel, fresh, log
+from ..env import cache_valid, check_cancel, log
 
 
 class FatalLLMError(RuntimeError):
@@ -60,7 +60,7 @@ class LLM:
                       **({"audio": hashlib.sha1(Path(audio[0]).read_bytes()).hexdigest()} if audio else {})})
         cache = self.cache_dir / f"{key}.json" if self.cache_dir else None
         self.usage = None
-        if cache and cache.exists() and not fresh():
+        if cache and cache_valid(cache):
             return load_json(cache)
         result = self._call(system, user, images, **({"audio": audio} if audio else {}))
         if cache:

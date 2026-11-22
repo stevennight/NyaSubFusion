@@ -481,7 +481,7 @@ def stitch(parts):
 # ---------------- 入口 ----------------
 def _cached(cache_dir, key, fn):
     path = Path(cache_dir) / "asr_api" / f"{key}.json" if cache_dir else None
-    if path and path.exists() and not env.fresh():
+    if path and env.cache_valid(path):
         return json.loads(path.read_text(encoding="utf-8")), True
     out = fn()
     if path:

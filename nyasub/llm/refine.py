@@ -689,12 +689,10 @@ def _refine_frames(llm, events, todo, cfg, workdir, video, size, unread=(), work
     return events
 
 
-def _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t, gone, logo, n, workers):
-    """处理一帧内与本地 OCR 对上/未对上的组；同一帧内需要截特写再问的多处并发执行，再按原顺序写回结果。"""
-    from ..sources.ocr import _zone, track_region
-
+def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_tag):
+    """规划一帧内所有组：就地完成合并与计数字段，将需要截特写再问的条目加入本批共享的 recheck_jobs。"""
     entries = []
-    for evs, its in groups:
+    for ei, (evs, its) in enumerate(groups):
         keep = evs[0]
         local = "\n".join(e["text"] for e in evs)
         keep["text_local"] = local
@@ -707,8 +705,7 @@ def _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t,
             continue  # 判成杂讯的、模型也没读到：照旧当杂讯
         if not its:  # 模型没读到这处字：截特写再问；还是读不出就保持本地结果
             n["unseen"] += 1
-            p = frame.crop(boxes[keep["id"]], f"{key}_{keep['id']}") if frame.img is not None else None
-            entries.append(("unseen", evs, keep, local, None, None, None, 0.0, p, [local]))
+            entries.append((ei, "unseen", evs, keep, local, None, None, None, 0.0))
             continue
         n["matched"] += 1
         its = _reading_order(its, keep.get("vertical"))
@@ -719,17 +716,33 @@ def _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t,
         need_settle = _fold(text) != _fold(local) and (score >= TRUST_LOCAL or (kind == "caption" and full_sim(text, local) < 90))
         need_check = need_settle or _differs(text, local) or _doubt(text, local, score, kind) \
             or _line_px(box, text, keep.get("vertical"), aspect) < SMALL_LINE
-        p = frame.crop(box, f"{key}_{keep['id']}") if (need_check and frame.img is not None) else None
         mode = "settle" if need_settle else ("recheck" if need_check else "none")
-        entries.append((mode, evs, keep, local, text, kind, box, score, p, [text, local]))
+        entries.append((ei, mode, evs, keep, local, text, kind, box, score))
+        if need_check and frame.img is not None:
+            p = frame.crop(box, f"{key}_{keep['id']}")
+            if p:
+                recheck_jobs.append(((frame_tag, "g", ei), p, [text, local]))
+    return entries
 
-    recheck_idx = [i for i, ent in enumerate(entries) if ent[8] is not None]
-    got_list = parallel_map([entries[i] for i in recheck_idx], lambda ent: _recheck_path(llm, ent[8], ent[9]), workers)
-    rechecks = {i: g for i, g in zip(recheck_idx, got_list)}
-    n["recheck"] += sum(1 for g in got_list if g)
 
-    for i, (mode, evs, keep, local, text, kind, box, score, _, _) in enumerate(entries):
-        g = rechecks.get(i, {})
+def _plan_unseen_crops(entries, frame, key, boxes, recheck_jobs, frame_tag):
+    """为模型整帧没读到的本地字提前裁好特写，并排入本批共享的 recheck_jobs。"""
+    if frame.img is None:
+        return
+    for ei, mode, _, keep, local, *_ in entries:
+        if mode == "unseen":
+            p = frame.crop(boxes[keep["id"]], f"{key}_{keep['id']}")
+            if p:
+                recheck_jobs.append(((frame_tag, "g", ei), p, [local]))
+
+
+def _apply_frame_groups(entries, boxes, short, aspect, video, t, logo, n, rechecks, frame_tag):
+    """按原顺序把并发特写复核结果写回各组，并做超框补找时间。"""
+    from ..sources.ocr import _zone, track_region
+
+    for ei, mode, evs, keep, local, text, kind, box, score in entries:
+        g = rechecks.get((frame_tag, "g", ei), {})
+        n["recheck"] += bool(g)
         if mode == "unseen":
             if g.get("text") and logo_text(g["text"], local, logo):
                 log(f"  {keep['id']}：特写读成了台标上的字「{g['text']}」，不用，保持本地结果")
@@ -782,10 +795,8 @@ def _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t,
             keep["zone"] = _zone(box, keep.get("vertical"))
 
 
-def _apply_frame_misses(llm, frame, key, misses, only, events, gone, added, W, H, aspect, video, workdir, t, n, workers):
-    """处理一帧内本地 OCR 漏掉的字；需要截特写确认的多处并发执行，再按原顺序补进 added。"""
-    from ..sources.ocr import _zone, track_region
-
+def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspect, t, recheck_jobs, frame_tag):
+    """筛选一帧内本地 OCR 漏掉的字，并将需要截特写确认的候选排入本批共享的 recheck_jobs。"""
     cands = []
     for mi, it in enumerate(misses):
         b = it["box"]
@@ -807,18 +818,30 @@ def _apply_frame_misses(llm, frame, key, misses, only, events, gone, added, W, H
             continue
         vertical = (b[3] - b[1]) * H > 1.5 * (b[2] - b[0]) * W and len(norm(it["text"])) > 1
         text, kind = it["text"], it["kind"]
-        need_recheck = kind == "caption" or _line_px(b, text, vertical, aspect) < SMALL_LINE
-        p = frame.crop(b, f"{key}_m{mi}") if (need_recheck and frame.img is not None) else None
-        cands.append((mi, b, vertical, text, kind, p))
+        if (kind == "caption" or _line_px(b, text, vertical, aspect) < SMALL_LINE) and frame.img is not None:
+            p = frame.crop(b, f"{key}_m{mi}")
+            if p:
+                recheck_jobs.append(((frame_tag, "m", mi), p, [text]))
+        cands.append((mi, b, vertical, text, kind))
+    return cands
 
-    recheck_idx = [i for i, c in enumerate(cands) if c[5] is not None]
-    got_list = parallel_map([cands[i] for i in recheck_idx], lambda c: _recheck_path(llm, c[5], [c[3]]), workers)
-    rechecks = {i: g for i, g in zip(recheck_idx, got_list)}
 
-    for i, (_, b, vertical, text, kind, _) in enumerate(cands):
+def _apply_frame_misses(frame, key, cands, events, gone, added, aspect, video, workdir, t, n, rechecks, frame_tag):
+    """按原顺序确认一帧内漏检候选项，补进 added 并回视频确定起止时间。"""
+    from ..sources.ocr import _zone, track_region
+
+    for mi, b, vertical, text, kind in cands:
         if any(overlap(b, e["rect"]) >= MATCH and e["start"] <= t <= e["end"] for e in added):
             continue
-        g = rechecks.get(i, {})
+        if any(e["start"] <= t <= e["end"] and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH
+               for e in events if e["id"] not in gone):
+            continue
+        late = next((e for e in events if e["id"] not in gone and e["start"] - NEAR_T <= t <= e["end"] + NEAR_T
+                     and overlap(b, e.get("crop_rect") or e["rect"]) >= MATCH and sim(text, e["text"]) >= 80), None)
+        if late:
+            late["start"], late["end"] = round(min(late["start"], t), 3), round(max(late["end"], t), 3)
+            continue
+        g = rechecks.get((frame_tag, "m", mi), {})
         n["recheck"] += bool(g)
         if kind == "caption":
             # 有证据才补：本地一个字都没认出的地方，整帧读到的字幕要截特写再读一遍、读得一样才补
@@ -873,12 +896,14 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
         def on_read(_idx, _res):
             nonlocal completed
             completed += 1
-            progress(ci + completed, len(times), "复核")
+            progress(ci + 0.5 * len(part) * (completed / max(1, len(read_jobs))), len(times), "复核")
 
         progress(ci, len(times), "复核")
         read_results = parallel_map(read_jobs, read_one, workers, on_done=on_read)
         raw_by_idx = {i: res for (i, _), res in zip(read_jobs, read_results)}
 
+        # 阶段 2：按时间顺序匹配整批 12 帧的整帧结果，统一规划跨帧待复核特写
+        plans, recheck_jobs = [], []
         for ti, t in enumerate(part):
             check_cancel()
             mine_events = [e for e in moments[t] if e["id"] not in gone]
@@ -907,9 +932,29 @@ def _frames_loop(llm, events, moments, times, chunk, video, W, H, aspect, width,
                 n["read"] += len(items)
                 groups, misses = match_moment(items, visible, mine)
             boxes = dict((e["id"], b) for e, b in visible)
-            _apply_frame_groups(llm, frame, key, groups, boxes, short, aspect, video, t, gone, logo, n, workers)
-            _apply_frame_misses(llm, frame, key, misses, (hints or {}).get(t), events, gone, added, W, H, aspect,
-                                video, workdir, t, n, workers)
+            g_entries = _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, ti)
+            _plan_unseen_crops(g_entries, frame, key, boxes, recheck_jobs, ti)
+            m_cands = _plan_frame_misses(frame, key, misses, (hints or {}).get(t), events, gone, added, W, H, aspect, t,
+                                         recheck_jobs, ti)
+            plans.append((ti, t, frame, key, boxes, g_entries, m_cands))
+
+        # 阶段 3：把这一批 12 帧里的所有特写打平并发请求，同时持续更新复核进度
+        rc_done = 0
+
+        def on_rc(_idx, _res):
+            nonlocal rc_done
+            rc_done += 1
+            progress(ci + 0.5 * len(part) + 0.5 * len(part) * (rc_done / len(recheck_jobs)), len(times), "复核")
+
+        rc_results = parallel_map(recheck_jobs, lambda j: _recheck_path(llm, j[1], j[2]), workers, on_done=on_rc)
+        rechecks = {job[0]: res for job, res in zip(recheck_jobs, rc_results)}
+
+        # 阶段 4：严格按原时间顺序写回特写结果、补出漏检与重找时间
+        for ti, t, frame, key, boxes, g_entries, m_cands in plans:
+            check_cancel()
+            _apply_frame_groups(g_entries, boxes, short, aspect, video, t, logo, n, rechecks, ti)
+            _apply_frame_misses(frame, key, m_cands, events, gone, added, aspect, video, workdir, t, n, rechecks, ti)
+        progress(ci + len(part), len(times), "复核")
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 

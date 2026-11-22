@@ -423,6 +423,61 @@ def test_redo_request_survives_stop_and_can_pick_steps(sample, api_config, fake)
     assert not pipeline.Run(sample, cfg, pipeline.Options())._pending()
 
 
+def test_redo_no_cache_reuses_cache_written_after_restart(sample, api_config, fake, monkeypatch):
+    """勾选不用缓存后中途重启：只作废重做开始前的旧缓存，本次已跑出并写入的新缓存可以接着用。"""
+    import time
+
+    from nyasub import env
+    from nyasub.core import config, pipeline
+    from nyasub.llm.client import LLM
+    from nyasub.sources import asr_api
+
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    cache_dir = sample.with_name("sample.nyasub") / "llm_cache"
+    old_caches = list(cache_dir.glob("*.json"))
+    assert old_caches
+
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    time.sleep(0.03)
+    r = pipeline.Run(sample, cfg, pipeline.Options(redo={"translate", "no_cache"}))
+    r._fresh_start()
+    since = r._pending()["translate"]["fresh"]
+    assert isinstance(since, float) and since > 0
+
+    calls = 0
+    llm = LLM(cfg, cache_dir=cache_dir)
+
+    def fake_call(s, u, i, audio=None):
+        nonlocal calls
+        calls += 1
+        return {"ok": u}
+
+    monkeypatch.setattr(llm, "_call", fake_call)
+    try:
+        env.set_fresh(since)
+        assert not env.cache_valid(old_caches[0])
+        time.sleep(0.03)
+        # 第一次请求：写入新缓存；模拟中断重启后再请求同一条（仍带着 since），命中新缓存不重复调用
+        assert llm.chat_json("sys", "new-item") == {"ok": "new-item"}
+        assert calls == 1
+        assert llm.chat_json("sys", "new-item") == {"ok": "new-item"}
+        assert calls == 1
+
+        # 云端 ASR 切片缓存同样按时间戳续跑：重做前旧切片不复用，重做后写入的新切片可复用
+        asr_old = cache_dir / "asr_api" / "old.json"
+        asr_old.parent.mkdir(parents=True, exist_ok=True)
+        asr_old.write_text("[]", encoding="utf-8")
+        asr_old.touch()
+        import os
+        os.utime(asr_old, (since - 10, since - 10))
+        _, hit_old = asr_api._cached(cache_dir, "old", lambda: [{"text": "fresh"}])
+        assert hit_old is False
+        _, hit_new = asr_api._cached(cache_dir, "old", lambda: [{"text": "should-not-run"}])
+        assert hit_new is True
+    finally:
+        env.set_fresh(False)
+
+
 def test_cues_typed_drop_never_reach_subtitles(sample, api_config, fake, monkeypatch):
     """模型把要丢掉的条目写成 type 为 drop 的字幕：新翻译直接丢掉；已经翻好的旧结果在注音那一步过滤掉。"""
     import json as _json

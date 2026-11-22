@@ -1227,6 +1227,74 @@ def test_refine_frames_concurrency_preserves_exact_results(tmp_path, monkeypatch
     assert out4 == out1
 
 
+def test_refine_cross_frame_recheck_concurrency(tmp_path, monkeypatch):
+    """跨帧特写并发：即使每帧只有 1 处特写，整批 12 帧里的特写也能跨帧并发且结果完全一致。"""
+    import copy
+    import os
+    import threading
+    import time
+
+    import cv2
+    import numpy as np
+
+    import nyasub.llm.client as client
+    from nyasub.core.config import Config
+    from nyasub.llm import refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((1080, 1920, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (round(t - 1, 3), round(t + 1, 3)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+
+    # 4 个不同时刻，每帧各自只有 1 处差异很大的字（单帧内永远只能达到 1 并发）
+    base_events = [
+        {"id": f"e{i}", "start": i * 10.0, "end": i * 10.0 + 2.0, "snap_t": i * 10.0 + 1.0,
+         "rect": [0.1, 0.8, 0.5, 0.9], "text": f"误认{i}", "vertical": False, "lines": 1,
+         "crop": f"crops/e{i}.jpg", "pieces": [[0.1, 0.8, 0.5, 0.9, f"误认{i}"]]}
+        for i in range(4)
+    ]
+
+    lock = threading.Lock()
+    state = {"rc_active": 0, "rc_peak": 0}
+
+    class FakeCross:
+        kind = "openai"
+
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                idx = int(os.path.basename(images[0]["path"]).split(".")[0]) // 10000
+                return {"items": [{"text": f"正解{idx}", "kind": "caption", "bbox": [100, 800, 500, 900]}]}
+            with lock:
+                state["rc_active"] += 1
+                state["rc_peak"] = max(state["rc_peak"], state["rc_active"])
+            try:
+                time.sleep(0.05)
+                for i in range(4):
+                    if f"误认{i}" in user:
+                        return {"text": f"正解{i}", "kind": "caption"}
+                return {"text": "", "kind": "caption"}
+            finally:
+                with lock:
+                    state["rc_active"] -= 1
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: FakeCross())
+    cfg1 = Config()
+    cfg1.ocr.refine_concurrency = 1
+    out1 = refine.refine_ocr(copy.deepcopy(base_events), cfg1, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert state["rc_peak"] == 1
+
+    state["rc_active"] = state["rc_peak"] = 0
+    cfg4 = Config()
+    cfg4.ocr.refine_concurrency = 4
+    out4 = refine.refine_ocr(copy.deepcopy(base_events), cfg4, str(tmp_path), None, video=str(video), size=(1920, 1080))
+    assert state["rc_peak"] >= 2
+    assert out4 == out1
+
+
 def test_refine_crop_concurrency_and_cancel_and_cli_serial(tmp_path, monkeypatch):
     """crop 模式并发一致、取消事件及时中断排队任务，以及本机 CLI 保持串行。"""
     import copy

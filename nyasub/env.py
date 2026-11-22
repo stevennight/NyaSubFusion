@@ -184,12 +184,28 @@ def cancel_event():
 
 
 def set_fresh(on):
-    """当前线程这一步不读以前的请求缓存（大模型、云端语音识别重新请求；新结果照样存进缓存）。"""
-    _local.fresh = bool(on)
+    """当前线程这一步不读以前的请求缓存（True=全部重请求；时间戳=只复用该时刻之后新写入的缓存）。"""
+    if isinstance(on, (int, float)) and not isinstance(on, bool) and on > 0:
+        _local.fresh = float(on)
+    else:
+        _local.fresh = bool(on)
 
 
 def fresh():
     return getattr(_local, "fresh", False)
+
+
+def cache_valid(path) -> bool:
+    """缓存文件存在且在当前重做策略下可用（时间戳模式下，重做开始之后新写入的缓存可复用）。"""
+    p = Path(path)
+    if not p.exists():
+        return False
+    f = fresh()
+    if not f:
+        return True
+    if f is True:
+        return False
+    return p.stat().st_mtime > f
 
 
 def check_cancel():

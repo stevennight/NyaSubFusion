@@ -1094,8 +1094,9 @@ class Run:
         asked = [n for n in self._round_stages() if n in DEFS and n not in VIDEO_STAGES and ("all" in redo or n in redo)]
         if asked:
             pending = self._pending()
+            since = time.time()
             for n in asked:
-                pending[n] = {"fresh": "no_cache" in redo or (pending.get(n) or {}).get("fresh", False)}
+                pending[n] = {"fresh": since if "no_cache" in redo else (pending.get(n) or {}).get("fresh", False)}
             save_json(self._pending_path(), pending)
             names = "全部步骤" if "all" in redo else "、".join(STAGE_NAMES.get(n, n) for n in asked)
             log(f"要求重做：{names}" + ("（不用以前的缓存，大模型和云端语音识别重新请求）" if "no_cache" in redo else ""))
