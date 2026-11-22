@@ -387,3 +387,41 @@ def test_unify_endpoint_one_undo_step_and_keeps_manual_edits(client, sample):
     assert r["history"]["undo"] == undo_before + 1                                 # 一步撤销
     client.post(f"/api/projects/{pid}/edits/undo")
     assert {i: c["tr"] for i, c in cues().items()} == {i: c["tr"] for i, c in before.items()}
+
+
+def test_cue_from_dropped_ocr_keeps_source_linkage_and_retranslate(client, sample):
+    """没进融合的画面字右键新建字幕后：_items 保留来源与截图，单条重译也会带上它的来源对照。"""
+    from nyasub.core import config as config_mod
+    from nyasub.core.pipeline import Options, Run
+    from nyasub.core.store import ProjectDir, save_json
+    from nyasub.llm import client as llm_client
+
+    pid, _ = opened(client, sample)
+    client.post(f"/api/projects/{pid}/run", json={})
+    wait_job(client, pid)
+    proj = ProjectDir(sample)
+    ev = {"id": "o9", "start": 30.0, "end": 33.0, "text": "直してくれたから大丈夫", "rect": [0.31, 0.91, 0.69, 0.98],
+          "zone": "bottom", "score": 1.0, "lines": 1, "vertical": False, "crop": "crops/o9.jpg"}
+    save_json(proj.stage("ocr_refine.json"), [ev])
+
+    llm_client.LLM._call = lambda self, s, u, images=None: {"alts": [{"orig": "直してくれたから大丈夫", "tr": "帮忙修好了 现在没事了"}]}
+    cue = client.post(f"/api/projects/{pid}/sources/o9/cue").json()["cue"]
+    assert cue["sources"] == ["o9"]
+
+    cfg, files = config_mod.load(None, proj / "project.toml")
+    run = Run(sample, cfg, Options(), files)
+    run.load_state()
+    cues, *_ = run.render_context()
+    items = run._items(cues)
+    assert "o9" in items and items["o9"]["crop"] == "crops/o9.jpg" and items["o9"]["rect"] == ev["rect"]
+
+    seen = {}
+
+    def call(self, s, u, images=None):
+        seen["user"] = u
+        return {"alts": [{"orig": "直してくれたから大丈夫", "tr": "已经帮忙修好了"}]}
+
+    llm_client.LLM._call = call
+    r = client.post(f"/api/projects/{pid}/cues/{cue['id']}/retranslate", json={"instruction": "自然一点"}).json()
+    assert r["alts"][0]["tr"] == "已经帮忙修好了"
+    assert "## 本条的来源" in seen["user"] and "直してくれたから大丈夫" in seen["user"]

@@ -23,6 +23,7 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 const q = (path: string) => (TOKEN ? `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}` : path);
 
 export const api = {
+  health: () => call<{ ok: boolean; version: string }>("/api/health"),
   projects: () => call<ProjectEntry[]>("/api/projects"),
   forget: (pid: string) => call<ProjectEntry[]>(`/api/projects/${pid}`, { method: "DELETE" }),
   reveal: (pid: string) => call<{ ok: boolean }>(`/api/projects/${pid}/reveal`, { method: "POST" }),

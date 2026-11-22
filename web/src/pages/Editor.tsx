@@ -6,7 +6,7 @@ import { DROP } from "../components/SubtitleOverlay";
 import { Timeline } from "../components/Timeline";
 import { usePeaks, usePreview } from "../hooks";
 import { useStore } from "../store";
-import type { Candidate, Cue, EditResult, Profile, Word } from "../types";
+import type { Candidate, Cue, EditResult, FusedItem, Profile, Word } from "../types";
 import { FLAG_LBL, fmt, fmtHms, langName, SRC_LBL, TYPE_LBL } from "../util";
 
 type Filter = "all" | "todo" | "flag" | "asr" | "ocr";
@@ -587,7 +587,13 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
   const [instr, setInstr] = useState("");
   const [busy, setBusy] = useState(false);
   const [pop, setPop] = useState<{ wi: number; si: number; x: number; y: number; value: string } | null>(null);
-  const items = Object.fromEntries(d.fused.items.map((it) => [it.id, it]));
+  const ocrSrc: FusedItem["src"] = ["info", "name", "title"].includes(cue.type) ? "info" : "telop";
+  const items: Record<string, FusedItem> = {
+    ...Object.fromEntries(d.subs.map((c) => [c.id, { ...c, src: "subs" as const }])),
+    ...Object.fromEntries(d.ocr.map((c) => [c.id, { ...c, src: ocrSrc, ocr_score: c.score }])),
+    ...Object.fromEntries(d.asr.map((c) => [c.id, { ...c, src: "asr" as const }])),
+    ...Object.fromEntries(d.fused.items.map((it) => [it.id, it])),
+  };
   const words: Word[] = d.tokens[cue.id]?.orig ?? [];
   const curSeg = segs.findIndex(([a, b]) => time >= a && time < b);
   const canCut = curSeg >= 0 && time > segs[curSeg][0] + 0.2 && time < segs[curSeg][1] - 0.2;

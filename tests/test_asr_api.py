@@ -490,3 +490,70 @@ def test_user_glossary_names_go_to_llm_asr_not_auto_ones(sample, wav, api):
                        dict(EP, model="m-gemini"), "ja")
     user = json.loads(api["api"].requests[0].content)["messages"][1]["content"][0]["text"]
     assert "四白（よしろ）" in user and "没说的名字不要加进去" in user
+
+
+def test_align_handles_large_chunk_drift_with_neighbor_anchors():
+    """3 分钟切片里大模型时间整体漂移 9 秒（> DRIFT=3s）：长句先当锚点，夹在中间的短句跟着邻近锚点的偏移对齐，
+    没有对应转写文字的短句也按前后锚点平滑挪过去；转写模型 15 秒外同词不会被短句误匹配。"""
+    ref = _ref([
+        (10.0, "これはとても長い最初の文章です。", 0.15),
+        (16.0, "ほら。", 0.15),
+        (22.0, "これも十分に長い後ろの文章です。", 0.15),
+        (40.0, "うん。", 0.15),
+    ])
+    # Gemini 整块偏慢约 +9 秒；中间「そうだ。」转写模型没听到；40 秒处的「うん。」不可被 19s+9s 误吸过去
+    gem = _gem(
+        (19.0, 23.0, "これはとても長い最初の文章です。"),
+        (25.0, 25.8, "ほら。"),
+        (27.0, 28.0, "そうだ。"),
+        (31.0, 35.0, "これも十分に長い後ろの文章です。"),
+        (48.8, 49.5, "うん。"),
+    )
+    out = asr_api.align_to_reference(gem, ref)
+    by = {s["text"]: s for s in out}
+    assert by["これはとても長い最初の文章です。"]["timing"] == "aligned"
+    assert by["これはとても長い最初の文章です。"]["start"] == pytest.approx(10.0, abs=0.05)
+    assert by["ほら。"]["timing"] == "aligned"
+    assert by["ほら。"]["start"] == pytest.approx(16.0, abs=0.05)
+    # 没匹配到 ref 的短句也跟着前后锚点平移回真实位置（约 18s），不会留在 27s 跑到后面句子之后
+    assert by["そうだ。"]["timing"] == "segment"
+    assert 16.4 <= by["そうだ。"]["start"] < by["そうだ。"]["end"] <= 22.0
+    assert by["これも十分に長い後ろの文章です。"]["timing"] == "aligned"
+    assert by["これも十分に長い後ろの文章です。"]["start"] == pytest.approx(22.0, abs=0.05)
+    # 只有一个前置锚点、在 ANCHOR_SPAN 范围内的短句也能顺着前锚点漂移对齐到 40.0
+    assert by["うん。"]["timing"] == "aligned"
+    assert by["うん。"]["start"] == pytest.approx(40.0, abs=0.05)
+
+
+def test_align_rejects_distant_duplicate_for_short_segment():
+    """短句在真实位置没听到时，不会被 18 秒外的相同短词错吸（受前后锚点时间范围限制）。"""
+    ref = _ref([
+        (10.0, "最初の長い基準の文です。", 0.15),
+        (16.0, "次の長い基準の文です。", 0.15),
+        (35.0, "ほら。", 0.15),
+    ])
+    gem = _gem(
+        (10.0, 12.5, "最初の長い基準の文です。"),
+        (13.5, 14.2, "ほら。"),
+        (16.0, 18.5, "次の長い基準の文です。"),
+    )
+    out = asr_api.align_to_reference(gem, ref)
+    hora = next(s for s in out if s["text"] == "ほら。")
+    assert hora["timing"] == "segment" and 13.0 <= hora["start"] <= 15.0
+
+
+def test_align_handles_chunk_boundary_drift_reset():
+    """切片边界处偏移从 -9 秒跳回 0 秒时，边界附近的短句仍能按前/后任一侧锚点对上。"""
+    ref = _ref([
+        (10.0, "前のブロックの長い文です。", 0.15),
+        (15.0, "ええ。", 0.15),
+        (17.0, "次のブロックは時間のずれがありません。", 0.15),
+    ])
+    gem = _gem(
+        (19.0, 21.2, "前のブロックの長い文です。"),  # +9s 漂移
+        (15.2, 16.0, "ええ。"),                      # 已进入下一块，偏移 ~0s
+        (17.1, 20.5, "次のブロックは時間のずれがありません。"),  # ~0s
+    )
+    out = asr_api.align_to_reference(gem, ref)
+    ee = next(s for s in out if s["text"] == "ええ。")
+    assert ee["timing"] == "aligned" and ee["start"] == pytest.approx(15.0, abs=0.05)

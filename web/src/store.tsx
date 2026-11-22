@@ -17,6 +17,7 @@ interface Store {
   queued: Queued | null;        // 还在任务队列里排队（一次只做一件）：排在第几、是什么任务
   progress: Progress | null;    // 输出视频的进度
   version: number;              // 数据 / 配置变了就加一，预览据此刷新
+  appVersion: string;           // 内核版本号（来自 /api/health）
   error: string | null;
   open: (pid: string | null) => void;
   reload: () => Promise<void>;
@@ -62,6 +63,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [queued, setQueued] = useState<Queued | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [version, setVersion] = useState(0);
+  const [appVersion, setAppVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [toastMsg, setToast] = useState<string | null>(null);
   const [toastAction, setToastAction] = useState<ToastAction | null>(null);
@@ -133,6 +135,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => { api.langs().then(setLangs).catch(() => {}); }, []);
+  useEffect(() => { api.health().then((r) => setAppVersion(r.version)).catch(() => {}); }, []);
   useEffect(() => { reload(); }, [reload, tick]);
   // 还在后台检查有没有广播字幕：过一会儿再问一次
   useEffect(() => {
@@ -236,9 +239,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [pid, toast, queued, running]);
 
   const value = useMemo<Store>(() => ({
-    pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, error,
+    pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, appVersion, error,
     open, reload, applyEdit, setConfig, run, exportVideo, cancel, bump, setError, toast, toastMsg, toastAction, runOpts, setRunOpts,
-  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, error, open, reload, applyEdit, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
+  }), [pid, summary, data, config, langs, logs, stageProg, live, liveSec, running, queued, progress, version, appVersion, error, open, reload, applyEdit, setConfig, run, exportVideo, cancel, bump, toast, toastMsg, toastAction, runOpts, setRunOpts]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

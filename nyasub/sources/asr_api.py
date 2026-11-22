@@ -16,6 +16,7 @@
 每块的结果按内容缓存在项目的 llm_cache/ 里：中途失败重跑时，已识别的块不再花钱。
 """
 import base64
+import bisect
 import hashlib
 import json
 import re
@@ -680,8 +681,11 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     return out, language or state["lang"]
 
 
-ALIGN_V = 2          # 对时的做法改了就加一（记进语音识别的指纹，填了“对时用”的工程重新对；两个模型的结果都有缓存）
-DRIFT = 3.0         # 大模型估的时间最多偏这么多：对上的字在这个范围外，当成对错了位置
+ALIGN_V = 3          # 对时的做法改了就加一（记进语音识别的指纹，填了“对时用”的工程重新对；两个模型的结果都有缓存）
+DRIFT = 3.0         # 局部对齐允许的偏差：在一个锚点附近，对上的字在这个范围外当成对错了位置
+MAX_DRIFT = 20.0    # 长句锚点允许的整块时间漂移上限（多模态长切片经常整段偏几秒到十几秒）
+ANCHOR_CHARS = 5    # 漂移超过 DRIFT 时，至少连续对上这么多字才认作高可信锚点（避免短词跨 10 秒误吸）
+ANCHOR_SPAN = 60.0  # 相邻锚点超过这么久就不借用它的漂移
 MIN_HIT = 0.4       # 一句里至少这么多字（而且至少 2 个）对上了转写模型的字，才用它的时间
 PUNCT_GAP = 0.5     # 标点离前一个字不超过这么远，才算这个字的一部分
 CHAR_SEC = 0.12     # 句首 / 句尾几个字没对上（名字写法不同）时，按每个字这么长往外推
@@ -691,8 +695,10 @@ SHORT_GAP = 0.6     # 补的短话离大模型的句子（原来的时间、对�
 
 def align_to_reference(segs, ref):
     """大模型的句子（字准，时间是估的）按文字对到转写模型上（逐字时间准，字常常错）：两边的字大多一样，
-    整集按字对齐，每句的起止用对上的第一个 / 最后一个字在转写模型里的时间。按文字对，大模型的时间整段偏了一两秒、
-    转写模型把两句并成一句（「犬塚志乃、犬川荘助。」）都不影响；对上的字太少的句子（转写模型没听到）保留原来的时间。
+    整集按字对齐，每句的起止用对上的第一个 / 最后一个字在转写模型里的时间。
+    分两遍对：
+      1) 先找高可信长句锚点（允许整块漂移到 MAX_DRIFT，并要求同漂移簇一致）；
+      2) 再按前后最近锚点的局部漂移和顺序范围对齐其余句子（对上的短句拿准时间，没对上但在稳定漂移区内的短句也顺手平移）。
     转写模型听到、大模型那个时间什么也没有的短话补进来。"""
     from difflib import SequenceMatcher
 
@@ -717,31 +723,115 @@ def align_to_reference(segs, ref):
     if not chars:
         return segs
     texts = [norm(s["text"]) for s in segs]
-    owner = [i for i, t in enumerate(texts) for _ in t]
     hit = {}  # 大模型第几个字 → 转写模型第几个字
     for a, b, n in SequenceMatcher(None, "".join(texts), "".join(c[0] for c in chars), autojunk=False).get_matching_blocks():
         for k in range(n):
             hit[a + k] = b + k
-    out, pos = [], 0
+
+    raw_hits = []
+    pos = 0
     for i, s in enumerate(segs):
         n = len(texts[i])
-        got = [(k, hit[pos + k]) for k in range(n) if pos + k in hit
-               and s["start"] - DRIFT <= chars[hit[pos + k]][1] <= s["end"] + DRIFT]
+        raw_hits.append([(k, hit[pos + k]) for k in range(n) if pos + k in hit])
         pos += n
-        if n == 0 or len(got) < max(2, MIN_HIT * n):
-            out.append(s)
-            continue
+
+    def _fit(n, got):
         (k0, m0), (k1, m1) = got[0], got[-1]
         a = chars[m0][1] - k0 * CHAR_SEC
         b = chars[m1][2] + (n - 1 - k1) * CHAR_SEC
-        out.append(dict(s, start=round(a, 3), end=round(b, 3), timing="aligned") if b > a else s)
+        return (round(a, 3), round(b, 3)) if b > a else None
+
+    def _off(s, n, k, m):
+        exp = s["start"] + (k / max(1, n)) * (s["end"] - s["start"])
+        return chars[m][1] - exp
+
+    # 第 1 遍：锚点（漂移在 DRIFT 以内按原门槛；大漂移必须 ≥ ANCHOR_CHARS 且处于同一漂移簇）
+    aligned = [None] * len(segs)
+    anchors = {}  # i → (gemini_mid, drift, aligned_start, aligned_end)
+    for i, s in enumerate(segs):
+        n = len(texts[i])
+        if n == 0:
+            continue
+        wide = [(k, m) for k, m in raw_hits[i] if s["start"] - MAX_DRIFT <= chars[m][1] <= s["end"] + MAX_DRIFT]
+        if not wide:
+            continue
+        offs = sorted(_off(s, n, k, m) for k, m in wide)
+        med = offs[len(offs) // 2]
+        cluster = [(k, m) for k, m in wide if abs(_off(s, n, k, m) - med) <= DRIFT]
+        need = max(2, MIN_HIT * n) if abs(med) <= DRIFT else max(ANCHOR_CHARS, MIN_HIT * n)
+        if len(cluster) >= need:
+            ab = _fit(n, cluster)
+            if ab:
+                aligned[i] = dict(s, start=ab[0], end=ab[1], timing="aligned")
+                t_mid = (s["start"] + s["end"]) / 2
+                anchors[i] = (t_mid, (ab[0] + ab[1]) / 2 - t_mid, ab[0], ab[1])
+
+    # 第 2 遍：按相邻锚点估算局部漂移，并把搜字时间限制在前后锚点之间（防短词跨段误吸）
+    anchor_idxs = sorted(anchors)
+    for i, s in enumerate(segs):
+        if aligned[i] is not None:
+            continue
+        n = len(texts[i])
+        t_mid = (s["start"] + s["end"]) / 2
+        idx = bisect.bisect_left(anchor_idxs, i)
+        pa = anchors[anchor_idxs[idx - 1]] if idx > 0 else None
+        na = anchors[anchor_idxs[idx]] if idx < len(anchor_idxs) else None
+        if pa and t_mid - pa[0] > ANCHOR_SPAN:
+            pa = None
+        if na and na[0] - t_mid > ANCHOR_SPAN:
+            na = None
+
+        cands = []
+        if pa and na:
+            if abs(pa[1] - na[1]) <= 4.0:
+                w = (t_mid - pa[0]) / max(1e-6, na[0] - pa[0])
+                cands.append(pa[1] + w * (na[1] - pa[1]))
+            else:
+                cands.extend([pa[1], na[1]])
+        elif pa:
+            cands.append(pa[1])
+        elif na:
+            cands.append(na[1])
+        else:
+            cands.append(0.0)
+
+        lo_t = pa[3] - 1.0 if pa else -1e9
+        hi_t = na[2] + 1.0 if na else 1e9
+
+        best = None
+        for d in cands:
+            got = [(k, m) for k, m in raw_hits[i]
+                   if s["start"] + d - DRIFT <= chars[m][1] <= s["end"] + d + DRIFT
+                   and lo_t <= chars[m][1] <= hi_t]
+            if n > 0 and len(got) >= max(2, MIN_HIT * n):
+                if best is None or len(got) > len(best):
+                    best = got
+        if best:
+            ab = _fit(n, best)
+            if ab:
+                aligned[i] = dict(s, start=ab[0], end=ab[1], timing="aligned")
+                continue
+
+        # 夹在漂移一致的前后锚点之间但没对上字：跟着插值漂移平移，并卡在前锚结束 ~ 后锚开始之间
+        if pa and na and abs(pa[1] - na[1]) <= 3.0 and na[0] - pa[0] <= 30.0:
+            w = (t_mid - pa[0]) / max(1e-6, na[0] - pa[0])
+            d = pa[1] + w * (na[1] - pa[1])
+            if abs(d) > 1.5:
+                a = max(pa[3], round(s["start"] + d, 3))
+                b = min(na[2], round(s["end"] + d, 3))
+                if b > a + 0.1:
+                    aligned[i] = dict(s, start=a, end=b)
+                    continue
+        aligned[i] = s
+
+    out = aligned
     used = set(hit.values())
     near = [(s["start"], s["end"]) for s in segs] + [(s["start"], s["end"]) for s in out]
     for r, span in zip(ref, spans):
         # 大模型漏掉的短话：字一个也没对上，附近大模型也什么都没写（「ケンタ」旁边有「健太！」、「ソニー」是听错的「荘兄」，不补）
         if (len(norm(r["text"])) <= SHORT and not any(m in used for m in span)
                 and not any(min(r["end"] + SHORT_GAP, b) - max(r["start"] - SHORT_GAP, a) > 0 for a, b in near)
-                and not (out[-1]["timing"] == "word" and norm(out[-1]["text"]) == norm(r["text"])
+                and not (out and out[-1]["timing"] == "word" and norm(out[-1]["text"]) == norm(r["text"])
                          and r["start"] - out[-1]["end"] < SHORT_GAP)):  # 转写模型把一声「ん？」写成了挨着的两条
             out.append(dict(r, timing="word"))
     out.sort(key=lambda s: s["start"])

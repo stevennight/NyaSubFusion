@@ -137,7 +137,7 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
   return (
     <div className="page"><div className="wide">
       <div className="row" style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>设置</h2><span className="dim">所有项目共用 · {st.path}</span><span className="sp" />
+        <h2 style={{ margin: 0 }}>设置</h2><span className="dim selectable">{s.appVersion ? `NyaSubFusion v${s.appVersion} · ` : ""}所有项目共用 · {st.path}</span><span className="sp" />
         {dirty && <span className="chip warn">未保存</span>}
         <button className="btn" disabled={!dirty} onClick={() => setDraft(st.user_config)}>还原</button>
         <button className="btn pri" disabled={!dirty} onClick={save}>保存设置</button>
