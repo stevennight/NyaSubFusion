@@ -509,3 +509,23 @@ def test_cues_typed_drop_never_reach_subtitles(sample, api_config, fake, monkeyp
     r.reannotate()
     r.load_state()
     assert victim["id"] not in [c["id"] for c in r.render_context()[0]]
+
+
+def test_normal_run_clears_stale_fresh_flag(sample, api_config, fake):
+    """普通运行或未勾选“不用缓存”的重做，会覆盖清理残留的 fresh 标记，不再无视已有缓存。"""
+    from nyasub.core import config, pipeline
+    from nyasub.core.store import save_json
+
+    assert run(sample, "--no-asr", "--no-ocr", "--config", api_config) == 0
+    cfg, _ = config.load(str(api_config), None, {"asr": {"enabled": False}, "ocr": {"enabled": False}})
+    r = pipeline.Run(sample, cfg, pipeline.Options())
+    save_json(r._pending_path(), {"ocr_refine": {"fresh": True}, "translate": {"fresh": 1700000000.0}})
+
+    pipeline.Run(sample, cfg, pipeline.Options(redo=set()))._fresh_start()
+    p1 = pipeline.Run(sample, cfg, pipeline.Options())._pending()
+    assert p1["ocr_refine"]["fresh"] is False and p1["translate"]["fresh"] is False
+
+    save_json(r._pending_path(), {"ocr_refine": {"fresh": True}})
+    pipeline.Run(sample, cfg, pipeline.Options(redo={"ocr_refine"}))._fresh_start()
+    p2 = pipeline.Run(sample, cfg, pipeline.Options())._pending()
+    assert p2["ocr_refine"]["fresh"] is False
