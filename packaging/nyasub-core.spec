@@ -3,7 +3,9 @@
 #
 # 基础包只带 CPU 能力：CUDA 运行库、onnxruntime 的 CUDA / TensorRT 插件都不打进去，
 # 由“GPU 加速组件”按需下载（见 nyasub/components.py）。
+import importlib.util
 import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
@@ -24,6 +26,13 @@ binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("av")
 
 hiddenimports = (collect_submodules("uvicorn") + collect_submodules("nyasub") + collect_submodules("keyring")
                  + ["sudachipy", "sudachidict_core", "pypinyin", "jieba", "tomli_w", "websockets", "httptools", "watchfiles"])
+
+# Apple Silicon macOS：若安装了 mlx-whisper，一并打包 Metal 库与词表资产（剔除头文件）
+if sys.platform == "darwin" and importlib.util.find_spec("mlx_whisper") is not None:
+    datas += collect_data_files("mlx_whisper")
+    datas += [(src, dst) for src, dst in collect_data_files("mlx") if src.endswith(".metallib")]
+    binaries += collect_dynamic_libs("mlx")
+    hiddenimports += collect_submodules("mlx_whisper") + ["mlx", "mlx.core", "mlx.nn", "mlx.utils", "tiktoken", "tiktoken_ext", "tiktoken_ext.openai_public"]
 
 EXCLUDE_DLLS = ("onnxruntime_providers_cuda", "onnxruntime_providers_tensorrt", "cublas", "cudnn", "cudart",
                 "cufft", "curand", "nvrtc", "nvjitlink", "nvblas")
