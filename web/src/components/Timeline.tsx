@@ -13,7 +13,7 @@
 //                            右键某一段：和前一段 / 后一段交换内容（改顺序）、从这里拆成单独的字幕
 //   拖动时                   吸附到其他译文条的边、字幕 / 语音轨的边、播放头（6 像素以内），按住 Shift 不吸附；
 //                            条上方显示当前时间，Esc 取消，松手才保存
-//   限制                     每段至少 0.2 秒；开始、结束都不越过相邻条的开始、结束（不和相邻条颠倒）
+//   限制                     每段至少 0.2 秒，起止在视频时长范围 [0, duration] 内（允许自由拖到相邻条前后或重叠）
 // 其余照旧：点一下选中；在刻度 / 波形上拖 = 拖播放头；在空白处（包括参考轨）拖 = 左右平移。
 import { useEffect, useRef, useState } from "react";
 import type { Candidate, Cue, FusedItem } from "../types";
@@ -220,11 +220,6 @@ export function Timeline(p: Props) {
     if (busy.current) return;
     busy.current = true;
     const zone = zoneAt(e, c);
-    // 相邻条只看同一类：说明类（贴在画面字旁边）和台词本来就会时间重叠，不能互相挡住
-    const isInfo = (x: Cue) => ["info", "name", "title"].includes(x.type);
-    const same = p.cues.filter((x) => isInfo(x) === isInfo(c));
-    const i = same.findIndex((x) => x.id === c.id);
-    const prev = same[i - 1], next = same[i + 1];
     const o = { start: c.start, end: c.end, parts: partsOf(c)?.map(([a, b]): Span => [a, b]) ?? null };
     const first = o.parts ? o.parts[0] : [o.start, o.end];
     const last = o.parts ? o.parts[o.parts.length - 1] : [o.start, o.end];
@@ -240,7 +235,6 @@ export function Timeline(p: Props) {
       for (const s of targets) { const d = Math.abs(s.t - t); if (d <= bd) { bd = d; best = s; } }
       return best;
     };
-    // 范围只在原来满足时才生效（原本就和相邻条交叠的说明类字幕也能拖）
     const lo = (v: number, bound: number) => Math.min(v, bound);
     const hi = (v: number, bound: number) => Math.max(v, bound);
     const x0 = e.clientX;
@@ -258,10 +252,10 @@ export function Timeline(p: Props) {
         return r3(v);
       };
       if (zone.kind === "start") {
-        start = edgeTo(o.start, lo(o.start, Math.max(0, prev?.start ?? 0)), hi(o.start, Math.min(first[1] - MIN, next?.start ?? Infinity)));
+        start = edgeTo(o.start, 0, hi(o.start, first[1] - MIN));
         if (parts) parts[0][0] = start;
       } else if (zone.kind === "end") {
-        end = edgeTo(o.end, lo(o.end, Math.max(last[0] + MIN, prev?.end ?? 0)), hi(o.end, Math.min(p.duration || Infinity, next?.end ?? Infinity)));
+        end = edgeTo(o.end, lo(o.end, last[0] + MIN), p.duration || Infinity);
         if (parts) parts[parts.length - 1][1] = end;
       } else if (zone.kind === "seam" && parts) {
         // 规则同审校面板改某段开始：这一段的开始 = 上一段的结束
@@ -276,8 +270,8 @@ export function Timeline(p: Props) {
           const da = a ? Math.abs(a.t - o.start - dt) : Infinity, db = b ? Math.abs(b.t - o.end - dt) : Infinity;
           if (a && da <= db) { d = a.t - o.start; snap = a; } else if (b) { d = b.t - o.end; snap = b; }
         }
-        const dlo = Math.min(0, Math.max(-o.start, prev ? prev.start - o.start : -Infinity, prev ? prev.end - o.end : -Infinity));
-        const dhi = Math.max(0, Math.min(p.duration ? p.duration - o.end : Infinity, next ? next.start - o.start : Infinity, next ? next.end - o.end : Infinity));
+        const dlo = Math.min(0, -o.start);
+        const dhi = Math.max(0, p.duration ? p.duration - o.end : Infinity);
         const dc = clamp(d, dlo, dhi);
         if (!near(dc, d)) snap = null;
         start = r3(o.start + dc);
