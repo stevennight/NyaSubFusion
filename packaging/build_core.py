@@ -35,20 +35,27 @@ def main():
     out = DIST / "nyasub-core"
     internal = out / "_internal"
 
-    # 附带 ffmpeg / ffprobe：优先用 fetch_ffmpeg.py 下载的共享库版，没有就用 PATH 里的
+    # 附带 ffmpeg / ffprobe：优先用 fetch_ffmpeg.py 准备好的版本，没有就用 PATH 里的
     ff = internal / "ffmpeg"
     ff.mkdir(exist_ok=True)
     shared = ROOT / "build" / "ffmpeg" / "bin"
-    if (shared / "ffmpeg.exe").exists():
+    ff_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    if (shared / ff_name).exists():
         for f in shared.iterdir():
-            shutil.copy2(f, ff / f.name)
+            if f.is_file():
+                shutil.copy2(f, ff / f.name)
     else:
-        print("提示：没有找到 build/ffmpeg（先运行 packaging/fetch_ffmpeg.py 可以小一半），改用 PATH 里的 ffmpeg")
+        print("提示：没有找到 build/ffmpeg（先运行 packaging/fetch_ffmpeg.py），改用 PATH 里的 ffmpeg")
         for tool in ("ffmpeg", "ffprobe"):
             src = shutil.which(tool)
             if not src:
                 raise SystemExit(f"找不到 {tool}，无法打包")
             shutil.copy2(src, ff / Path(src).name)
+    if os.name != "nt":
+        for tool in ("ffmpeg", "ffprobe"):
+            p = ff / tool
+            if p.exists():
+                p.chmod(p.stat().st_mode | 0o755)
     print(f"内核：{out}（{du_mb(out):.0f} MB）")
 
     if TAURI_CORE.exists():

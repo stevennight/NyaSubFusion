@@ -18,6 +18,17 @@ export function GpuComponents() {
     });
   }, []);
   if (!st) return null;
+  const isMac = st.gpu.platform === "darwin";
+  if (isMac) {
+    return (
+      <div className="card">
+        <h3>硬件加速（macOS）</h3>
+        <div className="dim">
+          芯片：{st.gpu.name ?? "macOS"} · 视频编解码 {st.gpu.videotoolbox ? "VideoToolbox 可用" : "CPU"} · 人声分离 {st.gpu.ort_coreml ? "CoreML 可用" : "CPU"} · 语音识别 {st.gpu.asr_mlx ? "MLX GPU 可用" : "CPU（可选安装 nyasub[mlx]）"}
+        </div>
+      </div>
+    );
+  }
   const busy = st.job?.status === "running" || !!prog;
   return (
     <div className="card">

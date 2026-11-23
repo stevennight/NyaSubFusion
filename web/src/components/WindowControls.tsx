@@ -14,6 +14,8 @@ const appWindow = (): TauriWindow | null =>
   (window as unknown as { __TAURI__?: { window?: { getCurrentWindow?: () => TauriWindow } } }).__TAURI__?.window?.getCurrentWindow?.() ?? null;
 
 export const isDesktop = () => appWindow() != null;
+export const isMacDesktop = () =>
+  isDesktop() && typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
 // 顶栏里这些东西照常点，不拿来拖窗口
 const INTERACTIVE = "a, button, input, select, textarea, label, [role=button], .chip, .nodrag";
@@ -37,7 +39,7 @@ export function WindowControls() {
     w.onResized(sync).then((f) => { if (gone) f(); else off = f; }).catch(() => {});
     return () => { gone = true; off?.(); };
   }, [w]);
-  if (!w) return null;
+  if (!w || isMacDesktop()) return null;
   const run = (p: Promise<void>) => { p.catch(() => {}); };
   return (
     <div className="wctl">

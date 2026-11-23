@@ -23,11 +23,15 @@ ocr = ["rapidocr>=3.0", "opencv-python-headless>=4.8"]
 lang = ["sudachipy>=0.6", "sudachidict-core", "pypinyin>=0.50", "jieba>=0.42", "fonttools>=4.40"]
 # 本地服务（界面通过它调内核）
 server = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
-# GPU 推理（onnxruntime-gpu 也能跑 CPU，开发环境统一用它）
+# GPU 推理（Windows / Linux 用 onnxruntime-gpu；macOS 用原生 onnxruntime 自带 CoreML）
 gpu = [
-    "onnxruntime-gpu[cuda,cudnn]>=1.20",
-    "nvidia-cublas-cu12",
-    "nvidia-cudnn-cu12>=9,<10",
+    "onnxruntime-gpu[cuda,cudnn]>=1.20; sys_platform != 'darwin'",
+    "nvidia-cublas-cu12; sys_platform != 'darwin'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform != 'darwin'",
+]
+# Apple Silicon 语音识别 GPU 加速（可选）
+mlx = [
+    "mlx-whisper>=0.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.scripts]
@@ -37,8 +41,8 @@ nyasub = "nyasub.cli:main"
 dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
 
 [tool.uv]
-# faster-whisper 依赖 CPU 版 onnxruntime，它和 onnxruntime-gpu 是同一个模块名，不能同时装
-override-dependencies = ["onnxruntime; sys_platform == 'never'"]
+# Windows / Linux：faster-whisper 依赖 CPU 版 onnxruntime，和 onnxruntime-gpu 同名冲突；macOS 没有 onnxruntime-gpu，保留原生 onnxruntime（自带 CoreML）
+override-dependencies = ["onnxruntime; sys_platform == 'darwin'"]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

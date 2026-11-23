@@ -38,6 +38,8 @@ def _ort_version():
 
 
 def manifest():
+    if sys.platform == "darwin":
+        return {}  # macOS 使用 VideoToolbox / CoreML / 可选 MLX，无需下载 NVIDIA CUDA 运行库
     ort = _ort_version()
     return {
         "cuda-asr": {
@@ -74,7 +76,19 @@ def status():
 def gpu_info():
     from . import gpu
 
-    info = {"cuda_devices": 0, "name": None, "ort_cuda": gpu.ocr_ready(), "asr_cuda": gpu.asr_ready()}
+    info = {
+        "platform": sys.platform,
+        "cuda_devices": 0,
+        "name": None,
+        "ort_cuda": gpu.ocr_ready(),
+        "asr_cuda": gpu.asr_ready(),
+        "ort_coreml": gpu.ort_coreml_ready(),
+        "asr_mlx": gpu.mlx_whisper_ready(),
+        "videotoolbox": gpu.videotoolbox_ready(),
+    }
+    if gpu.is_macos():
+        info["name"] = gpu.apple_chip_name()
+        return info
     try:
         import ctranslate2
 

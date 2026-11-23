@@ -13,14 +13,22 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
     if c.get("hf_endpoint"):
         os.environ["HF_ENDPOINT"] = c["hf_endpoint"]
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # 镜像站不支持 xet 协议
-    from faster_whisper import WhisperModel
-
     from .. import gpu
     from .asr_models import resolve
 
+    if c["device"] != "cpu" and gpu.mlx_whisper_ready():
+        res = _transcribe_mlx(wav, c, language=language, offset=offset, duration=duration)
+        if res is not None:
+            return res
+
+    from faster_whisper import WhisperModel
+
     root = c.get("download_root") or None
     if c["device"] == "cuda" and not gpu.asr_ready():
-        log("没有可用的 CUDA（缺显卡或“语音识别 GPU 加速”组件），语音识别用 CPU，会慢一些")
+        if gpu.is_macos():
+            log("macOS 未安装 mlx-whisper，语音识别改用 CPU（int8）；如需 Apple Silicon GPU 加速可安装 nyasub[mlx]")
+        else:
+            log("没有可用的 CUDA（缺显卡或“语音识别 GPU 加速”组件），语音识别用 CPU，会慢一些")
         c = dict(c, device="cpu", compute_type="int8")
     path = resolve(c["model"], root)
     try:
@@ -253,3 +261,72 @@ def _fill_gaps(model, wav, segments, language, offset, junk):
                 "words": [{"s": round(w.start + t, 3), "e": round(w.end + t, 3), "w": w.word} for w in (seg.words or [])],
             })
     return out
+
+
+# ---------------- Apple Silicon MLX-Whisper（可选） ----------------
+_MLX_MODELS = {
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
+    "large-v2": "mlx-community/whisper-large-v2-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "tiny": "mlx-community/whisper-tiny-mlx",
+}
+
+
+def _mlx_repo(name: str) -> str:
+    if "/" in name:
+        return name
+    return _MLX_MODELS.get(name, f"mlx-community/whisper-{name}-mlx")
+
+
+def _transcribe_mlx(wav, c: dict, language=None, offset=0.0, duration=0.0):
+    """Apple Silicon 上使用 mlx-whisper（Metal GPU）加速语音识别；失败时返回 None 回退到 faster-whisper。"""
+    try:
+        import mlx_whisper
+    except Exception:
+        return None
+    repo = _mlx_repo(str(c.get("model") or "large-v3"))
+    log(f"语音识别（Apple Silicon MLX）：{repo}")
+    t0 = time.time()
+    try:
+        res = mlx_whisper.transcribe(
+            str(wav),
+            path_or_hf_repo=repo,
+            language=language or None,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+        )
+    except Exception as e:
+        log(f"mlx-whisper 识别失败（{e}），回退到 faster-whisper")
+        return None
+    check_cancel()
+    detected = language or res.get("language") or ""
+    if not language and detected:
+        log(f"语音语言检测（MLX）：{detected}")
+    out = []
+    for seg in res.get("segments") or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        words = [
+            {"s": round(float(w["start"]) + offset, 3), "e": round(float(w["end"]) + offset, 3), "w": w.get("word", "")}
+            for w in (seg.get("words") or [])
+            if "start" in w and "end" in w
+        ]
+        out.append({
+            "id": f"a{len(out) + 1}",
+            "start": round(float(seg.get("start", 0.0)) + offset, 3),
+            "end": round(float(seg.get("end", 0.0)) + offset, 3),
+            "text": text,
+            "no_speech": round(float(seg.get("no_speech_prob", 0.0)), 3),
+            "logprob": round(float(seg.get("avg_logprob", 0.0)), 3),
+            "words": words,
+        })
+    if duration:
+        progress(duration, duration, "识别")
+    log(f"语音识别完成（MLX，{len(out)} 段，用时 {time.time() - t0:.0f}s）")
+    return out, detected

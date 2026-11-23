@@ -65,12 +65,21 @@ def ensure_model():
 
 
 class _Mdx:
-    def __init__(self, path, gpu):
+    def __init__(self, path, use_gpu):
         import onnxruntime as ort
 
-        providers = (["CUDAExecutionProvider"] if gpu else []) + ["CPUExecutionProvider"]
+        from .. import gpu
+
+        providers = gpu.ort_providers(use_gpu)
         self.sess = ort.InferenceSession(str(path), providers=providers)
-        self.on_gpu = "CUDAExecutionProvider" in self.sess.get_providers()
+        active = self.sess.get_providers()
+        if "CUDAExecutionProvider" in active:
+            self.backend = "CUDA"
+        elif "CoreMLExecutionProvider" in active:
+            self.backend = "CoreML"
+        else:
+            self.backend = "CPU"
+        self.on_gpu = self.backend != "CPU"
         m = MODEL
         self.n_fft, self.hop, self.dim_f, self.dim_t = m["n_fft"], m["hop"], m["dim_f"], m["dim_t"]
         self.chunk = self.hop * (self.dim_t - 1)          # 每块输入的采样数
@@ -113,8 +122,8 @@ def separate(video, out_wav, duration=0.0, gpu=False):
     """从视频里分离出人声，写成 16 kHz 单声道 wav（语音识别用）。返回 (是否用了显卡, 用时秒)。"""
     path = ensure_model()
     mdx = _Mdx(path, gpu)
-    log(f"人声分离（{MODEL['name']}，{'显卡' if mdx.on_gpu else 'CPU'}）"
-        + ("" if mdx.on_gpu else "：CPU 上大约要节目时长的 1/3，装了画面字识别 GPU 组件会快很多"))
+    log(f"人声分离（{MODEL['name']}，{mdx.backend}）"
+        + ("" if mdx.on_gpu else "：CPU 上大约要节目时长的 1/3"))
     t0 = time.time()
     src = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
                             "-f", "f32le", "-"], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)

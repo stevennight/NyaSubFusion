@@ -2,6 +2,7 @@
 import json
 import shutil
 import subprocess
+import sys
 from fractions import Fraction
 
 import numpy as np
@@ -244,7 +245,12 @@ def frame_size(vinfo, height):
 
 
 def _frame_cmd(path, vinfo, fps, w, h, hw):
-    if hw:
+    if hw and sys.platform == "darwin":
+        # macOS：VideoToolbox 硬件解码 + CPU 缩放（Apple Silicon 统一内存拷贝开销极低）
+        vf = ["bwdif=mode=send_frame:deint=all"] if vinfo.get("interlaced") else []
+        vf += [f"fps={fps}", f"scale={w}:{h}:flags=bicubic"]
+        pre = ["-hwaccel", "videotoolbox"]
+    elif hw:
         # 显卡解码 + 显卡缩放，只把小图传回内存
         vf = ["yadif_cuda=mode=send_frame:deint=all"] if vinfo.get("interlaced") else []
         vf += [f"scale_cuda={w}:{h}:format=nv12", "hwdownload", "format=nv12", f"fps={fps}"]
@@ -369,9 +375,16 @@ def proxy_attempts(path, vinfo, height=540):
         except (ValueError, ZeroDivisionError):
             fps = ["fps=30"]
     inter = vinfo.get("interlaced")
-    nvenc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "28", "-b:v", "0", "-forced-idr", "1"]
     x264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]
     cpu_vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + [f"scale={w}:{h}:flags=bicubic", "format=yuv420p", "setsar=1"] + fps
+    if sys.platform == "darwin":
+        vt = ["-c:v", "h264_videotoolbox", "-q:v", "55", "-realtime", "true"]
+        return [
+            ("VideoToolbox 硬件解码 + 编码", ["-hwaccel", "videotoolbox"], cpu_vf, vt),
+            ("CPU 解码 + VideoToolbox", [], cpu_vf, vt),
+            ("CPU 解码 + x264", [], cpu_vf, x264),
+        ]
+    nvenc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "28", "-b:v", "0", "-forced-idr", "1"]
     gpu_vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format=yuv420p"] + fps + ["setsar=1"]
     return [
         ("显卡解码 + NVENC", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], gpu_vf, nvenc),

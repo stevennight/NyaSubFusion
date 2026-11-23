@@ -139,7 +139,16 @@ export interface Progress { stage: string; done: number; total: number; label?: 
 export interface LogLine { msg: string; stage?: string }
 
 export interface ComponentStatus {
-  gpu: { cuda_devices: number; name: string | null; ort_cuda: boolean };
+  gpu: {
+    platform?: string;
+    cuda_devices: number;
+    name: string | null;
+    ort_cuda: boolean;
+    asr_cuda?: boolean;
+    ort_coreml?: boolean;
+    asr_mlx?: boolean;
+    videotoolbox?: boolean;
+  };
   components: { name: string; label: string; detail: string; installed: boolean; files: number; size_mb: number | null }[];
   job: Job | null;
 }

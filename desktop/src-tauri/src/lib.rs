@@ -34,7 +34,7 @@ fn random_token() -> String {
     out
 }
 
-/// 内核命令：发布版用打包进来的 core/nyasub-core.exe；
+/// 内核命令：发布版用打包进来的 core/nyasub-core（Windows 为 .exe）；
 /// 开发时可以用 NYASUB_CORE_CMD 指定（例如 "D:\...\.venv\Scripts\python.exe -m nyasub"）。
 fn core_command(app: &tauri::AppHandle) -> Result<Command, String> {
     if let Ok(cmd) = std::env::var("NYASUB_CORE_CMD") {
@@ -44,13 +44,23 @@ fn core_command(app: &tauri::AppHandle) -> Result<Command, String> {
         c.args(parts);
         return Ok(c);
     }
+    #[cfg(windows)]
+    const CORE_EXE: &str = "nyasub-core.exe";
+    #[cfg(not(windows))]
+    const CORE_EXE: &str = "nyasub-core";
+
     let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let exe: PathBuf = res.join("core").join("nyasub-core.exe");
+    let exe: PathBuf = res.join("core").join(CORE_EXE);
     if exe.exists() {
         return Ok(Command::new(exe));
     }
     // 开发时：仓库里的虚拟环境
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.venv/Scripts/python.exe");
+    #[cfg(windows)]
+    const DEV_PY: &str = "../../.venv/Scripts/python.exe";
+    #[cfg(not(windows))]
+    const DEV_PY: &str = "../../.venv/bin/python";
+
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEV_PY);
     if dev.exists() {
         let mut c = Command::new(dev);
         c.args(["-m", "nyasub"]);

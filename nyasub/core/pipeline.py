@@ -742,7 +742,7 @@ class Run:
         if out.exists() and load_json(self.proj.media("vocals.json")) == stamp:
             log("人声分离：复用已分离的人声")
             return out
-        on_gpu, sec = vocals.separate(self.proj.video, out, info.get("duration") or 0.0, gpu=gpu.ocr_ready())
+        on_gpu, sec = vocals.separate(self.proj.video, out, info.get("duration") or 0.0, gpu=gpu.vocals_ready())
         save_json(self.proj.media("vocals.json"), stamp)
         log(f"人声分离完成，用时 {sec:.0f}s")
         return out

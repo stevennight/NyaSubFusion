@@ -47,7 +47,10 @@ def make_engine(c, ocr_lang="japan"):
     from rapidocr import LangRec, ModelType, RapidOCR
 
     if c.get("use_cuda") and not resolve(c)["use_cuda"]:
-        log("没有可用的 CUDA（缺显卡或“画面字识别 GPU 加速”组件），画面字识别用 CPU（会慢很多，建议安装 GPU 加速组件）")
+        from .. import gpu
+
+        if not gpu.is_macos():
+            log("没有可用的 CUDA（缺显卡或“画面字识别 GPU 加速”组件），画面字识别用 CPU（会慢很多，建议安装 GPU 加速组件）")
     c = resolve(c)
     params = {
         "Global.log_level": "error",

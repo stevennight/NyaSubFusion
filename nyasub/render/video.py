@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .. import env
@@ -29,15 +30,23 @@ MKV_COPY_SUBS = {"subrip", "ass", "ssa", "hdmv_pgs_subtitle", "dvd_subtitle", "d
 MKV_CONVERT_SUBS = {"mov_text": "srt", "text": "srt"}
 MP4_COPY_AUDIO = {"aac", "mp3", "ac3", "eac3"}
 MKV_CONVERT_AUDIO = {"aac_latm"}  # 日本广播的 LATM 封装 AAC：放进 MKV 很多播放器不认，转成普通 AAC
+def vt_quality(q):
+    """把 CRF/CQ（0~51，越小越清晰）映射到 Apple VideoToolbox 的 -q:v（1~100，越大越清晰）。"""
+    return max(1, min(100, round(100 - float(q) * 1.8)))
+
+
 ENCODERS = {
     "h264_nvenc": lambda q: ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(q), "-b:v", "0"],
     "hevc_nvenc": lambda q: ["-c:v", "hevc_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(q), "-b:v", "0",
                              "-tag:v", "hvc1"],
+    "h264_videotoolbox": lambda q: ["-c:v", "h264_videotoolbox", "-q:v", str(vt_quality(q))],
+    "hevc_videotoolbox": lambda q: ["-c:v", "hevc_videotoolbox", "-q:v", str(vt_quality(q)), "-tag:v", "hvc1"],
     "libx264": lambda q: ["-c:v", "libx264", "-preset", "medium", "-crf", str(q)],
     "libx265": lambda q: ["-c:v", "libx265", "-preset", "medium", "-crf", str(q), "-tag:v", "hvc1"],
 }
 
-
+HW_ENCODERS = ("h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox")
+HEVC_ENCODERS = ("hevc_nvenc", "hevc_videotoolbox", "libx265")
 HEVC_LIKE = {"hevc", "h265", "av1", "vp9"}  # 压缩率比 H.264 高的编码
 
 
@@ -45,9 +54,10 @@ def pick_encoders(encoder, src_codec, bit_depth="auto"):
     """自动：原片是 H.265（或更新的编码）或指定 10-bit 时优先 H.265，否则 H.264；都是先试显卡再用 CPU。"""
     if encoder != "auto":
         return [encoder]
-    if bit_depth == "10" or (src_codec or "").lower() in HEVC_LIKE:
-        return ["hevc_nvenc", "libx265"]
-    return ["h264_nvenc", "libx264"]
+    hevc = bit_depth == "10" or (src_codec or "").lower() in HEVC_LIKE
+    if sys.platform == "darwin":
+        return ["hevc_videotoolbox", "libx265"] if hevc else ["h264_videotoolbox", "libx264"]
+    return ["hevc_nvenc", "libx265"] if hevc else ["h264_nvenc", "libx264"]
 
 
 def rate_cap(src_bps, src_codec, src_size, out_size, enc):
@@ -259,13 +269,14 @@ def mux(video, tracks, out, font_files=(), keep_subs=True, vinfo=None, duration=
 
 _TRC_RE = re.compile(r"transfer_characteristics\s+\d+\s*=\s*(\d+)")
 _CROSS_OVERRIDES = {
-    "-b:v": {"-cq", "-crf", "-maxrate", "-bufsize"},
-    "-cq": {"-cq", "-crf"},
-    "-crf": {"-cq", "-crf"},
+    "-b:v": {"-cq", "-crf", "-q:v", "-maxrate", "-bufsize"},
+    "-cq": {"-cq", "-crf", "-q:v"},
+    "-crf": {"-cq", "-crf", "-q:v"},
+    "-q:v": {"-cq", "-crf", "-q:v"},
     "-c:a": {"-b:a"},
 }
 _DIRECT_OVERRIDES = {
-    "-preset", "-tune", "-rc", "-cq", "-crf", "-b:v", "-maxrate", "-bufsize",
+    "-preset", "-tune", "-rc", "-cq", "-crf", "-q:v", "-b:v", "-maxrate", "-bufsize",
     "-pix_fmt", "-profile:v", "-tag:v", "-c:a", "-b:a", "-bsf:v",
     "-color_range", "-color_primaries", "-color_trc", "-colorspace", "-movflags",
 }
@@ -336,40 +347,41 @@ def merge_ffmpeg_args(base_args, extra):
 
 
 def _resolve_bit_depth(enc, bit_depth, do_709):
-    """按编码器和色深设置确定 (use_10bit, pix_fmt, profile_args, downgraded_from_nvenc_h264)。"""
-    is_hevc = enc in ("hevc_nvenc", "libx265")
+    """按编码器和色深设置确定 (use_10bit, pix_fmt, profile_args, downgraded_from_hw_h264)。"""
+    is_hevc = enc in HEVC_ENCODERS
     want_10 = (bit_depth == "10") or (bit_depth == "auto" and do_709 and is_hevc)
-    if want_10 and enc == "h264_nvenc":
+    if want_10 and enc in ("h264_nvenc", "h264_videotoolbox"):
         return False, "yuv420p", [], True
     if not want_10:
         return False, "yuv420p", [], False
-    if enc == "hevc_nvenc":
-        # hevc_nvenc 不接受 yuv420p10le，需用硬件 10-bit 像素格式 p010le
+    if enc in ("hevc_nvenc", "hevc_videotoolbox"):
+        # 硬件 HEVC 编码器（NVENC / VideoToolbox）用硬件 10-bit 像素格式 p010le
         return True, "p010le", ["-profile:v", "main10"], False
     if enc == "libx265":
         return True, "yuv420p10le", ["-profile:v", "main10"], False
     return True, "yuv420p10le", [], False
 
 
-def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf):
+def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_backend="cuda"):
     """构建压制时的前置输入参数与 -vf 滤镜链。"""
     scaled = (w, h) != (vinfo["width"], vinfo["height"])
     extra = [extra_vf] if extra_vf else []
     subs = ["subtitles=sub.ass:fontsdir=fonts"]
     if do_709:
-        pre = ["-hwaccel", "cuda"] if use_gpu_decode else []
+        pre = ["-hwaccel", hw_backend] if use_gpu_decode else []
         out_fmt = "yuv420p10le" if use_10 else "yuv420p"
         conv = ("zscale=pin=2020:tin=709:min=2020_ncl:rin=limited:p=2020:t=linear:m=gbr:r=full:npl=100,format=gbrpf32le,"
                 f"zscale=pin=2020:tin=linear:min=gbr:rin=full:p=709:t=709:m=709:r=limited:dither=error_diffusion,format={out_fmt}")
         tag709 = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
         vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + ([f"scale={w}:{h}:flags=lanczos"] if scaled else []) + ["setsar=1", conv] + extra + subs + [tag709]
         return pre, vf
-    if use_gpu_decode:
+    if use_gpu_decode and hw_backend == "cuda":
         gpu_fmt = "p010le" if use_10 else "yuv420p"
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
         vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format={gpu_fmt}", "hwdownload", f"format={gpu_fmt}", "setsar=1"] + extra + subs
         return pre, vf
-    pre = []
+    # VideoToolbox（统一内存，FFmpeg 无 scale_cuda 类滤镜）和纯 CPU：硬件解码 + CPU 滤镜链
+    pre = ["-hwaccel", hw_backend] if use_gpu_decode else []
     vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + ([f"scale={w}:{h}:flags=lanczos"] if scaled else []) + ["setsar=1"] + extra + subs
     return pre, vf
 
@@ -403,7 +415,7 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
     acodec = ["-c:a", "copy"] if all(c in MP4_COPY_AUDIO for c in audio) else ["-c:a", "aac", "-b:a", "192k"]
     part = _part(Path(out).resolve())
     encs = pick_encoders(encoder, vinfo.get("codec"), bit_depth=bit_depth)
-    tried = [(e, gpu) for e in encs for gpu in ((True, False) if e.endswith("_nvenc") else (False,))]
+    tried = [(e, gpu) for e in encs for gpu in ((True, False) if e in HW_ENCODERS else (False,))]
     # 原片码率：整个文件的平均码率（含音频，差得不多；很多 TS / M2TS 的视频流不标码率）
     try:
         src_bps = Path(video).stat().st_size * 8 / duration if duration else 0
@@ -413,12 +425,13 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
     for i, (enc, use_gpu) in enumerate(tried):
         use_10, pix_fmt, prof, downgraded = _resolve_bit_depth(enc, bit_depth, do_709)
         if downgraded and not warned_h264_10:
-            env.log("h264_nvenc 不支持 10-bit，已改用 8-bit（如需 10-bit 请选 H.265 或 libx264）")
+            env.log(f"{enc} 不支持 10-bit，已改用 8-bit（如需 10-bit 请选 H.265 或 libx264）")
             warned_h264_10 = True
-        pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean)
+        hw_backend = "videotoolbox" if enc.endswith("_videotoolbox") else "cuda"
+        pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean, hw_backend=hw_backend)
         cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
         limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
-        is_hevc = enc in ("hevc_nvenc", "libx265")
+        is_hevc = enc in HEVC_ENCODERS
         color_flags = (
             ["-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
              "-bsf:v", f"{'hevc_metadata' if is_hevc else 'h264_metadata'}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]

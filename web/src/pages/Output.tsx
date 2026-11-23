@@ -29,10 +29,24 @@ const write = (raw: Cfg, r: R) => KEYS.reduce((out, k) => setIn(out, `render.${k
 
 const ROLE_LBL = { original: "原文", translation: "译文", transliteration: "整行转写" } as const;
 const ANN_LBL: Record<string, string> = { none: "无", furigana: "振假名", pinyin: "拼音", zhuyin: "注音符号" };
-const FONTS = ["Microsoft YaHei", "Yu Gothic", "Meiryo", "Yu Mincho", "BIZ UDGothic", "SimHei", "KaiTi", "Segoe UI", "Arial"];
+const FONTS = ["Microsoft YaHei", "PingFang SC", "Yu Gothic", "Hiragino Sans", "Meiryo", "Yu Mincho", "Hiragino Mincho ProN", "BIZ UDGothic", "SimHei", "KaiTi", "Segoe UI", "Arial"];
 const FONTS_LBL: Record<string, string> = { subset: "嵌入字体（只含用到的字）", full: "嵌入完整字体", none: "不嵌入字体" };
-const ENCODERS: [string, string][] = [["auto", "自动（和原片同一种编码，先试显卡）"], ["h264_nvenc", "H.264 · NVIDIA 显卡"], ["libx264", "H.264 · CPU"],
-  ["hevc_nvenc", "H.265 · NVIDIA 显卡"], ["libx265", "H.265 · CPU"]];
+const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+const ENCODERS: [string, string][] = IS_MAC
+  ? [
+      ["auto", "自动（和原片同一种编码，先试 VideoToolbox）"],
+      ["h264_videotoolbox", "H.264 · Apple VideoToolbox"],
+      ["libx264", "H.264 · CPU"],
+      ["hevc_videotoolbox", "H.265 · Apple VideoToolbox"],
+      ["libx265", "H.265 · CPU"],
+    ]
+  : [
+      ["auto", "自动（和原片同一种编码，先试显卡）"],
+      ["h264_nvenc", "H.264 · NVIDIA 显卡"],
+      ["libx264", "H.264 · CPU"],
+      ["hevc_nvenc", "H.265 · NVIDIA 显卡"],
+      ["libx265", "H.265 · CPU"],
+    ];
 const DEFAULT_ANN: Annotate = { kind: "none", scope: "all", easy_kanji: "grade2", known_words: [], numbers: false, script: "hiragana", tone: "mark", size: 0.5, color: "", srt: "paren" };
 // 新加的原文层和出厂的一样默认“自动”：画面上已经有这句硬字幕时不重复显示
 const newLayer = (role: Layer["role"], style: string): Layer => ({ role, lang: "", of: "original", show: role === "original" ? "auto" : "on", style, max_chars: 0, annotate: { ...DEFAULT_ANN }, tone: "mark" });

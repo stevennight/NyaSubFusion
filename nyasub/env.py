@@ -54,6 +54,8 @@ def home() -> Path:
     """用户数据目录：全局配置、作品（series）、GPU 组件。可用 NYASUB_HOME 覆盖。"""
     if os.environ.get("NYASUB_HOME"):
         return Path(os.environ["NYASUB_HOME"])
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "NyaSubFusion"
     if os.name == "nt":
         return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "NyaSubFusion"
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "nyasub"
