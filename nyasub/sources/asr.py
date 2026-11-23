@@ -17,7 +17,8 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
     from .asr_models import resolve
 
     if c["device"] != "cpu" and gpu.mlx_whisper_ready():
-        res = _transcribe_mlx(wav, c, language=language, offset=offset, duration=duration)
+        res = _transcribe_mlx(wav, c, language=language, offset=offset, duration=duration,
+                              fill_gaps=fill_gaps, junk=junk, detect_wav=detect_wav)
         if res is not None:
             return res
 
@@ -282,16 +283,117 @@ def _mlx_repo(name: str) -> str:
     return _MLX_MODELS.get(name, f"mlx-community/whisper-{name}-mlx")
 
 
-def _transcribe_mlx(wav, c: dict, language=None, offset=0.0, duration=0.0):
+def _mlx_segments(res, offset, prefix="a", second_pass=False, junk=None):
+    out = []
+    for seg in res.get("segments") or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", 0.0))
+        avg_logprob = float(seg.get("avg_logprob", 0.0))
+        if junk is not None:
+            class _S:
+                pass
+            s = _S()
+            s.start, s.end, s.avg_logprob = start, end, avg_logprob
+            if not _keep(s, text, junk):
+                continue
+        words = [
+            {"s": round(float(w["start"]) + offset, 3), "e": round(float(w["end"]) + offset, 3), "w": w.get("word", "")}
+            for w in (seg.get("words") or [])
+            if "start" in w and "end" in w
+        ]
+        item = {
+            "id": f"{prefix}{len(out) + 1}",
+            "start": round(start + offset, 3),
+            "end": round(end + offset, 3),
+            "text": text,
+            "no_speech": round(float(seg.get("no_speech_prob", 0.0)), 3),
+            "logprob": round(avg_logprob, 3),
+            "words": words,
+        }
+        if second_pass:
+            item["second_pass"] = True
+        out.append(item)
+    return out
+
+
+def _detect_language_mlx(mlx_whisper, repo, detect_wav):
+    """用原音频前 30 秒判断语言（避免人声轨大段静音被误判）。"""
+    import wave
+
+    import numpy as np
+
+    try:
+        with wave.open(str(detect_wav)) as w:
+            sr = w.getframerate()
+            n = min(w.getnframes(), sr * 30)
+            x = np.frombuffer(w.readframes(n), np.int16).astype(np.float32) / 32768
+        if len(x) < sr // 2:
+            return None
+        res = mlx_whisper.transcribe(x, path_or_hf_repo=repo, word_timestamps=False,
+                                     condition_on_previous_text=False, no_speech_threshold=0.6)
+        lang = res.get("language") or ""
+        if lang:
+            log(f"语音语言检测（MLX，按原音频）：{lang}")
+        return lang or None
+    except Exception:
+        return None
+
+
+def _fill_gaps_mlx(mlx_whisper, repo, wav, segments, language, offset, junk):
+    """Apple Silicon MLX 补识别：人声轨上有声音但没识别出字的地方，再识别一遍。"""
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(wav)) as w:
+        sr = w.getframerate()
+        x = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    base = [dict(s, start=s["start"] - offset, end=s["end"] - offset) for s in repair(segments)]
+    out = []
+    gaps = _voiced_gaps(x, sr, base)
+    for k, (a, b) in enumerate(gaps):
+        check_cancel()
+        progress(k, len(gaps), "补识别")
+        a0, b0 = max(0.0, a - 0.4), min(len(x) / sr, b + 0.4)
+        clip = x[int(a0 * sr): int(b0 * sr)]
+        if len(clip) < sr // 4:
+            continue
+        res = mlx_whisper.transcribe(
+            clip,
+            path_or_hf_repo=repo,
+            language=language or None,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+            no_speech_threshold=0.6,
+        )
+        t = a0 + offset
+        for item in _mlx_segments(res, t, prefix="b", second_pass=True, junk=junk):
+            item["id"] = f"b{len(out) + 1}"
+            out.append(item)
+    return out
+
+
+def _transcribe_mlx(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=False, junk=(), detect_wav=None):
     """Apple Silicon 上使用 mlx-whisper（Metal GPU）加速语音识别；失败时返回 None 回退到 faster-whisper。"""
     try:
         import mlx_whisper
     except Exception:
         return None
-    repo = _mlx_repo(str(c.get("model") or "large-v3"))
+    name = str(c.get("model") or "large-v3")
+    if name.endswith("-faster"):
+        log(f"模型 {name} 为 CTranslate2 专用格式，改用 faster-whisper")
+        return None
+    if c.get("download_root"):
+        os.environ.setdefault("HF_HUB_CACHE", str(c["download_root"]))
+    repo = _mlx_repo(name)
     log(f"语音识别（Apple Silicon MLX）：{repo}")
     t0 = time.time()
     try:
+        if not language and detect_wav:
+            language = _detect_language_mlx(mlx_whisper, repo, detect_wav) or language
         res = mlx_whisper.transcribe(
             str(wav),
             path_or_hf_repo=repo,
@@ -299,6 +401,7 @@ def _transcribe_mlx(wav, c: dict, language=None, offset=0.0, duration=0.0):
             word_timestamps=True,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,
+            hallucination_silence_threshold=2.0,
         )
     except Exception as e:
         log(f"mlx-whisper 识别失败（{e}），回退到 faster-whisper")
@@ -307,25 +410,16 @@ def _transcribe_mlx(wav, c: dict, language=None, offset=0.0, duration=0.0):
     detected = language or res.get("language") or ""
     if not language and detected:
         log(f"语音语言检测（MLX）：{detected}")
-    out = []
-    for seg in res.get("segments") or []:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        words = [
-            {"s": round(float(w["start"]) + offset, 3), "e": round(float(w["end"]) + offset, 3), "w": w.get("word", "")}
-            for w in (seg.get("words") or [])
-            if "start" in w and "end" in w
-        ]
-        out.append({
-            "id": f"a{len(out) + 1}",
-            "start": round(float(seg.get("start", 0.0)) + offset, 3),
-            "end": round(float(seg.get("end", 0.0)) + offset, 3),
-            "text": text,
-            "no_speech": round(float(seg.get("no_speech_prob", 0.0)), 3),
-            "logprob": round(float(seg.get("avg_logprob", 0.0)), 3),
-            "words": words,
-        })
+    out = _mlx_segments(res, offset, prefix="a")
+    if fill_gaps:
+        t1 = time.time()
+        try:
+            extra = _fill_gaps_mlx(mlx_whisper, repo, wav, out, detected, offset, junk)
+            if extra:
+                log(f"补识别（MLX）：补出 {len(extra)} 段（哭喊、歌声等），用时 {time.time() - t1:.0f}s")
+                out = sorted(out + extra, key=lambda s: (s["start"], s["end"]))
+        except Exception as e:
+            log(f"补识别（MLX）跳过（{e}）")
     if duration:
         progress(duration, duration, "识别")
     log(f"语音识别完成（MLX，{len(out)} 段，用时 {time.time() - t0:.0f}s）")

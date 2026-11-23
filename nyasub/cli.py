@@ -87,26 +87,41 @@ def cmd_doctor(args):
         ok &= bool(good) or name.startswith("（可选）")
         print(f"  {'✓' if good else '✗'} {name}：{detail}")
 
+    from . import gpu
+
     print(f"NyaSubFusion {__version__} · Python {sys.version.split()[0]}")
     print(f"  用户数据目录：{env.home()}")
+    ff_hint = "未找到（brew install ffmpeg）" if gpu.is_macos() else "未找到（winget install Gyan.FFmpeg）"
     for tool in ("ffmpeg", "ffprobe"):
-        line(tool, shutil.which(tool), shutil.which(tool) or "未找到（winget install Gyan.FFmpeg）")
+        line(tool, shutil.which(tool), shutil.which(tool) or ff_hint)
+    if gpu.is_macos():
+        chip = gpu.apple_chip_name() or "macOS"
+        line("硬件编解码（VideoToolbox）", gpu.videotoolbox_ready(),
+             f"{chip} · {'可用' if gpu.videotoolbox_ready() else '不可用（回退 CPU）'}")
     try:
         import onnxruntime as ort
 
-        from . import gpu
-
-        line("画面字识别 GPU", True, f"onnxruntime {ort.__version__}，{'CUDA 可用' if gpu.ocr_ready() else '只用 CPU（可安装 cuda-ocr 组件）'}")
+        if gpu.is_macos():
+            line("ONNX Runtime（人声分离）", True,
+                 f"onnxruntime {ort.__version__}，{'CoreML 可用' if gpu.ort_coreml_ready() else '只用 CPU'}")
+        else:
+            line("画面字识别 GPU", True,
+                 f"onnxruntime {ort.__version__}，{'CUDA 可用' if gpu.ocr_ready() else '只用 CPU（可安装 cuda-ocr 组件）'}")
     except Exception as e:
         line("onnxruntime", False, f"未安装（{e}）")
+    if gpu.is_macos() and gpu.mlx_whisper_ready():
+        line("语音识别（MLX-Whisper）", True, f"Apple Silicon Metal GPU 可用（{gpu.apple_chip_name() or 'Apple Silicon'}）")
     try:
         import ctranslate2
 
-        from . import gpu
-
-        n = ctranslate2.get_cuda_device_count()
-        line("语音识别（faster-whisper）", True, f"CTranslate2 {ctranslate2.__version__}，CUDA 设备 {n} 个，"
-             f"{'GPU 可用' if gpu.asr_ready() else '只用 CPU（可安装 cuda-asr 组件）'}")
+        if gpu.is_macos():
+            line("语音识别（faster-whisper）", True,
+                 f"CTranslate2 {ctranslate2.__version__}，CPU int8"
+                 + ("（已启用 MLX-Whisper 优先）" if gpu.mlx_whisper_ready() else "（可选安装 nyasub[mlx] 启用 GPU 加速）"))
+        else:
+            n = ctranslate2.get_cuda_device_count()
+            line("语音识别（faster-whisper）", True, f"CTranslate2 {ctranslate2.__version__}，CUDA 设备 {n} 个，"
+                 f"{'GPU 可用' if gpu.asr_ready() else '只用 CPU（可安装 cuda-asr 组件）'}")
     except Exception as e:
         line("（可选）语音识别", False, f"未安装（{e}）")
     try:
@@ -209,7 +224,12 @@ def cmd_components(args):
         components.remove(args.name)
     st = components.status()
     g = st["gpu"]
-    print(f"  显卡：{g['name'] or '未检测到 NVIDIA 显卡'}；CUDA 设备 {g['cuda_devices']} 个；画面字识别 {'可用 CUDA' if g['ort_cuda'] else '只用 CPU'}")
+    if g.get("platform") == "darwin":
+        print(f"  芯片：{g['name'] or 'macOS'}；视频编解码 {'VideoToolbox 可用' if g.get('videotoolbox') else 'CPU'}；"
+              f"人声分离 {'CoreML 可用' if g.get('ort_coreml') else 'CPU'}；"
+              f"语音识别 {'MLX GPU 可用' if g.get('asr_mlx') else 'CPU（可选安装 nyasub[mlx]）'}")
+    else:
+        print(f"  显卡：{g['name'] or '未检测到 NVIDIA 显卡'}；CUDA 设备 {g['cuda_devices']} 个；画面字识别 {'可用 CUDA' if g['ort_cuda'] else '只用 CPU'}")
     for c in st["components"]:
         print(f"  {'✓' if c['installed'] else '·'} {c['name']:9s} {c['label']}：{'已安装 ' + str(c['size_mb']) + ' MB' if c['installed'] else c['detail']}")
     return 0

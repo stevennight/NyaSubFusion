@@ -24,6 +24,13 @@ def setup():
         base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
         if (base / "ffmpeg").is_dir():
             os.environ["PATH"] = str(base / "ffmpeg") + os.pathsep + os.environ.get("PATH", "")
+    if sys.platform == "darwin":
+        # macOS 桌面应用（.app）启动时 PATH 只有 /usr/bin:/bin，补上常见工具目录（Homebrew / ~/.local/bin）
+        cur_parts = os.environ.get("PATH", "").split(os.pathsep)
+        extra = [str(p) for p in (Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path.home() / ".local" / "bin")
+                 if p.is_dir() and str(p) not in cur_parts]
+        if extra:
+            os.environ["PATH"] = os.pathsep.join(cur_parts + extra)
     dirs = set()
     if os.name == "nt":
         # pip 安装的 nvidia-* 包、以及 GPU 组件目录里的 DLL

@@ -181,6 +181,8 @@ def test_queue_video_option(monkeypatch, sample):
 
 
 def test_proxy_chains_are_8bit_and_halve_high_fps(monkeypatch):
+    import sys
+
     from nyasub.sources import media
 
     monkeypatch.setattr(media, "stream_fps", lambda path, index: (59.94, "60000/1001"))
@@ -190,25 +192,32 @@ def test_proxy_chains_are_8bit_and_halve_high_fps(monkeypatch):
         names.append(name)
         assert any("format=yuv420p" in f for f in vf)  # 10 位源也转成 8 位，浏览器才能放
         assert "fps=30000/1001" in vf and ("yadif_cuda" in vf[0] or "bwdif" in vf[0])
-    assert names[0].startswith("显卡") and "x264" in names[-1]
+    if sys.platform == "darwin":
+        assert names[0].startswith("VideoToolbox") and "x264" in names[-1]
+    else:
+        assert names[0].startswith("显卡") and "x264" in names[-1]
 
 
 def test_hls_gpu_decode_failing_midway_falls_back_to_cpu(monkeypatch, tmp_path):
     """有的片源显卡解码转了几秒就出错：换 CPU 解码重转；都失败时不留带结束标记的半截播放列表。"""
+    import sys
+
     from nyasub.sources import media
 
     monkeypatch.setattr(media, "_need", lambda *a: None)
     monkeypatch.setattr(media, "stream_fps", lambda path, index: (29.97, "30000/1001"))
     v = {"index": 0, "width": 3840, "height": 2160, "aspect": 16 / 9}
     out, tried = tmp_path / "preview", []
+    hw_tag = "videotoolbox" if sys.platform == "darwin" else "cuda"
+    expected_name = "CPU 解码 + VideoToolbox" if sys.platform == "darwin" else "CPU 解码 + NVENC"
 
     def run(cmd, duration, prog, cancel, cwd):
-        tried.append("cuda" in cmd)
+        tried.append("-hwaccel" in cmd and hw_tag in cmd)
         (tmp_path / "preview" / "index.m3u8").write_text("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n#EXT-X-ENDLIST\n")
         return (0, "", 3600.0) if len(tried) == 2 else (1, "Error reinitializing filters!", 2.0)
 
     monkeypatch.setattr(media, "run_ffmpeg", run)
-    assert media.make_hls("x.ts", out, v, 3600.0) == "CPU 解码 + NVENC" and tried == [True, False]
+    assert media.make_hls("x.ts", out, v, 3600.0) == expected_name and tried == [True, False]
 
     monkeypatch.setattr(media, "run_ffmpeg", lambda cmd, d, p, c, cwd: (1, "boom", 2.0))
     with pytest.raises(RuntimeError):
@@ -273,18 +282,22 @@ def test_direct_playable_needs_no_preview(sample):
 
 
 def test_auto_encoder_follows_source_codec_and_rate_is_capped():
+    import sys
+
     from nyasub.render.video import pick_encoders, rate_cap
 
-    assert pick_encoders("auto", "hevc") == ["hevc_nvenc", "libx265"]
-    assert pick_encoders("auto", "h264") == ["h264_nvenc", "libx264"]
-    assert pick_encoders("auto", "h264", bit_depth="10") == ["hevc_nvenc", "libx265"]
+    hw_hevc = "hevc_videotoolbox" if sys.platform == "darwin" else "hevc_nvenc"
+    hw_h264 = "h264_videotoolbox" if sys.platform == "darwin" else "h264_nvenc"
+    assert pick_encoders("auto", "hevc") == [hw_hevc, "libx265"]
+    assert pick_encoders("auto", "h264") == [hw_h264, "libx264"]
+    assert pick_encoders("auto", "h264", bit_depth="10") == [hw_hevc, "libx265"]
     assert pick_encoders("libx264", "hevc") == ["libx264"]
     uhd, fhd = (3840, 2160), (1920, 1080)
-    assert rate_cap(25_000_000, "hevc", uhd, uhd, "hevc_nvenc") == 25_000_000
-    assert rate_cap(25_000_000, "hevc", uhd, fhd, "hevc_nvenc") == 6_250_000      # 缩到 1080p：按面积折算
-    assert rate_cap(25_000_000, "hevc", uhd, uhd, "h264_nvenc") == 37_500_000     # H.265 → H.264 放宽 1.5 倍
+    assert rate_cap(25_000_000, "hevc", uhd, uhd, hw_hevc) == 25_000_000
+    assert rate_cap(25_000_000, "hevc", uhd, fhd, hw_hevc) == 6_250_000      # 缩到 1080p：按面积折算
+    assert rate_cap(25_000_000, "hevc", uhd, uhd, hw_h264) == 37_500_000     # H.265 → H.264 放宽 1.5 倍
     assert rate_cap(8_000_000, "h264", fhd, fhd, "libx264") == 8_000_000
-    assert rate_cap(0, "hevc", uhd, uhd, "hevc_nvenc") is None
+    assert rate_cap(0, "hevc", uhd, uhd, hw_hevc) is None
 
 
 def test_detect_bt2020_sdr(monkeypatch):

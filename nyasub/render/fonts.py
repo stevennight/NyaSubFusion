@@ -5,6 +5,7 @@ ASS 注音要逐块定位，宽度算准了，注音才能正好在底字上方�
 找不到字体时退回估算：全角字 1 个字号，半角 0.55 个字号。
 """
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,6 +20,12 @@ def _font_dirs():
     if os.name == "nt":
         dirs.append(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts")
         dirs.append(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts")
+    elif sys.platform == "darwin":
+        dirs += [Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"]
+        # macOS 15+ 把 PingFang SC、楷体、宋体等系统字体移到了 MobileAsset 目录
+        assets = Path("/System/Library/AssetsV2")
+        if assets.is_dir():
+            dirs += sorted(assets.glob("com_apple_MobileAsset_Font*"))
     else:
         dirs += [Path("/usr/share/fonts"), Path("/usr/local/share/fonts"), Path.home() / ".fonts",
                  Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"]
@@ -51,7 +58,7 @@ def _index():
     按 libass 的选法优先：家族名相同的常规体 > 家族名 > 全名 > 排版家族名；同级里非粗体优先。
     """
     files = _scan_files()
-    key = digest(["v2", [(f, os.path.getsize(f)) for f in files]])
+    key = digest(["v3", [(f, os.path.getsize(f)) for f in files]])
     cache_path = env.home() / "cache" / "fonts.json"
     cache = load_json(cache_path, {})
     if cache.get("key") == key:

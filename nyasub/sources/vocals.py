@@ -65,12 +65,16 @@ def ensure_model():
 
 
 class _Mdx:
-    def __init__(self, path, use_gpu):
+    def __init__(self, path, gpu=False):
         import onnxruntime as ort
 
-        from .. import gpu
+        from .. import gpu as gpu_mod
 
-        providers = gpu.ort_providers(use_gpu)
+        providers = gpu_mod.ort_providers(gpu)
+        if providers and providers[0] == "CoreMLExecutionProvider":
+            cache_dir = env.home() / "cache" / "coreml"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            providers = [("CoreMLExecutionProvider", {"ModelCacheDirectory": str(cache_dir)}), *providers[1:]]
         self.sess = ort.InferenceSession(str(path), providers=providers)
         active = self.sess.get_providers()
         if "CUDAExecutionProvider" in active:

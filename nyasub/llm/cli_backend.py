@@ -42,8 +42,20 @@ _POOL: dict[tuple[str, str], "_BaseWorker"] = {}
 
 
 def _fresh_path() -> str:
-    """合并当前进程 PATH 和 Windows 注册表里最新的用户/系统 PATH（装完 CLI 不用重启软件也能找到）。"""
+    """合并当前进程 PATH 和系统常见安装目录（Windows 注册表 / macOS Homebrew 等，装完 CLI 不用重启软件也能找到）。"""
     cur = os.environ.get("PATH", "")
+    if sys.platform == "darwin":
+        home = Path.home()
+        cur_parts = [p for p in cur.split(os.pathsep) if p]
+        extra = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(home / ".local" / "bin"),
+            str(home / ".cargo" / "bin"),
+            str(home / ".gemini" / "antigravity" / "bin"),
+            str(home / "Library" / "Application Support" / "Antigravity" / "bin"),
+        ]
+        return os.pathsep.join(cur_parts + [p for p in extra if p not in cur_parts])
     if sys.platform != "win32":
         return cur
     parts = [cur]
@@ -119,6 +131,9 @@ def find_executable(kind: str, configured: str = "") -> str | None:
             local_app / "agy" / "bin" / "agy.exe",
             home / ".agy" / "bin" / "agy.exe",
             home / ".local" / "bin" / ("agy.exe" if sys.platform == "win32" else "agy"),
+            home / ".gemini" / "antigravity" / "bin" / "agy",
+            home / "Library" / "Application Support" / "Antigravity" / "bin" / "agy",
+            Path("/opt/homebrew/bin/agy"),
             Path("/usr/local/bin/agy"),
         ]
     elif kind == "codex":
@@ -127,7 +142,10 @@ def find_executable(kind: str, configured: str = "") -> str | None:
             home / ".cargo" / "bin" / ("codex.exe" if sys.platform == "win32" else "codex"),
             local_app / "hermes" / "node" / "codex.cmd",
             home / ".local" / "bin" / ("codex.exe" if sys.platform == "win32" else "codex"),
+            Path("/opt/homebrew/bin/codex"),
             Path("/usr/local/bin/codex"),
+            Path("/Applications/Codex.app/Contents/Resources/codex"),
+            home / "Applications" / "Codex.app" / "Contents" / "Resources" / "codex",
         ]
     else:
         return None

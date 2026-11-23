@@ -93,3 +93,120 @@ def test_mlx_repo_mapping():
     assert asr._mlx_repo("large-v3") == "mlx-community/whisper-large-v3-mlx"
     assert asr._mlx_repo("large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
     assert asr._mlx_repo("custom/org-model") == "custom/org-model"
+
+
+def test_mlx_transcribe_detect_wav_and_fill_gaps(monkeypatch, tmp_path):
+    import types
+    import wave
+
+    import numpy as np
+
+    wav = tmp_path / "vocals.wav"
+    sr = 16000
+    # 0~1s 静音，1~3s 有声（将被第一次识别漏掉，由 fill_gaps 补回）
+    t = np.linspace(0, 2.0, sr * 2, endpoint=False)
+    voiced = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16)
+    pcm = np.concatenate([np.zeros(sr, dtype=np.int16), voiced])
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+
+    calls = []
+
+    def fake_transcribe(audio, **kwargs):
+        calls.append((isinstance(audio, str), kwargs))
+        if not isinstance(audio, str) and kwargs.get("word_timestamps") is False:
+            return {"language": "ja", "segments": []}
+        if isinstance(audio, str):
+            return {"language": "en", "segments": []}
+        return {
+            "language": "ja",
+            "segments": [{
+                "start": 0.1,
+                "end": 1.2,
+                "text": "助けて！",
+                "no_speech_prob": 0.05,
+                "avg_logprob": -0.2,
+                "words": [{"start": 0.1, "end": 1.2, "word": "助けて！"}],
+            }],
+        }
+
+    fake_mod = types.SimpleNamespace(transcribe=fake_transcribe)
+    monkeypatch.setitem(sys.modules, "mlx_whisper", fake_mod)
+    segs, lang = asr._transcribe_mlx(
+        str(wav),
+        {"model": "large-v3-turbo", "device": "cuda"},
+        language=None,
+        offset=10.0,
+        duration=3.0,
+        fill_gaps=True,
+        junk=(),
+        detect_wav=str(wav),
+    )
+    assert lang == "ja"
+    assert len(segs) == 1
+    assert segs[0]["second_pass"] is True
+    assert segs[0]["text"] == "助けて！"
+    assert any(is_str and kw.get("hallucination_silence_threshold") == 2.0 for is_str, kw in calls)
+
+
+def test_mlx_skips_ctranslate2_only_model(monkeypatch):
+    import types
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper", types.SimpleNamespace(transcribe=lambda *a, **k: {}))
+    assert asr._transcribe_mlx("a.wav", {"model": "kotoba-tech/kotoba-whisper-v2.0-faster"}) is None
+
+
+def test_vocals_coreml_provider_cache(monkeypatch, tmp_path):
+    import onnxruntime
+
+    from nyasub.sources import vocals
+
+    seen = []
+
+    class _FakeSess:
+        def __init__(self, path, providers=None):
+            seen.append(providers)
+
+        def get_providers(self):
+            return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+
+    monkeypatch.setenv("NYASUB_HOME", str(tmp_path))
+    monkeypatch.setattr(gpu, "ocr_ready", lambda: False)
+    monkeypatch.setattr(gpu, "ort_coreml_ready", lambda: True)
+    monkeypatch.setattr(onnxruntime, "InferenceSession", _FakeSess)
+    mdx = vocals._Mdx("m.onnx", gpu=True)
+    assert mdx.backend == "CoreML" and mdx.on_gpu is True
+    assert isinstance(seen[0][0], tuple) and seen[0][0][0] == "CoreMLExecutionProvider"
+    assert "ModelCacheDirectory" in seen[0][0][1]
+
+
+def test_cli_backend_fresh_path_darwin(monkeypatch):
+    from nyasub.llm import cli_backend
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    p = cli_backend._fresh_path()
+    assert "/opt/homebrew/bin" in p
+    assert ".gemini/antigravity/bin" in p
+
+
+def test_broadcast_fonts_include_macos_hiragino():
+    from nyasub.render import broadcast
+
+    assert "Hiragino Maru Gothic ProN" in broadcast.FONTS
+    assert "Hiragino Sans" in broadcast.FONTS
+
+
+def test_fonts_pingfang_found_on_darwin():
+    from nyasub.render import fonts
+
+    if sys.platform != "darwin":
+        return
+    fonts._index.cache_clear()
+    # macOS 系统自带 Hiragino Sans 与 PingFang SC（AssetsV2）
+    assert fonts.find("Hiragino Sans") is not None
+    assert fonts.find("PingFang SC") is not None
+

@@ -16,8 +16,8 @@ from . import fonts
 from .ass import ts
 
 # 电视机上的字幕字体是丸ゴシック；电脑上按这个顺序找（圆体优先，其次等宽的哥特体：ARIB 每个字占固定宽度）
-FONTS = ("Kosugi Maru", "M PLUS Rounded 1c", "Zen Maru Gothic", "BIZ UDGothic", "MS Gothic", "Noto Sans JP",
-         "Yu Gothic", "Meiryo")
+FONTS = ("Kosugi Maru", "M PLUS Rounded 1c", "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDGothic",
+         "MS Gothic", "Noto Sans JP", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo")
 _XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
 _ARIB = "{http://www.arib.or.jp/ns/arib-ttml/v1_0}"
 SUFFIX = "-broadcast.ass"   # 文件名：视频名.语言-broadcast.ass
