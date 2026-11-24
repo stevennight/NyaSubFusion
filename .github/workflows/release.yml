@@ -92,7 +92,7 @@ jobs:
           - label: windows_x64
             os: windows-2022
             target: x86_64-pc-windows-msvc
-            uv_extras: --extra asr --extra ocr --extra lang --extra server --extra gpu --group packaging
+            uv_extras: --extra asr --extra ocr --extra lang --extra server --group packaging
             tauri_args: --bundles nsis
           - label: macos_arm64
             os: macos-latest
@@ -105,9 +105,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install ffmpeg (macOS)
+      - name: Install ffmpeg-full (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: |
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -143,7 +145,11 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
-        run: uv sync ${{ matrix.uv_extras }}
+        run: |
+          uv sync ${{ matrix.uv_extras }}
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            uv pip install --no-config --python .venv/Scripts/python.exe onnxruntime
+          fi
 
       - name: Install JS dependencies
         shell: bash

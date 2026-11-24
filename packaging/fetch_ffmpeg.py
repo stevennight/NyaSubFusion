@@ -31,7 +31,7 @@ def _macos_rpaths(binary: Path) -> list[Path]:
 
 
 def _bundle_macos_dylibs(bin_dir: Path, roots: list[Path]):
-    """把 ffmpeg / ffprobe 依赖的非系统 .dylib 递归复制到 bin_dir（配合 @executable_path rpath 可独立运行）。"""
+    """把 ffmpeg / ffprobe 依赖的非系统 .dylib 递归复制到 bin_dir，并改写为 @loader_path 以独立运行。"""
     rpaths: list[Path] = []
     for b in roots:
         for p in _macos_rpaths(b):
@@ -42,16 +42,17 @@ def _bundle_macos_dylibs(bin_dir: Path, roots: list[Path]):
             rpaths.append(extra)
 
     seen: set[str] = set()
-    queue = list(roots)
+    queue: list[tuple[Path, Path]] = [(b, b.parent) for b in roots]
     while queue:
-        cur = queue.pop(0)
+        cur, orig_dir = queue.pop(0)
         out = subprocess.run(["otool", "-L", str(cur)], capture_output=True, text=True).stdout
+        changes: list[tuple[str, str]] = []
         for line in out.splitlines()[1:]:
             dep = line.strip().split(" (", 1)[0].strip()
             if not dep or dep.startswith(("/System/", "/usr/lib/")):
                 continue
             name = Path(dep).name
-            if name in seen:
+            if name == cur.name:
                 continue
             src = None
             if dep.startswith("@rpath/"):
@@ -61,15 +62,32 @@ def _bundle_macos_dylibs(bin_dir: Path, roots: list[Path]):
                     if cand.exists():
                         src = cand
                         break
+            elif dep.startswith("@loader_path/"):
+                rel = dep[len("@loader_path/"):]
+                for base in (orig_dir, cur.parent):
+                    cand = base / rel
+                    if cand.exists():
+                        src = cand
+                        break
             elif Path(dep).exists():
                 src = Path(dep)
             if not src:
                 continue
-            seen.add(name)
-            dst = bin_dir / name
-            shutil.copy2(src, dst)
-            dst.chmod(dst.stat().st_mode | 0o755)
-            queue.append(dst)
+            if name not in seen:
+                seen.add(name)
+                dst = bin_dir / name
+                shutil.copy2(src, dst)
+                dst.chmod(dst.stat().st_mode | 0o755)
+                queue.append((dst, src.resolve().parent))
+            target = f"@loader_path/{name}"
+            if dep != target:
+                changes.append((dep, target))
+        if cur.suffix == ".dylib" or changes:
+            if cur.suffix == ".dylib":
+                subprocess.run(["install_name_tool", "-id", f"@loader_path/{cur.name}", str(cur)], check=True)
+            for old, new in changes:
+                subprocess.run(["install_name_tool", "-change", old, new, str(cur)], check=True)
+            subprocess.run(["codesign", "--force", "--sign", "-", str(cur)], check=True, capture_output=True)
 
 
 def _fetch_macos():
