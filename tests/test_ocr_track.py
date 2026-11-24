@@ -322,3 +322,45 @@ def test_scan_parallel_matches_serial(monkeypatch, tmp_path):
         assert a["start"] == b["start"]
         assert a["end"] == b["end"]
         assert a["rect"] == b["rect"]
+
+
+def test_alternating_captions_not_bridged_by_background_sign():
+    """画面底部先后交替出现的两句字幕，即使边缘挨着右侧长时间停留的背景板，也不能通过背景板被合并成同一条。"""
+    board_top = ("ありのままの良浜は", (1021.0, 526.0, 1136.0, 591.0))
+    board_bot = ("また会おうね", (1027.0, 596.0, 1135.0, 652.0))
+    line1 = ("本日みなさまにお話をさせていただくのは", (214.0, 652.0, 1071.0, 707.0))
+    line2 = ("元ジャイアントパンダ飼育スタッフの吉田です", (176.0, 648.0, 1104.0, 710.0))
+    line3 = ("よろしくお願いいたします", (374.0, 651.0, 902.0, 708.0))
+
+    frames = []
+    for k in range(60):  # 10 秒（6 fps）
+        t = k / FPS
+        dets = [board_top, board_bot]
+        if k < 18:
+            dets.append(line1)
+        elif k < 36:
+            dets.append(line2)
+        elif k < 54:
+            dets.append(line3)
+        frames.append((t, dets))
+
+    ev = ocr._build_events(_track(frames), C, FPS, W, H, 3600)
+    texts = [e["text"] for e in ev]
+    assert line1[0] in texts
+    assert line2[0] in texts
+    assert line3[0] in texts
+    # 背景板单独成组，三句字幕各自独立且时间互不吞并
+    for line in (line1[0], line2[0], line3[0]):
+        e = next(x for x in ev if x["text"] == line)
+        assert e["end"] - e["start"] < 4.0
+
+    # 即使背景板只持续 4 秒（跟第一句刚好重合 2.5s >= 60%），也不能把前后不重合的第二句传递并进来
+    short_frames = []
+    for k in range(24):  # 4 秒
+        t = k / FPS
+        dets = [board_bot]
+        dets.append(line1 if k < 15 else line2)
+        short_frames.append((t, dets))
+    ev2 = ocr._build_events(_track(short_frames), C, FPS, W, H, 3600)
+    assert any(line1[0] in e["text"] and line2[0] not in e["text"] for e in ev2)
+    assert any(line2[0] in e["text"] and line1[0] not in e["text"] for e in ev2)

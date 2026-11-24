@@ -305,7 +305,7 @@ def _union(rs):
 def _together(a, b):
     """两条字在时间上大半重叠（同一个标题被切成几块，几块一起出现、一起消失）。"""
     inter = min(a["end"], b["end"]) - max(a["start"], b["start"])
-    return inter >= 0.5 * min(a["end"] - a["start"], b["end"] - b["start"])
+    return inter >= 0.5 * max(a["end"] - a["start"], b["end"] - b["start"])
 
 
 EXCLUDE_MARGIN = 0.04  # 模型给的框会偏一点：排除区外扩这么多（占画面宽高的比例）再看
@@ -603,9 +603,12 @@ def fold_dups(events):
         if big["id"] in gone:
             continue
         for small in keep[i + 1:]:
+            inter = min(big["end"], small["end"]) - max(big["start"], small["start"])
             if (small["id"] in gone or big.get("moving") or small.get("moving") or not norm(small["text"])
                     or (big.get("dropped") and not small.get("dropped"))  # 不把有用的并进杂讯里
-                    or _covered(big["rect"], small["rect"]) < 0.8 or not _together(big, small)
+                    or (big.get("unverified") and not small.get("unverified"))  # 不把已确认的并进未确认里
+                    or _covered(big["rect"], small["rect"]) < 0.8
+                    or inter < 0.5 * min(big["end"] - big["start"], small["end"] - small["start"])
                     or norm(small["text"]) not in norm(big["text"])):
                 continue
             _merge_into(big, [small])

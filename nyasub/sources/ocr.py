@@ -865,8 +865,13 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
              if it["moving"] or (it["end"] - it["start"] <= max_len
                                  and acc[it["_key"]] <= duration * 0.25 and acc[it["_key"]] <= max(60.0, duration * 0.1))]
 
-    # 并查集：同一时间、空间相邻的行合成一条
+    # 并查集：同一时间、空间相邻的行合成一条。静态字合并时要求整组所有成员共同在画面的时长仍占整组总跨度的 60% 以上，
+    # 防止前后交替出现的两句字幕通过旁边长时间停留的背景招牌/海报被传递并成一条（进而丢失前几句）。
     parent = list(range(len(items)))
+    g_smin = [it["start"] for it in items]
+    g_smax = [it["start"] for it in items]
+    g_emin = [it["end"] for it in items]
+    g_emax = [it["end"] for it in items]
 
     def find(i):
         while parent[i] != i:
@@ -881,8 +886,20 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
             b = items[bi]
             if b["start"] >= a["end"]:
                 break
-            if _same_group(a, b):
-                parent[find(ai)] = find(bi)
+            if not _same_group(a, b):
+                continue
+            ra, rb = find(ai), find(bi)
+            if ra == rb:
+                continue
+            if not a.get("moving") and not b.get("moving"):
+                smin = min(g_smin[ra], g_smin[rb])
+                smax = max(g_smax[ra], g_smax[rb])
+                emin = min(g_emin[ra], g_emin[rb])
+                emax = max(g_emax[ra], g_emax[rb])
+                if emin - smax < 0.6 * (emax - smin):
+                    continue
+                g_smin[rb], g_smax[rb], g_emin[rb], g_emax[rb] = smin, smax, emin, emax
+            parent[ra] = rb
     groups = defaultdict(list)
     for i in range(len(items)):
         groups[find(i)].append(items[i])
@@ -934,6 +951,9 @@ def _same_group(a, b):
     # 滚动的字位置一直在变，按框拼行会把整段片尾字幕连同背景里的字拼成一大条：只拼一起移动、同一行紧挨着的
     if a.get("moving") or b.get("moving"):
         return bool(a.get("moving") and b.get("moving")) and a["vertical"] == b["vertical"] and _moving_pair(a, b)
+    span = max(a["end"], b["end"]) - min(a["start"], b["start"])
+    if ov < 0.6 * span:
+        return False
     if a["vertical"] != b["vertical"]:
         return False
     ra, rb = a["rect"], b["rect"]
@@ -1008,7 +1028,10 @@ def _compose(members, W, H):
         clip = lambda r: (min(max(r[0], 0.0), W), min(max(r[1], 0.0), H), min(max(r[2], 0.0), W), min(max(r[3], 0.0), H))
         members = [dict(m, rect=clip(m["tr"].rect_at(ref))) for m in members]
     else:
-        latest = max(members, key=lambda m: m["start"])
+        smax = max(m["start"] for m in members)
+        emin = min(m["end"] for m in members)
+        in_common = [m for m in members if m["tr"].snap_t is not None and smax <= m["tr"].snap_t <= emin]
+        latest = max(in_common or members, key=lambda m: m["start"])
     members = _dedupe_pieces(members)
     vertical = members[0]["vertical"]
     if not vertical:

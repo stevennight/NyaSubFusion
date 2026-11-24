@@ -240,6 +240,12 @@ def test_refine_moments_shared_when_on_screen():
         1846.20: ["o1476"], 1847.50: ["o1482"], 1849.30: ["o1480"],
     }
 
+    # 长时间背景大框和末尾才出现的短字幕不算一起出现：不能共用同一帧
+    long_bg = ev("o280", 1323.82, 1333.52, 1332.57, [0.1375, 0.7306, 0.9148, 0.9861])
+    short_cap = ev("o283", 1330.02, 1332.62, 1330.17, [0.2918, 0.9042, 0.7047, 0.9833])
+    m3 = plan_moments([long_bg, short_cap])
+    assert {t: [e["id"] for e in es] for t, es in m3.items()} == {1330.17: ["o283"], 1332.57: ["o280"]}
+
 
 def test_refine_match_merges_split_title_and_finds_misses():
     from nyasub.llm.refine import match_moment, read_items
@@ -900,6 +906,15 @@ def test_refine_folds_duplicate_pieces_of_same_text():
     assert fold_dups(ev) == 2
     assert [e["id"] for e in ev] == ["o146", "o149", "o200", "v10"]
     assert full["start"] == 1198.92 and set(full["merged"]) == {"o147", "o148"}
+
+    # 已确认的短字幕不能被并进未确认的大框长事件里
+    unverified_big = {"id": "o280", "start": 1323.82, "end": 1333.52, "text": "よろしくお願いいたします",
+                      "rect": [0.1375, 0.7306, 0.9148, 0.9861], "unverified": True}
+    verified_cap = {"id": "o283", "start": 1330.02, "end": 1332.62, "text": "よろしくお願いいたします",
+                    "rect": [0.2918, 0.9042, 0.7047, 0.9833]}
+    ev2 = [unverified_big, verified_cap]
+    assert fold_dups(ev2) == 0
+    assert [e["id"] for e in ev2] == ["o280", "o283"]
 
 
 def test_music_mark_subtitle_does_not_stretch_cue():
