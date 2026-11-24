@@ -472,7 +472,8 @@ def test_burn_resumable_chunks_and_resume(tmp_path, monkeypatch):
     assert not any("enc_0000.part.mp4" in str(x) for cmd in enc_calls for x in cmd)
     assert out.exists() and not chunks_dir.exists()
     out_streams = probe_streams(out)
-    assert any(s["codec_type"] == "video" for s in out_streams)
+    v_out = next(s for s in out_streams if s["codec_type"] == "video")
     assert any(s["codec_type"] == "audio" for s in out_streams)
-    assert float(out_streams[0]["duration"]) >= 5.5
+    assert int(v_out["nb_frames"]) == 150  # 6s * 25fps，零丢帧零重复
+    assert abs(float(v_out["duration"]) - 6.0) < 0.05
 

@@ -410,6 +410,7 @@ def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_ba
 
 
 CHUNK_SECONDS = 300  # 分段续传压制每段目标时长（秒）
+CHUNK_PREROLL = 3.0  # 预读秒数：覆盖上一个 GOP，避免 Open-GOP HEVC 在接缝处丢 RASL 帧
 
 
 def _shift_ass_copy(src_ass, dst_ass, offset_sec):
@@ -436,7 +437,7 @@ def _burn_fingerprint(video, ass_path, encoder, quality, w, h, bit_depth, do_709
     st = Path(video).stat()
     h_obj = hashlib.sha256()
     payload = json.dumps({
-        "video": str(Path(video).resolve()), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+        "v": 2, "video": str(Path(video).resolve()), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
         "ass_sha256": hashlib.sha256(Path(ass_path).read_bytes()).hexdigest(),
         "encoder": encoder, "quality": quality, "w": w, "h": h, "bit_depth": bit_depth,
         "do_709": bool(do_709), "extra_args": extra_args, "extra_vf": extra_vf, "chunk_seconds": chunk_seconds,
@@ -448,7 +449,8 @@ def _burn_fingerprint(video, ass_path, encoder, quality, w, h, bit_depth, do_709
 def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w, h, inter, src_10, do_709,
                     encoder, quality, bit_depth, extra_args, extra_vf_clean, acodec, src_bps, tried,
                     duration, cancel, chunk_seconds=CHUNK_SECONDS):
-    """分段续传压制：先按关键帧无损切成若干 MKV 片段，逐段压制并落盘记录进度，最后无损拼接并混入原音轨。"""
+    """分段续传压制：先对 TS/M2TS 无损封装一份完整 MKV（非 TS 直接读原片），再按时间窗预读上一个 GOP 做精确帧裁剪逐段压制
+    （避免 Open-GOP HEVC 无损硬切每段掉帧导致音画漂移），最后无损拼接并混入原音轨。"""
     from ..sources import media
 
     chunks_dir = work / "chunks"
@@ -459,9 +461,8 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
     if manifest_path.exists():
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if data.get("fingerprint") == fp and data.get("chunks") and all(
-                (chunks_dir / c["file"]).exists() for c in data["chunks"]
-            ):
+            src_ok = not data.get("remuxed") or (chunks_dir / "src.mkv").exists()
+            if data.get("fingerprint") == fp and data.get("chunks") and src_ok:
                 manifest = data
         except Exception:
             manifest = None
@@ -475,33 +476,52 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
         v_offset = max(0.0, v_start - min(a_starts)) if a_starts and v_start > min(a_starts) else 0.0
         if v_offset > 10.0:
             v_offset = 0.0
-        csv_path = chunks_dir / "chunks.csv"
-        split_cmd = [
-            "ffmpeg", "-y", "-v", "error", "-i", str(Path(video).resolve()),
-            "-map", f"0:{vinfo['index']}", "-an", "-sn", "-dn", "-c:v", "copy",
-            "-f", "segment", "-segment_time", str(max(1, int(chunk_seconds))),
-            "-reset_timestamps", "1", "-segment_list", str(csv_path),
-            str(chunks_dir / "src_%04d.mkv"),
-        ]
-        env.log(f"分段续传压制：按每 {chunk_seconds} 秒无损切分视频片段…")
-        rc, tail, _ = media.run_ffmpeg(split_cmd, duration, cancel=cancel, cwd=str(chunks_dir))
-        if rc != 0:
-            raise RuntimeError(f"分段切分失败：{tail or rc}")
+
+        is_ts = Path(video).suffix.lower() in _TS_SUFFIXES
+        if is_ts:
+            src_file = chunks_dir / "src.mkv"
+            remux_cmd = [
+                "ffmpeg", "-y", "-v", "error", "-i", str(Path(video).resolve()),
+                "-map", f"0:{vinfo['index']}", "-an", "-sn", "-dn", "-c:v", "copy", str(src_file),
+            ]
+            env.log("分段续传压制：正在无损封装 TS 视频流（仅一次，确保精确帧定位与硬解稳定）…")
+            rc, tail, _ = media.run_ffmpeg(remux_cmd, duration, cancel=cancel, cwd=str(chunks_dir))
+            if rc != 0:
+                raise RuntimeError(f"无损封装 TS 失败：{tail or rc}")
+            pinfo = media.probe(str(src_file))
+            src_start = float(pinfo.get("start_time") or 0.0)
+            src_dur = float(pinfo.get("duration") or duration or 0.0) - src_start
+            first_offset = v_offset + src_start
+        else:
+            src_file = Path(video).resolve()
+            src_dur = float(duration or 0.0)
+            first_offset = v_offset
+
+        seg_len = max(1.0, float(chunk_seconds))
+        total_span = max(seg_len, src_dur) if src_dur > 0 else seg_len
         chunks = []
-        for line in csv_path.read_text(encoding="utf-8").splitlines():
-            parts = [x.strip() for x in line.split(",")]
-            if len(parts) >= 3:
-                chunks.append({"file": parts[0], "start": float(parts[1]), "end": float(parts[2])})
-        if not chunks:
-            raise RuntimeError("分段切分未生成任何视频片段")
-        manifest = {"fingerprint": fp, "v_offset": v_offset, "chunks": chunks, "done": [], "chosen": None}
+        t = 0.0
+        while t < total_span - 0.05:
+            t_end = min(total_span, t + seg_len)
+            is_last = (total_span - t_end) < 0.05
+            chunks.append({"start": round(t, 6), "end": round(t_end, 6), "last": is_last})
+            if is_last:
+                break
+            t = t_end
+        manifest = {
+            "fingerprint": fp, "remuxed": is_ts, "src": str(src_file),
+            "v_index": 0 if is_ts else vinfo["index"],
+            "first_offset": first_offset, "chunks": chunks, "done": [], "chosen": None,
+        }
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     else:
         n_done = sum(1 for i in manifest.get("done", []) if (chunks_dir / f"enc_{i:04d}.mp4").exists())
         env.log(f"检测到未完成的分段压制缓存（已完成 {n_done}/{len(manifest['chunks'])} 段），继续压制")
 
     chunks = manifest["chunks"]
-    v_offset = float(manifest.get("v_offset") or 0.0)
+    src_file = Path(manifest["src"])
+    v_index = int(manifest.get("v_index", 0))
+    first_offset = float(manifest.get("first_offset") or 0.0)
     done_set = {i for i in manifest.get("done", []) if (chunks_dir / f"enc_{i:04d}.mp4").exists()}
     chosen = tuple(manifest["chosen"]) if manifest.get("chosen") else None
     total_dur = duration or sum(max(0.0, c["end"] - c["start"]) for c in chunks)
@@ -514,13 +534,16 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
     for idx, ch in enumerate(chunks):
         if cancel is not None and cancel.is_set():
             raise Stopped()
-        ch_dur = max(0.1, ch["end"] - ch["start"])
+        t0, t1 = float(ch["start"]), float(ch["end"])
+        ch_dur = max(0.1, t1 - t0)
         ch_out = chunks_dir / f"enc_{idx:04d}.mp4"
         if idx in done_set and ch_out.exists():
             continue
-        _shift_ass_copy(ass_path, work / "sub.ass", ch["start"] + v_offset)
+        pre_t = max(0.0, t0 - CHUNK_PREROLL) if t0 > 0 else 0.0
+        trim_ss = t0 - pre_t
+        # 滤镜图（含 subtitles）看到的 pts_time=0 对应 pre_t 时刻，即原片时间轴的 pre_t + first_offset
+        _shift_ass_copy(ass_path, work / "sub.ass", pre_t + first_offset)
         ch_part = chunks_dir / f"enc_{idx:04d}.part.mp4"
-        ch_src = chunks_dir / ch["file"]
         candidates = [chosen] if chosen else tried
         encoded_ok = False
         for i, (enc, use_gpu) in enumerate(candidates):
@@ -541,7 +564,11 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
             )
             out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, "-an"]
             out_args = merge_ffmpeg_args(out_args, extra_args)
-            cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(ch_src), "-map", "0:v:0",
+            in_seek = ["-ss", f"{pre_t:.6f}"] if pre_t > 0 else []
+            out_seek = ["-ss", f"{trim_ss:.6f}"] if trim_ss > 0 else []
+            out_len = [] if ch.get("last") else ["-t", f"{ch_dur:.6f}"]
+            cmd = ["ffmpeg", "-y", "-v", "error", *in_seek, *pre, "-i", str(src_file),
+                   "-map", f"0:{v_index}", *out_seek, *out_len,
                    "-vf", ",".join(vf), *out_args, str(ch_part)]
             how = f"{enc}{'，显卡解码' if pre else ''}，{'10-bit' if use_10 else '8-bit'}" + ("，BT.709" if do_709 else "")
             env.log(f"分段压制 [{idx + 1}/{len(chunks)}]：{how}，画质 {quality}，{w}×{h}")
@@ -571,7 +598,7 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
 
     concat_list = chunks_dir / "concat.txt"
     concat_list.write_text("\n".join(f"file 'enc_{i:04d}.mp4'" for i in range(len(chunks))) + "\n", encoding="utf-8")
-    offset_args = ["-itsoffset", f"{v_offset:.6f}"] if v_offset > 0.001 else []
+    offset_args = ["-itsoffset", f"{first_offset:.6f}"] if first_offset > 0.001 else []
     concat_cmd = [
         "ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", *offset_args, "-i", str(concat_list),
         "-i", str(Path(video).resolve()), "-map", "0:v:0", "-map", "1:a?",
