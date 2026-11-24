@@ -4,6 +4,7 @@
 """
 import argparse
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -16,6 +17,12 @@ def read_versions() -> dict[str, str]:
 
     with open(ROOT / "pyproject.toml", "rb") as f:
         versions["pyproject.toml"] = tomllib.load(f)["project"]["version"]
+
+    init_text = (ROOT / "nyasub/__init__.py").read_text(encoding="utf-8")
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
+    if not m:
+        raise SystemExit("无法在 nyasub/__init__.py 中解析 __version__")
+    versions["nyasub/__init__.py"] = m.group(1)
 
     with open(ROOT / "desktop/src-tauri/Cargo.toml", "rb") as f:
         versions["desktop/src-tauri/Cargo.toml"] = tomllib.load(f)["package"]["version"]
