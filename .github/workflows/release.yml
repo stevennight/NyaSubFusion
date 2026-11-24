@@ -60,7 +60,7 @@ jobs:
           uv pip install onnxruntime
 
       - name: Test Python
-        run: uv run pytest -q -m "not slow"
+        run: uv run --no-sync pytest -q -m "not slow"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -153,11 +153,11 @@ jobs:
 
       - name: Prepare ffmpeg
         shell: bash
-        run: uv run python packaging/fetch_ffmpeg.py
+        run: uv run --no-sync python packaging/fetch_ffmpeg.py
 
       - name: Build web and Python core
         shell: bash
-        run: uv run python packaging/build_core.py
+        run: uv run --no-sync python packaging/build_core.py
 
       - name: Build Tauri installer
         working-directory: desktop

@@ -42,7 +42,7 @@ jobs:
           uv pip install onnxruntime
 
       - name: Test Python
-        run: uv run pytest -q -m "not slow"
+        run: uv run --no-sync pytest -q -m "not slow"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
