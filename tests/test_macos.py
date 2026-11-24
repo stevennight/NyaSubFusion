@@ -210,3 +210,48 @@ def test_fonts_pingfang_found_on_darwin():
     assert fonts.find("Hiragino Sans") is not None
     assert fonts.find("PingFang SC") is not None
 
+
+def test_asr_local_engine_config_and_override(monkeypatch):
+    from nyasub.core.config import AsrCfg
+
+    assert AsrCfg().local_engine == "auto"
+    assert AsrCfg(local_engine="mlx").local_engine == "mlx"
+    assert AsrCfg(local_engine="faster-whisper").local_engine == "faster-whisper"
+
+    mlx_called = []
+    monkeypatch.setattr(gpu, "mlx_whisper_ready", lambda: True)
+    monkeypatch.setattr(asr, "_transcribe_mlx", lambda *a, **k: (mlx_called.append(True), ([], "ja"))[1])
+
+    # auto / mlx 走 MLX
+    assert asr.transcribe("a.wav", {"model": "tiny", "device": "cuda", "local_engine": "auto"}) == ([], "ja")
+    assert asr.transcribe("a.wav", {"model": "tiny", "device": "cpu", "local_engine": "mlx"}) == ([], "ja")
+    assert len(mlx_called) == 2
+
+    # 显式指定 faster-whisper 时跳过 MLX
+    import faster_whisper
+
+    class _Boom(Exception):
+        pass
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", lambda *a, **k: (_ for _ in ()).throw(_Boom()))
+    monkeypatch.setattr("nyasub.sources.asr_models.resolve", lambda name, root=None: name)
+    try:
+        asr.transcribe("a.wav", {"model": "tiny", "device": "cuda", "compute_type": "float16", "local_engine": "faster-whisper"})
+    except _Boom:
+        pass
+    assert len(mlx_called) == 2
+
+
+def test_codex_found_in_chatgpt_app_on_darwin():
+    from pathlib import Path
+
+    from nyasub.llm import cli_backend
+
+    if sys.platform != "darwin":
+        return
+    bundled = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+    if bundled.is_file():
+        hit = cli_backend.find_executable("codex")
+        assert hit is not None
+
+

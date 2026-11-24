@@ -16,18 +16,25 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
     from .. import gpu
     from .asr_models import resolve
 
-    if c["device"] != "cpu" and gpu.mlx_whisper_ready():
+    engine = str(c.get("local_engine") or "auto")
+    want_mlx = (engine == "mlx") or (engine == "auto" and c["device"] != "cpu")
+    if want_mlx and gpu.mlx_whisper_ready():
         res = _transcribe_mlx(wav, c, language=language, offset=offset, duration=duration,
                               fill_gaps=fill_gaps, junk=junk, detect_wav=detect_wav)
         if res is not None:
             return res
+    elif engine == "mlx" and not gpu.mlx_whisper_ready():
+        log("未检测到可用的 mlx-whisper，改用 faster-whisper")
 
     from faster_whisper import WhisperModel
 
     root = c.get("download_root") or None
     if c["device"] == "cuda" and not gpu.asr_ready():
         if gpu.is_macos():
-            log("macOS 未安装 mlx-whisper，语音识别改用 CPU（int8）；如需 Apple Silicon GPU 加速可安装 nyasub[mlx]")
+            if engine == "faster-whisper":
+                log("已指定本机引擎为 faster-whisper，macOS 使用 CPU（int8）运行")
+            else:
+                log("macOS 未安装 mlx-whisper，语音识别改用 CPU（int8）；如需 Apple Silicon GPU 加速可安装 nyasub[mlx]")
         else:
             log("没有可用的 CUDA（缺显卡或“语音识别 GPU 加速”组件），语音识别用 CPU，会慢一些")
         c = dict(c, device="cpu", compute_type="int8")

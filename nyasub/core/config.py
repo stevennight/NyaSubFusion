@@ -56,7 +56,8 @@ class AsrCfg(_M):
     separate: Literal["auto", "on", "off"] = "auto"  # 人声分离（去掉背景音乐再识别）：auto = 没有字幕时才做
     download_root: str = ""
     hf_endpoint: str = ""                    # 模型下载镜像，例如 https://hf-mirror.com
-    backend: Literal["local", "api"] = "local"  # local：本机 faster-whisper；api：云端接口（按时长付费，见 sources/asr_api.py）
+    backend: Literal["local", "api"] = "local"  # local：本机 Whisper（macOS 优先 MLX-Whisper，其余 faster-whisper）；api：云端接口
+    local_engine: Literal["auto", "mlx", "faster-whisper"] = "auto"  # 本机语音引擎：auto（macOS 优先 MLX）/ mlx / faster-whisper
     api_kind: Literal["transcribe", "gemini"] = "transcribe"  # transcribe：/v1/audio/transcriptions；gemini：多模态大模型听音频
     api_provider: str = ""                   # 用哪个接口（llm.providers 里的 name）；空 = 和翻译用同一个
     api_model: str = "gpt-transcribe"        # 空 = 按 api_kind 的默认模型

@@ -389,7 +389,23 @@ const providerOpt = (p: Provider, vision = false) => {
 function AsrStep({ ctx }: { ctx: StepCtx }) {
   const { val, set, doc, modelLists, modelKey, fetchModels } = ctx;
   const [models, setModels] = useState<{ id: string; label: string; desc: string }[]>([]);
-  useEffect(() => { api.asrModels().then(setModels).catch(() => {}); }, []);
+  const [gpu, setGpu] = useState<{ platform?: string; asr_mlx?: boolean; asr_cuda?: boolean } | null>(null);
+  useEffect(() => {
+    api.asrModels().then(setModels).catch(() => {});
+    api.components().then((r) => setGpu(r.gpu)).catch(() => {});
+  }, []);
+  const isMac = gpu?.platform === "darwin";
+  const hasMlx = Boolean(gpu?.asr_mlx);
+  const localEngine = String(val("asr.local_engine") ?? "auto");
+  const localEngineLabel = isMac && hasMlx
+    ? (localEngine === "faster-whisper" ? "faster-whisper（CPU）" : "MLX-Whisper（Metal GPU）")
+    : isMac ? "faster-whisper（CPU）" : "faster-whisper";
+  const localTimingOption = isMac && hasMlx
+    ? `本机 Whisper（${localEngine === "faster-whisper" ? "faster-whisper CPU" : "MLX GPU"} · 免费逐字时间）`
+    : isMac ? "本机 faster-whisper（免费 · CPU 逐字时间）" : "本机 faster-whisper（免费 · 借 GPU 逐字时间）";
+  const localBackendHint = isMac && hasMlx
+    ? "Apple Silicon MLX-Whisper（Metal GPU）或 faster-whisper（CPU），免费"
+    : isMac ? "faster-whisper（CPU int8），免费；安装 nyasub[mlx] 可启用 GPU" : "faster-whisper，免费，要显卡才快";
   const backend = String(val("asr.backend") ?? "local");
   const kind = (String(val("asr.api_kind") ?? "transcribe") in ASR_API_KINDS ? String(val("asr.api_kind") ?? "transcribe") : "transcribe") as keyof typeof ASR_API_KINDS;
   const allProviders = (deepGet(doc.effective, "llm.providers") as Provider[] | undefined) ?? [];
@@ -429,7 +445,7 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
       <div className="kv">
         <Lbl ctx={ctx} k="asr.backend">识别方式</Lbl>
         <div className="row"><Seg value={backend} options={[["local", "本机"], ["api", "云端接口"]]} onChange={(v) => set("asr.backend", v)} />
-          <span className="hint">{backend === "api" ? "按音频时长付费，一小时节目约 0.2~0.4 美元" : "faster-whisper，免费，要显卡才快"}</span></div>
+          <span className="hint">{backend === "api" ? "按音频时长付费，一小时节目约 0.2~0.4 美元" : localBackendHint}</span></div>
         {backend === "api" ? (<>
           <Lbl ctx={ctx} k="asr.api_provider">接口</Lbl>
           <select className="inp" value={String(val("asr.api_provider") ?? "")} onChange={(e) => set("asr.api_provider", e.target.value)}>
@@ -468,16 +484,23 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
             />
             <Lbl ctx={ctx} k="asr.api_timing_provider">对时接口</Lbl>
             <div className="row">
-              <select className="inp" style={{ maxWidth: 320 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>
+              <select className="inp" style={{ maxWidth: 340 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>
                 <option value="">和识别用同一个{asrProviderName ? `（${asrProviderName}）` : ""}</option>
-                <option value="local">本机 faster-whisper（免费 · 借 GPU 逐字时间）</option>
+                <option value="local">{localTimingOption}</option>
                 {allProviders.filter((p) => !p.kind || p.kind === "openai").map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
               </select>
-              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差几秒。选「本机 faster-whisper」可免费用显卡跑逐字时间来对齐大模型文字；也可单独选一个 OpenAI 兼容的转写接口（如 OpenRouter / OpenAI），不再受主识别接口限制。" />
+              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差几秒。选「本机」可免费跑逐字时间来对齐大模型文字（macOS Apple Silicon 优先 MLX GPU）；也可单独选一个 OpenAI 兼容的转写接口（如 OpenRouter / OpenAI），不再受主识别接口限制。" />
             </div>
-            {timingLocal ? (
-              <><span /><div className="hint">使用本机 faster-whisper（{String(val("asr.model") || "large-v3")}）提取逐字时间，对齐上面多模态大模型识别出的精准文字。</div></>
-            ) : (<>
+            {timingLocal ? (<>
+              {isMac && hasMlx && (<>
+                <Lbl ctx={ctx} k="asr.local_engine">本机引擎</Lbl>
+                <div className="row">
+                  <Seg value={localEngine} options={[["auto", "自动（MLX）"], ["mlx", "MLX GPU"], ["faster-whisper", "faster-whisper"]]} onChange={(v) => set("asr.local_engine", v)} />
+                  <span className="hint">MLX 走 Apple Silicon GPU，faster-whisper 走 CPU</span>
+                </div>
+              </>)}
+              <span /><div className="hint">使用本机 {localEngineLabel}（{String(val("asr.model") || "large-v3")}）提取逐字时间，对齐上面多模态大模型识别出的精准文字。</div>
+            </>) : (<>
               <Lbl ctx={ctx} k="asr.api_timing_model">对时用</Lbl>
               <div className="row">
                 <ModelPicker
@@ -498,6 +521,13 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
             </>)}
           </>)}
         </>) : (<>
+          {isMac && hasMlx && (<>
+            <Lbl ctx={ctx} k="asr.local_engine">本机引擎</Lbl>
+            <div className="row">
+              <Seg value={localEngine} options={[["auto", "自动（MLX）"], ["mlx", "MLX GPU"], ["faster-whisper", "faster-whisper"]]} onChange={(v) => set("asr.local_engine", v)} />
+              <span className="hint">MLX 走 Apple Silicon GPU，faster-whisper 走 CPU</span>
+            </div>
+          </>)}
           <Lbl ctx={ctx} k="asr.model">模型</Lbl>
           <div className="row">
             <select className="inp" value={String(val("asr.model"))} onChange={(e) => set("asr.model", e.target.value)}>

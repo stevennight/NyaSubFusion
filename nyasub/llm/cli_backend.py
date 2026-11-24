@@ -144,6 +144,8 @@ def find_executable(kind: str, configured: str = "") -> str | None:
             home / ".local" / "bin" / ("codex.exe" if sys.platform == "win32" else "codex"),
             Path("/opt/homebrew/bin/codex"),
             Path("/usr/local/bin/codex"),
+            Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+            home / "Applications" / "ChatGPT.app" / "Contents" / "Resources" / "codex-cli" / "bin" / "codex",
             Path("/Applications/Codex.app/Contents/Resources/codex"),
             home / "Applications" / "Codex.app" / "Contents" / "Resources" / "codex",
         ]
