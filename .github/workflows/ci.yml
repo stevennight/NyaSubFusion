@@ -39,7 +39,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           uv sync --extra asr --extra ocr --extra lang --extra server --group dev
-          uv pip install onnxruntime
+          uv pip install --no-config --python .venv/bin/python onnxruntime
 
       - name: Test Python
         run: uv run --no-sync pytest -q -m "not slow"
