@@ -1,0 +1,226 @@
+name: Release
+
+# Push a tag v<VERSION> to build installers (Windows x64 NSIS, macOS arm64 DMG),
+# generate SHA256SUMS, and publish a GitHub Release. Versions with a suffix
+# (e.g. 0.6.0-beta.1) are published as pre-releases. Running manually
+# (workflow_dispatch) performs a dry-run build and uploads artifacts without
+# publishing a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify versions and tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check versions and tag
+        id: meta
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="$(python3 packaging/check_version.py --tag "${GITHUB_REF_NAME}" --print)"
+          else
+            version="$(python3 packaging/check_version.py --print)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install ffmpeg for tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: uv sync --extra asr --extra ocr --extra lang --extra server --group dev
+
+      - name: Test Python
+        run: uv run pytest -q -m "not slow"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 12
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Typecheck web
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web typecheck
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows_x64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            uv_extras: --extra asr --extra ocr --extra lang --extra server --extra gpu --group packaging
+            tauri_args: --bundles nsis
+          - label: macos_arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            uv_extras: --extra asr --extra ocr --extra lang --extra server --extra mlx --group packaging
+            tauri_args: --config src-tauri/tauri.macos.conf.json --bundles dmg
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 12
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            desktop/pnpm-lock.yaml
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Install Python dependencies
+        shell: bash
+        run: uv sync ${{ matrix.uv_extras }}
+
+      - name: Install JS dependencies
+        shell: bash
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir desktop install --frozen-lockfile
+
+      - name: Prepare ffmpeg
+        shell: bash
+        run: uv run python packaging/fetch_ffmpeg.py
+
+      - name: Build web and Python core
+        shell: bash
+        run: uv run python packaging/build_core.py
+
+      - name: Build Tauri installer
+        working-directory: desktop
+        shell: bash
+        run: pnpm tauri build --ci --target ${{ matrix.target }} ${{ matrix.tauri_args }} -- --locked
+
+      - name: Collect installers
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          bundle="desktop/src-tauri/target/${TARGET}/release/bundle"
+          mkdir -p dist
+          one() { # <find pattern> <destination name>
+            local found
+            found="$(find "$bundle" -type f -name "$1")"
+            test "$(printf '%s\n' "$found" | grep -c .)" -eq 1 || { echo "expected one $1 in $bundle, found: $found" >&2; exit 1; }
+            cp "$found" "dist/$2"
+          }
+          case "$LABEL" in
+            windows_x64)
+              one '*-setup.exe' "NyaSubFusion_${VERSION}_windows_x64-setup.exe"
+              ;;
+            macos_arm64)
+              one '*.dmg' "NyaSubFusion_${VERSION}_macos_arm64.dmg"
+              ;;
+          esac
+          ls -lh dist
+
+      - name: Upload installers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          ls -lh
+          cat SHA256SUMS
+
+      - name: Publish
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          name: NyaSubFusion ${{ github.ref_name }}
+          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: dist/*

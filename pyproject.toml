@@ -39,6 +39,7 @@ nyasub = "nyasub.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
+packaging = ["pyinstaller>=6"]
 
 [tool.uv]
 # Windows / Linux：faster-whisper 依赖 CPU 版 onnxruntime，和 onnxruntime-gpu 同名冲突；macOS 没有 onnxruntime-gpu，保留原生 onnxruntime（自带 CoreML）
