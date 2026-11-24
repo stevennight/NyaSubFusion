@@ -51,11 +51,13 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Install ffmpeg for tests
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg and CJK fonts for tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk
 
       - name: Install Python dependencies
-        run: uv sync --extra asr --extra ocr --extra lang --extra server --group dev
+        run: |
+          uv sync --extra asr --extra ocr --extra lang --extra server --group dev
+          uv pip install onnxruntime
 
       - name: Test Python
         run: uv run pytest -q -m "not slow"
