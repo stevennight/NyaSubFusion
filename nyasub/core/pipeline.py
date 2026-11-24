@@ -1645,7 +1645,8 @@ class Run:
                     _, enc = video.burn(self.proj.video, tracks[0]["path"], files, out, vinfo, vc.encoder, vc.quality,
                                         vc.height, duration, self.cancel, self.proj.media("burn"),
                                         bit_depth=vc.bit_depth, color_709=vc.color_709,
-                                        extra_args=vc.extra_args, extra_vf=vc.extra_vf)
+                                        extra_args=vc.extra_args, extra_vf=vc.extra_vf,
+                                        resumable=vc.resumable)
             except video.Stopped:
                 log("已取消输出视频")
                 raise Cancelled()

@@ -12,7 +12,7 @@ import { fmt, langName, pct, setIn, STAGE_LBL } from "../util";
 type Video = {
   mode: "off" | "mux" | "burn"; profiles: string[]; keep_subs: boolean; fonts: string; encoder: string;
   quality: number; height: number; broadcast: boolean; default: string; burn: string;
-  bit_depth?: "auto" | "8" | "10"; color_709?: "off" | "auto" | "force"; extra_args?: string; extra_vf?: string;
+  bit_depth?: "auto" | "8" | "10"; color_709?: "off" | "auto" | "force"; resumable?: boolean; extra_args?: string; extra_vf?: string;
 };
 interface R {
   profiles: Profile[]; styles: Record<string, Style>; strip_marks: string[]; video: Video;
@@ -626,6 +626,14 @@ function VideoEditor({ r, update, doc, mode, bc }: { r: R; update: Upd; doc: Con
             <option value="auto">BT.2020 SDR 自动转 BT.709（zscale 线性光）</option>
             <option value="force">强制按 BT.2020 SDR 转 BT.709</option>
           </select>
+          <span className="lbl">断点续传</span>
+          <div>
+            <label className="row">
+              <input type="checkbox" checked={!!vc.resumable} onChange={(e) => setV({ resumable: e.target.checked })} />
+              分段压制（每 5 分钟一段，中断重启可续压）
+            </label>
+            <div className="hint" style={{ marginTop: 4 }}>适合 4K / 长视频；压制期间会占用额外临时空间，完成后自动清理</div>
+          </div>
           <span className="lbl">自定义参数</span>
           <div>
             <input className="inp" style={{ width: "100%" }} value={vc.extra_args ?? ""}

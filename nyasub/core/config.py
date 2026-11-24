@@ -256,6 +256,7 @@ class VideoOutCfg(_M):
     burn: str = ""                           # 压制哪个字幕：空 = 第一个启用的 ASS 方案；方案名（ASS / SRT 都行）；"broadcast" = 广播字幕原样
     bit_depth: Literal["auto", "8", "10"] = "auto"  # 压制色深：auto（默认 8-bit；H.265 转 709 时自动 10-bit）/ 8 / 10
     color_709: Literal["off", "auto", "force"] = "off"  # 压制非 709 转 BT.709：off 不转 / auto 仅 BT.2020 SDR 自动转 / force 强制转
+    resumable: bool = False                  # 压制分段续传：按 5 分钟分段压制再无损拼接，中断重启可续压
     extra_args: str = ""                     # 压制自定义 FFmpeg 输出参数
     extra_vf: str = ""                       # 压制附加视频滤镜（拼在字幕滤镜前）
 

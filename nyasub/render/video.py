@@ -7,6 +7,7 @@
   隔行视频先反交错，非方形像素先缩放成方形像素（不然字会被压扁）。
 - 进度用 ffmpeg -progress 读出来，推 {"type": "progress"} 事件；取消时直接结束 ffmpeg。
 """
+import hashlib
 import json
 import os
 import re
@@ -408,8 +409,184 @@ def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_ba
     return pre, vf
 
 
+CHUNK_SECONDS = 300  # 分段续传压制每段目标时长（秒）
+
+
+def _shift_ass_copy(src_ass, dst_ass, offset_sec):
+    """把 ASS 时间轴整体前移 offset_sec 秒（用于分段压制），跨段字幕自动裁剪到 0 秒起。"""
+    if not offset_sec or abs(float(offset_sec)) < 0.001:
+        shutil.copyfile(src_ass, dst_ass)
+        return
+    import pysubs2
+
+    subs = pysubs2.load(str(src_ass))
+    subs.shift(ms=-round(float(offset_sec) * 1000))
+    kept = []
+    for ev in subs.events:
+        if ev.end <= 0:
+            continue
+        if ev.start < 0:
+            ev.start = 0
+        kept.append(ev)
+    subs.events = kept
+    subs.save(str(dst_ass))
+
+
+def _burn_fingerprint(video, ass_path, encoder, quality, w, h, bit_depth, do_709, extra_args, extra_vf, chunk_seconds):
+    st = Path(video).stat()
+    h_obj = hashlib.sha256()
+    payload = json.dumps({
+        "video": str(Path(video).resolve()), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+        "ass_sha256": hashlib.sha256(Path(ass_path).read_bytes()).hexdigest(),
+        "encoder": encoder, "quality": quality, "w": w, "h": h, "bit_depth": bit_depth,
+        "do_709": bool(do_709), "extra_args": extra_args, "extra_vf": extra_vf, "chunk_seconds": chunk_seconds,
+    }, sort_keys=True)
+    h_obj.update(payload.encode("utf-8"))
+    return h_obj.hexdigest()[:24]
+
+
+def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w, h, inter, src_10, do_709,
+                    encoder, quality, bit_depth, extra_args, extra_vf_clean, acodec, src_bps, tried,
+                    duration, cancel, chunk_seconds=CHUNK_SECONDS):
+    """分段续传压制：先按关键帧无损切成若干 MKV 片段，逐段压制并落盘记录进度，最后无损拼接并混入原音轨。"""
+    from ..sources import media
+
+    chunks_dir = work / "chunks"
+    manifest_path = chunks_dir / "manifest.json"
+    fp = _burn_fingerprint(video, ass_path, encoder, quality, w, h, bit_depth, do_709,
+                           extra_args, extra_vf_clean, chunk_seconds)
+    manifest = None
+    if manifest_path.exists():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if data.get("fingerprint") == fp and data.get("chunks") and all(
+                (chunks_dir / c["file"]).exists() for c in data["chunks"]
+            ):
+                manifest = data
+        except Exception:
+            manifest = None
+
+    if manifest is None:
+        shutil.rmtree(chunks_dir, ignore_errors=True)
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        v_start = float(vs.get("start_time") or 0.0)
+        a_starts = [float(s["start_time"]) for s in src_streams
+                    if s.get("codec_type") == "audio" and s.get("start_time") is not None]
+        v_offset = max(0.0, v_start - min(a_starts)) if a_starts and v_start > min(a_starts) else 0.0
+        if v_offset > 10.0:
+            v_offset = 0.0
+        csv_path = chunks_dir / "chunks.csv"
+        split_cmd = [
+            "ffmpeg", "-y", "-v", "error", "-i", str(Path(video).resolve()),
+            "-map", f"0:{vinfo['index']}", "-an", "-sn", "-dn", "-c:v", "copy",
+            "-f", "segment", "-segment_time", str(max(1, int(chunk_seconds))),
+            "-reset_timestamps", "1", "-segment_list", str(csv_path),
+            str(chunks_dir / "src_%04d.mkv"),
+        ]
+        env.log(f"分段续传压制：按每 {chunk_seconds} 秒无损切分视频片段…")
+        rc, tail, _ = media.run_ffmpeg(split_cmd, duration, cancel=cancel, cwd=str(chunks_dir))
+        if rc != 0:
+            raise RuntimeError(f"分段切分失败：{tail or rc}")
+        chunks = []
+        for line in csv_path.read_text(encoding="utf-8").splitlines():
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) >= 3:
+                chunks.append({"file": parts[0], "start": float(parts[1]), "end": float(parts[2])})
+        if not chunks:
+            raise RuntimeError("分段切分未生成任何视频片段")
+        manifest = {"fingerprint": fp, "v_offset": v_offset, "chunks": chunks, "done": [], "chosen": None}
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    else:
+        n_done = sum(1 for i in manifest.get("done", []) if (chunks_dir / f"enc_{i:04d}.mp4").exists())
+        env.log(f"检测到未完成的分段压制缓存（已完成 {n_done}/{len(manifest['chunks'])} 段），继续压制")
+
+    chunks = manifest["chunks"]
+    v_offset = float(manifest.get("v_offset") or 0.0)
+    done_set = {i for i in manifest.get("done", []) if (chunks_dir / f"enc_{i:04d}.mp4").exists()}
+    chosen = tuple(manifest["chosen"]) if manifest.get("chosen") else None
+    total_dur = duration or sum(max(0.0, c["end"] - c["start"]) for c in chunks)
+    fps = media.stream_fps(video, vinfo["index"])[0]
+    completed_dur = sum(max(0.0, chunks[i]["end"] - chunks[i]["start"]) for i in done_set if i < len(chunks))
+    if completed_dur > 0 and total_dur > 0:
+        env.progress(min(completed_dur, total_dur), total_dur, "压制", stage="burn", every=0)
+
+    warned_h264_10 = False
+    for idx, ch in enumerate(chunks):
+        if cancel is not None and cancel.is_set():
+            raise Stopped()
+        ch_dur = max(0.1, ch["end"] - ch["start"])
+        ch_out = chunks_dir / f"enc_{idx:04d}.mp4"
+        if idx in done_set and ch_out.exists():
+            continue
+        _shift_ass_copy(ass_path, work / "sub.ass", ch["start"] + v_offset)
+        ch_part = chunks_dir / f"enc_{idx:04d}.part.mp4"
+        ch_src = chunks_dir / ch["file"]
+        candidates = [chosen] if chosen else tried
+        encoded_ok = False
+        for i, (enc, use_gpu) in enumerate(candidates):
+            use_10, pix_fmt, prof, downgraded = _resolve_bit_depth(enc, bit_depth, do_709)
+            if downgraded and not warned_h264_10:
+                env.log(f"{enc} 不支持 10-bit，已改用 8-bit（如需 10-bit 请选 H.265 或 libx264）")
+                warned_h264_10 = True
+            hw_backend = "videotoolbox" if enc.endswith("_videotoolbox") else "cuda"
+            pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean,
+                               hw_backend=hw_backend, src_10=src_10)
+            cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
+            limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
+            is_hevc = enc in HEVC_ENCODERS
+            color_flags = (
+                ["-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+                 "-bsf:v", f"{'hevc_metadata' if is_hevc else 'h264_metadata'}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]
+                if do_709 else []
+            )
+            out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, "-an"]
+            out_args = merge_ffmpeg_args(out_args, extra_args)
+            cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(ch_src), "-map", "0:v:0",
+                   "-vf", ",".join(vf), *out_args, str(ch_part)]
+            how = f"{enc}{'，显卡解码' if pre else ''}，{'10-bit' if use_10 else '8-bit'}" + ("，BT.709" if do_709 else "")
+            env.log(f"分段压制 [{idx + 1}/{len(chunks)}]：{how}，画质 {quality}，{w}×{h}")
+
+            def _on_prog(seg_done, _seg_total, _base=completed_dur):
+                cur = _base + min(seg_done, ch_dur)
+                env.progress(min(cur, total_dur) if total_dur else cur, total_dur, "压制", stage="burn", every=0.5)
+
+            rc, tail, done = media.run_ffmpeg(cmd, ch_dur, _on_prog, cancel, cwd=str(work), part=ch_part, fps=fps)
+            if rc != 0 and done < 1 and not chosen and i + 1 < len(candidates):
+                env.log(f"{how} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
+                continue
+            if rc != 0:
+                ch_part.unlink(missing_ok=True)
+                raise RuntimeError(f"分段 [{idx + 1}/{len(chunks)}] ffmpeg 出错：{tail or rc}")
+            os.replace(ch_part, ch_out)
+            chosen = (enc, use_gpu)
+            done_set.add(idx)
+            manifest["done"] = sorted(done_set)
+            manifest["chosen"] = [enc, use_gpu]
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            completed_dur += ch_dur
+            encoded_ok = True
+            break
+        if not encoded_ok:
+            raise RuntimeError("没有可用的视频编码器")
+
+    concat_list = chunks_dir / "concat.txt"
+    concat_list.write_text("\n".join(f"file 'enc_{i:04d}.mp4'" for i in range(len(chunks))) + "\n", encoding="utf-8")
+    offset_args = ["-itsoffset", f"{v_offset:.6f}"] if v_offset > 0.001 else []
+    concat_cmd = [
+        "ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", *offset_args, "-i", str(concat_list),
+        "-i", str(Path(video).resolve()), "-map", "0:v:0", "-map", "1:a?",
+        "-c:v", "copy", *acodec, "-movflags", "+faststart", str(part),
+    ]
+    env.log(f"分段压制完成，正在无损拼接 {len(chunks)} 段并混入原音轨…")
+    rc, tail, _ = media.run_ffmpeg(concat_cmd, total_dur, cancel=cancel, cwd=str(chunks_dir), part=part)
+    _finish(rc, tail, part, out)
+    shutil.rmtree(chunks_dir, ignore_errors=True)
+    return out, (chosen[0] if chosen else pick_encoders(encoder, vinfo.get("codec"), bit_depth=bit_depth)[0])
+
+
 def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, height=0, duration=0.0,
-         cancel=None, work_dir=None, bit_depth="auto", color_709="off", extra_args="", extra_vf=""):
+         cancel=None, work_dir=None, bit_depth="auto", color_709="off", extra_args="", extra_vf="",
+         resumable=False, chunk_seconds=CHUNK_SECONDS):
     """压制硬字幕 MP4。字幕和字体先放进工作目录，ffmpeg 在那里运行（滤镜参数里写 Windows 路径很麻烦）。"""
     from ..sources import media
 
@@ -448,6 +625,12 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
         src_bps = Path(video).stat().st_size * 8 / duration if duration else 0
     except OSError:
         src_bps = 0
+    if resumable:
+        return _burn_resumable(
+            video, ass_path, out, part, work, vinfo, src_streams, vs, w, h, inter, src_10, do_709,
+            encoder, quality, bit_depth, extra_args, extra_vf_clean, acodec, src_bps, tried,
+            duration, cancel, chunk_seconds=chunk_seconds,
+        )
     warned_h264_10 = False
     for i, (enc, use_gpu) in enumerate(tried):
         use_10, pix_fmt, prof, downgraded = _resolve_bit_depth(enc, bit_depth, do_709)

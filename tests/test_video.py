@@ -402,3 +402,77 @@ def test_burn_force_709_real_ffmpeg(sample, api_config, fake):
         "h264", "bt709", "bt709", "bt709"
     )
 
+
+def test_burn_resumable_chunks_and_resume(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import threading
+    from nyasub.sources import media
+
+    # 造一个 6 秒、每 2 秒一个关键帧的测试视频（含音轨）
+    vid = tmp_path / "clip.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=6",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+        "-c:v", "libx264", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0", "-preset", "ultrafast",
+        "-c:a", "aac", str(vid),
+    ], check=True)
+    ass = tmp_path / "sub.ass"
+    ass.write_text(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,18,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.50,0:00:03.50,Default,,0,0,0,,Hello\n"
+        "Dialogue: 0,0:00:04.00,0:00:05.50,Default,,0,0,0,,World\n",
+        encoding="utf-8",
+    )
+    info = media.probe(str(vid))
+    work = tmp_path / "work"
+    out = tmp_path / "out.mp4"
+
+    # 第一轮：压完第 1 段后模拟中断取消
+    cancel = threading.Event()
+    orig_run = media.run_ffmpeg
+    enc_calls = []
+
+    def cancel_after_first_chunk(cmd, *args, **kwargs):
+        res = orig_run(cmd, *args, **kwargs)
+        if any("enc_0000.part.mp4" in str(x) for x in cmd):
+            cancel.set()
+        return res
+
+    monkeypatch.setattr(media, "run_ffmpeg", cancel_after_first_chunk)
+    with pytest.raises(video.Stopped):
+        video.burn(str(vid), str(ass), [], out, info["video"], encoder="libx264", quality=30,
+                   duration=info["duration"], cancel=cancel, work_dir=work,
+                   extra_args="-preset ultrafast", resumable=True, chunk_seconds=2)
+
+    chunks_dir = work / "chunks"
+    manifest = json.loads((chunks_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["chunks"]) >= 2
+    assert manifest["done"] == [0]
+    seg0 = chunks_dir / "enc_0000.mp4"
+    assert seg0.exists()
+    seg0_mtime = seg0.stat().st_mtime_ns
+
+    # 第二轮：不取消，从断点续压——第 0 段应被跳过，最终拼接出完整含音轨的 MP4 并清理缓存
+    def record_run(cmd, *args, **kwargs):
+        enc_calls.append(list(cmd))
+        return orig_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(media, "run_ffmpeg", record_run)
+    video.burn(str(vid), str(ass), [], out, info["video"], encoder="libx264", quality=30,
+               duration=info["duration"], work_dir=work,
+               extra_args="-preset ultrafast", resumable=True, chunk_seconds=2)
+
+    assert not any("enc_0000.part.mp4" in str(x) for cmd in enc_calls for x in cmd)
+    assert out.exists() and not chunks_dir.exists()
+    out_streams = probe_streams(out)
+    assert any(s["codec_type"] == "video" for s in out_streams)
+    assert any(s["codec_type"] == "audio" for s in out_streams)
+    assert float(out_streams[0]["duration"]) >= 5.5
+
