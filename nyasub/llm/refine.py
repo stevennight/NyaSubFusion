@@ -379,7 +379,7 @@ def match_moment(items, visible, mine):
         if not h:
             misses.append(it)
             continue
-        o, e = max(h, key=lambda x: x[0])
+        o, e = max(h, key=lambda x: (x[0], x[1]["id"] in where))
         if e["id"] in where:
             where[e["id"]][1].append(it)
     return [(sorted(evs, key=lambda e: (e["start"], e["rect"][1])), its) for evs, its, _ in groups], misses
@@ -716,10 +716,12 @@ def _needs_small_recheck(box, text, vertical, kind, aspect, skip_small_scene):
 
 def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_tag, skip_small_scene=False):
     """规划一帧内所有组：就地完成合并与计数字段，将需要截特写再问的条目加入本批共享的 recheck_jobs。"""
+    from ..sources.ocr import compose_text
+
     entries = []
     for ei, (evs, its) in enumerate(groups):
         keep = evs[0]
-        local = "\n".join(e["text"] for e in evs)
+        local, _, _ = compose_text(evs, vertical=bool(keep.get("vertical")))
         keep["text_local"] = local
         if len(evs) > 1:
             _merge_into(keep, evs[1:])
@@ -733,6 +735,10 @@ def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_
             entries.append((ei, "unseen", evs, keep, local, None, None, None, 0.0))
             continue
         n["matched"] += 1
+        # 同一个本地框同时命中了叠加字幕与实物背景字时，只保留叠加字幕，避免背景字撑大框或带偏类型
+        caps = [it for it in its if it.get("kind") == "caption"]
+        if caps and len(caps) < len(its):
+            its = caps
         its = _reading_order(its, keep.get("vertical"))
         text = "\n".join(it["text"] for it in its)
         kind = max(its, key=lambda it: _area(it["box"]))["kind"]

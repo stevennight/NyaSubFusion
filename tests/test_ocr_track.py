@@ -364,3 +364,19 @@ def test_alternating_captions_not_bridged_by_background_sign():
     ev2 = ocr._build_events(_track(short_frames), C, FPS, W, H, 3600)
     assert any(line1[0] in e["text"] and line2[0] not in e["text"] for e in ev2)
     assert any(line2[0] in e["text"] and line1[0] not in e["text"] for e in ev2)
+
+
+def test_atomic_static_tracks_and_group_static_fallback():
+    """group_static=False 时静态字保留单行原子轨迹（供整帧 VLM 分组）；不走 VLM 时调用 group_static 可等价合并。"""
+    two = [("北海道", (500.0, 600.0, 608.0, 636.0)), ("積丹町", (500.0, 642.0, 608.0, 678.0))]
+    frames = [(k / FPS, two) for k in range(18)]
+    atomic = ocr._build_events(_track(frames), C, FPS, W, H, 3600, group_static=False)
+    assert [e["text"] for e in atomic] == ["北海道", "積丹町"]
+    grouped = ocr.group_static(atomic, aspect=W / H)
+    assert [e["text"] for e in grouped] == ["北海道\n積丹町"]
+    assert [p[4] for p in grouped[0]["pieces"]] == ["北海道", "積丹町"]
+
+    # 滚动字幕即使 group_static=False 仍按同速合并
+    lines = [("語り", "松たか子", 730), ("撮影", "山田太郎", 730 + 2 * CH)]
+    ev_roll = ocr._build_events(_track(_roll(lines, 80, 14)), C, FPS, W, H, 3600, group_static=False)
+    assert sorted(e["text"] for e in ev_roll) == ["撮影山田太郎", "語り松たか子"]

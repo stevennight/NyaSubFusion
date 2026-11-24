@@ -275,6 +275,53 @@ def test_refine_match_merges_split_title_and_finds_misses():
     assert [it["text"] for it in misses] == ["せふり"]
 
 
+def test_vlm_groups_atomic_caption_lines_and_keeps_adjacent_scene_separate(tmp_path, monkeypatch):
+    """静态字不预合并：地图标号「24」和两行白色字幕作为独立原子轨迹送入整帧复核，
+    由 VLM 分别归入 scene 与 caption，字幕自动合成一条且框紧贴字幕、不混入「24」。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import client, refine
+    from nyasub.sources import media
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((720, 1280, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+
+    events = [
+        {"id": "o1", "start": 10.0, "end": 13.7, "snap_t": 10.2, "rect": [0.168, 0.811, 0.220, 0.886],
+         "text": "24", "vertical": False, "lines": 1, "score": 0.99, "pieces": [[0.168, 0.811, 0.220, 0.886, "24"]]},
+        {"id": "o2", "start": 10.0, "end": 13.7, "snap_t": 10.2, "rect": [0.282, 0.826, 0.716, 0.915],
+         "text": "ここだったら白浜中学校に", "vertical": False, "lines": 1, "score": 1.0,
+         "pieces": [[0.282, 0.826, 0.716, 0.915, "ここだったら白浜中学校に"]]},
+        {"id": "o3", "start": 10.0, "end": 13.7, "snap_t": 10.2, "rect": [0.270, 0.910, 0.710, 0.980],
+         "text": "避難するんですけど", "vertical": False, "lines": 1, "score": 1.0,
+         "pieces": [[0.270, 0.910, 0.710, 0.980, "避難するんですけど"]]},
+    ]
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                return {"items": [
+                    {"text": "24", "kind": "scene", "bbox": [163, 808, 224, 890]},
+                    {"text": "ここだったら白浜中学校に / 避難するんですけど", "kind": "caption", "bbox": [270, 822, 718, 982]},
+                ]}
+            return {"text": "ここだったら白浜中学校に / 避難するんですけど", "kind": "caption"}
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(1280, 720))
+    caps = [e for e in out if e.get("kind") == "caption"]
+    scenes = [e for e in out if e.get("kind") == "scene"]
+    assert len(caps) == 1 and len(scenes) == 1
+    assert caps[0]["text"] == "ここだったら白浜中学校に\n避難するんですけど"
+    assert caps[0]["rect"] == [0.27, 0.822, 0.718, 0.982]
+    assert scenes[0]["text"] == "24"
+
+
 def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     import cv2
     import numpy as np
@@ -310,7 +357,7 @@ def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     assert sorted(e["id"] for e in out) == ["o1", "v1"]  # o2 并进了 o1；补出一条本地漏掉的
     t, v = (next(e for e in out if e["id"] == i) for i in ("o1", "v1"))
     assert (t["text"], t["text_local"], t["kind"], t["start"], t["merged"]) == \
-        ("サヨナラまでの日々", "わでの曰々\n坂道の上の家", "caption", 10.0, ["o2"])
+        ("サヨナラまでの日々", "坂道の上の家わでの曰々", "caption", 10.0, ["o2"])
     assert t["rect"] == [0.354, 0.764, 0.957, 0.892] and t["rect_local"] == [0.62, 0.75, 0.96, 0.91]
     assert len(t["pieces"]) == 2
     assert (v["text"], v["kind"], v["start"], v["end"], v["found_by"]) == ("せふり さしみコンニャク", "scene", 10.0, 15.0, "vlm")

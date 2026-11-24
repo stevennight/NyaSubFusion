@@ -824,18 +824,24 @@ class Run:
         t = time.time()
         unread = []
         events = ocr.scan(str(self.proj.video), info, c.model_dump(), str(self.proj.root), lang.get(self.src).ocr_lang,
-                          unread=unread)
+                          unread=unread, group_static=False)
         save_json(self.proj.stage("ocr_unread.json"), unread)  # 找到位置但认不出字的地方，复核时去看
         log(f"画面字识别完成：{len(events)} 条，用时 {time.time() - t:.0f}s"
             + (f"；另有 {len(unread)} 处找到了字的位置但认不出字" if unread else ""))
         return events
 
     def _refine(self, events):
-        from ..sources.ocr import drop_offscreen
+        from ..sources.ocr import drop_offscreen, group_static
 
         events = [drop_offscreen(dict(e)) for e in events]  # 老的扫描结果：移动的字框里不算移出画面的块
+        v = (self.results.get("probe") or {}).get("video") or {}
+        aspect = v.get("aspect") or 16 / 9
         if self.cfg.ocr.refine != "vlm" or not events:
-            return events
+            return group_static(events, aspect) if events else events
+        o = self.cfg.ocr
+        use_frames = (o.refine_mode != "crop" and bool(self.proj.video and os.path.exists(str(self.proj.video)) and v.get("width")))
+        if not use_frames:
+            events = group_static(events, aspect)
         from ..fusion.fuse import prefilter
 
         prefilter(events, self.results["probe"]["duration"], lang.get(self.src))
@@ -843,7 +849,6 @@ class Run:
         for e in events:  # 振假名不用送去复核（会并到下面那条上）
             if e["id"] in ruby:
                 e["prefiltered"] = True
-        o = self.cfg.ocr
         if o.refine_mode == "crop":
             from ..llm import refine_crop
 
@@ -853,10 +858,12 @@ class Run:
                                           boxed=on and o.refine_boxed, batch=o.refine_batch)
         from ..llm.refine import refine_ocr
 
-        v = self.results["probe"].get("video") or {}
-        return refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
-                          size=(v["width"], v["height"]) if v.get("width") else None,
-                          unread=load_json(self.proj.stage("ocr_unread.json"), []))
+        out = refine_ocr(events, self.cfg, str(self.proj.root), self.proj / "llm_cache", video=self.proj.video,
+                         size=(v["width"], v["height"]) if v.get("width") else None,
+                         unread=load_json(self.proj.stage("ocr_unread.json"), []))
+        if use_frames and out and not any("text_local" in e for e in out):
+            return group_static(out, aspect)  # 整帧复核完全跳过（例如接口不可用）时退回程序静态分组
+        return out
 
     def _refine_on(self):
         info = self.results.get("probe") or {}

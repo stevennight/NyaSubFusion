@@ -501,7 +501,7 @@ def _step(active, dets, t, next_id, need, snap):
     return next_id
 
 
-def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
+def scan(video, info, c, workdir, ocr_lang="japan", unread=None, group_static=True):
     """c 是 OcrCfg 的 dict。返回画面字事件列表。
     unread 给一个列表的话，往里放“找到位置但认不出字”、停留够久的地方（书法片名、花字），交给视觉复核去看。"""
     fps = float(c["fps"])
@@ -643,7 +643,7 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
     closed = _rejoin(closed + active)
     log(f"  共 {n_frames} 帧，实际 OCR {n_ocr} 帧，跟踪到 {len(closed)} 条文字轨迹")
 
-    events = _build_events(closed, c, fps, W, H, duration, roi)
+    events = _build_events(closed, c, fps, W, H, duration, roi, group_static=group_static)
     crops_dir = os.path.join(workdir, "crops")
     os.makedirs(crops_dir, exist_ok=True)
     for ev in events:
@@ -839,7 +839,7 @@ def _clean_short(tr, fps):
             and min(sc for _, sc in tr.obs) >= SHORT_SCORE and len(norm(tr.best_text())) >= SHORT_CHARS)
 
 
-def _build_events(tracks, c, fps, W, H, duration, roi=None):
+def _build_events(tracks, c, fps, W, H, duration, roi=None, group_static=True):
     half = 0.5 / fps
     bounds = roi or (0, 0, W, H)
     items = []
@@ -865,8 +865,8 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
              if it["moving"] or (it["end"] - it["start"] <= max_len
                                  and acc[it["_key"]] <= duration * 0.25 and acc[it["_key"]] <= max(60.0, duration * 0.1))]
 
-    # 并查集：同一时间、空间相邻的行合成一条。静态字合并时要求整组所有成员共同在画面的时长仍占整组总跨度的 60% 以上，
-    # 防止前后交替出现的两句字幕通过旁边长时间停留的背景招牌/海报被传递并成一条（进而丢失前几句）。
+    # 并查集：滚动字始终按同速合并；静态字在 group_static=True（无视觉复核 / 降级）时才按空间相邻合并，
+    # 走整帧视觉复核时保留单行原子轨迹，由大模型按语义决定哪些合并、哪些分开。
     parent = list(range(len(items)))
     g_smin = [it["start"] for it in items]
     g_smax = [it["start"] for it in items]
@@ -886,6 +886,8 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
             b = items[bi]
             if b["start"] >= a["end"]:
                 break
+            if not group_static and not (a.get("moving") and b.get("moving")):
+                continue
             if not _same_group(a, b):
                 continue
             ra, rb = find(ai), find(bi)
@@ -911,6 +913,118 @@ def _build_events(tracks, c, fps, W, H, duration, roi=None):
     for i, ev in enumerate(events):
         ev["id"] = f"o{i + 1}"
     return events
+
+
+def compose_text(items, vertical=False):
+    """把属于同一块的若干段字按阅读顺序拼成文字（横排同行横拼、异行换行；竖排从右往左每列一行）。
+    items：含 rect 与 text 字段的字典列表。返回 (text, n_lines, deduped_items)。"""
+    members = _dedupe_pieces(list(items))
+    if not vertical:
+        members.sort(key=lambda m: (m["rect"][1] + m["rect"][3]) / 2)
+        lines, cur = [], [members[0]]
+        for m in members[1:]:
+            prev = cur[-1]["rect"]
+            h = prev[3] - prev[1]
+            if abs((m["rect"][1] + m["rect"][3]) / 2 - (prev[1] + prev[3]) / 2) < 0.5 * h:
+                cur.append(m)
+            else:
+                lines.append(cur)
+                cur = [m]
+        lines.append(cur)
+        text = "\n".join(_join([m["text"] for m in sorted(line, key=lambda m: m["rect"][0])]) for line in lines)
+        return text, len(lines), members
+    members.sort(key=lambda m: -m["rect"][0])  # 竖排：从右往左
+    return "\n".join(m["text"] for m in members), len(members), members
+
+
+def group_static(events, aspect=16 / 9):
+    """对尚未做静态合并的事件（已归一到 0~1 坐标）按空间相邻 + 共同在屏窗口合并成块。
+    用于未开启视觉复核、按裁剪图复核、或视觉复核降级时的兜底。移动的字保持原样不动。"""
+    if len(events) < 2:
+        return [dict(e) for e in events]
+    # _same_group 里横排比较 h_gap 与字高 h，需要等比例坐标系（x 乘 aspect）
+    scaled = [dict(e, rect=(e["rect"][0] * aspect, e["rect"][1], e["rect"][2] * aspect, e["rect"][3]))
+              for e in events]
+    parent = list(range(len(events)))
+    g_smin = [e["start"] for e in events]
+    g_smax = [e["start"] for e in events]
+    g_emin = [e["end"] for e in events]
+    g_emax = [e["end"] for e in events]
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    order = sorted(range(len(events)), key=lambda i: events[i]["start"])
+    for ai_pos, ai in enumerate(order):
+        a = scaled[ai]
+        if a.get("moving"):
+            continue
+        for bi in order[ai_pos + 1:]:
+            b = scaled[bi]
+            if b["start"] >= a["end"]:
+                break
+            if b.get("moving") or not _same_group(a, b):
+                continue
+            ra, rb = find(ai), find(bi)
+            if ra == rb:
+                continue
+            smin = min(g_smin[ra], g_smin[rb])
+            smax = max(g_smax[ra], g_smax[rb])
+            emin = min(g_emin[ra], g_emin[rb])
+            emax = max(g_emax[ra], g_emax[rb])
+            if emin - smax < 0.6 * (emax - smin):
+                continue
+            g_smin[rb], g_smax[rb], g_emin[rb], g_emax[rb] = smin, smax, emin, emax
+            parent[ra] = rb
+
+    groups = defaultdict(list)
+    for i in range(len(events)):
+        groups[find(i)].append(events[i])
+
+    out = []
+    for members in groups.values():
+        if len(members) == 1:
+            out.append(dict(members[0]))
+            continue
+        vertical = bool(members[0].get("vertical"))
+        text, n_lines, kept = compose_text(members, vertical=vertical)
+        smax = max(m["start"] for m in kept)
+        emin = min(m["end"] for m in kept)
+        in_common = [m for m in kept if m.get("snap_t") is not None and smax <= m["snap_t"] <= emin]
+        latest = max(in_common or kept, key=lambda m: m["start"])
+        rect = [round(min(m["rect"][0] for m in kept), 4), round(min(m["rect"][1] for m in kept), 4),
+                round(max(m["rect"][2] for m in kept), 4), round(max(m["rect"][3] for m in kept), 4)]
+        crops = [m.get("crop_rect") or m["rect"] for m in kept]
+        crop_rect = [round(min(r[0] for r in crops), 4), round(min(r[1] for r in crops), 4),
+                     round(max(r[2] for r in crops), 4), round(max(r[3] for r in crops), 4)]
+        ref_t = latest.get("snap_t")
+        snaps = [m.get("snap_rect") or m["rect"] if m.get("snap_t") == ref_t else m["rect"] for m in kept]
+        snap_rect = [round(min(r[0] for r in snaps), 4), round(min(r[1] for r in snaps), 4),
+                     round(max(r[2] for r in snaps), 4), round(max(r[3] for r in snaps), 4)]
+        pieces = [p for m in kept for p in (m.get("pieces") or [[*m["rect"], m["text"]]])]
+        merged = {
+            "start": round(min(m["start"] for m in kept), 3),
+            "end": round(max(m["end"] for m in kept), 3),
+            "text": text,
+            "rect": rect,
+            "vertical": vertical,
+            "lines": n_lines,
+            "zone": _zone(rect, vertical),
+            "score": round(sum(m.get("score", 0.0) for m in kept) / len(kept), 3),
+            "crop_rect": crop_rect,
+            "snap_t": ref_t,
+            "snap_rect": snap_rect,
+            "pieces": pieces,
+            **({"crop": latest["crop"]} if latest.get("crop") else {}),
+        }
+        out.append(merged)
+    out.sort(key=lambda e: (e["start"], e["rect"][1]))
+    for i, ev in enumerate(out):
+        ev["id"] = f"o{i + 1}"
+    return out
 
 
 def _moving_pair(a, b):
@@ -1032,25 +1146,8 @@ def _compose(members, W, H):
         emin = min(m["end"] for m in members)
         in_common = [m for m in members if m["tr"].snap_t is not None and smax <= m["tr"].snap_t <= emin]
         latest = max(in_common or members, key=lambda m: m["start"])
-    members = _dedupe_pieces(members)
     vertical = members[0]["vertical"]
-    if not vertical:
-        members.sort(key=lambda m: (m["rect"][1] + m["rect"][3]) / 2)
-        lines, cur = [], [members[0]]
-        for m in members[1:]:
-            prev = cur[-1]["rect"]
-            h = prev[3] - prev[1]
-            if abs((m["rect"][1] + m["rect"][3]) / 2 - (prev[1] + prev[3]) / 2) < 0.5 * h:
-                cur.append(m)
-            else:
-                lines.append(cur)
-                cur = [m]
-        lines.append(cur)
-        text = "\n".join(_join([m["text"] for m in sorted(line, key=lambda m: m["rect"][0])]) for line in lines)
-    else:
-        members.sort(key=lambda m: -m["rect"][0])  # 竖排：从右往左
-        lines = [[m] for m in members]
-        text = "\n".join(m["text"] for m in members)
+    text, n_lines, members = compose_text(members, vertical=vertical)
     x0 = min(m["rect"][0] for m in members) / W
     y0 = min(m["rect"][1] for m in members) / H
     x1 = max(m["rect"][2] for m in members) / W
@@ -1072,7 +1169,7 @@ def _compose(members, W, H):
         "text": text,
         "rect": rect,
         "vertical": vertical,
-        "lines": len(lines),
+        "lines": n_lines,
         "zone": _zone(rect, vertical),
         "score": round(sum(m["tr"].score() for m in members) / len(members), 3),
         "_snapshot": latest["tr"].snapshot,
