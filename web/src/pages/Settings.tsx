@@ -344,6 +344,36 @@ export function SettingsPage({ onEditPreset }: { onEditPreset: (id: string) => v
       <div className="gap" />
       <GpuComponents />
       <div className="gap" />
+      <div className="card">
+        <h3>画面字识别（本机性能）</h3>
+        <div className="kv">
+          <span className="lbl">并行路数</span>
+          <div className="row">
+            <select className="inp" style={{ width: "auto" }} value={Number(val("ocr.workers") ?? 0)}
+              onChange={(e) => setDraft(setIn(draft, "ocr.workers", Number(e.target.value)))}>
+              <option value={0}>自动（推荐）</option>
+              <option value={1}>1 路（串行，最省内存/显存）</option>
+              <option value={2}>2 路</option>
+              <option value={4}>4 路</option>
+              <option value={6}>6 路</option>
+              <option value={8}>8 路</option>
+            </select>
+            <span className="dim">自动：CPU 按核数开 2~4 路，CUDA 开 2 路；每增加 1 路约多占 150MB 内存（GPU 约 0.5~1GB 显存）</span>
+          </div>
+          <span className="lbl">单路算子线程</span>
+          <div className="row">
+            <select className="inp" style={{ width: "auto" }} value={Number(val("ocr.intra_threads") ?? 0)}
+              onChange={(e) => setDraft(setIn(draft, "ocr.intra_threads", Number(e.target.value)))}>
+              <option value={0}>自动（推荐）</option>
+              <option value={1}>1（高并发省核）</option>
+              <option value={2}>2（均衡）</option>
+              <option value={4}>4（低并发/多核）</option>
+            </select>
+            <span className="dim">仅 CPU 模式生效（ONNX intra_op_num_threads）；自动按核数分配避免多路争抢。修改不影响已有缓存</span>
+          </div>
+        </div>
+      </div>
+      <div className="gap" />
       <UiCard />
       <div className="gap" />
       <div className="card">

@@ -81,6 +81,8 @@ class OcrCfg(_M):
     height: int = 720
     use_cuda: bool = True
     hwaccel: bool = True                     # 显卡解码，失败自动退回 CPU
+    workers: int = Field(0, ge=0, le=16)     # 并行线程数：0 = 自动（CPU 按核数开 2~4 路，CUDA 开 2 路）；1 = 串行
+    intra_threads: int = Field(0, ge=0, le=32)  # CPU 模式下每个实例的算子内线程数（intra_op_num_threads）：0 = 自动
     det_model: str = "auto"                  # auto：有 GPU 用 medium，只有 CPU 时用 small（快 4 倍）
     rec_model: str = "auto"
     min_score: float = 0.6
@@ -309,7 +311,7 @@ MACHINE_KEYS = {
     "llm": {"providers", "translate", "organize", "vision", "asr", "listen", "base_url", "api_key", "api_key_env", "model", "vision_model",
             "timeout", "max_retries", "json_mode"},
     "asr": {"device", "compute_type", "download_root", "hf_endpoint"},
-    "ocr": {"use_cuda", "hwaccel"},
+    "ocr": {"use_cuda", "hwaccel", "workers", "intra_threads"},
 }
 
 

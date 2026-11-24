@@ -246,3 +246,79 @@ def test_box_change_rechecks_static_frame():
     dets = [{"rect": (30, 690, 400, 710)}]
     assert ocr._boxes_changed(gone, prev, dets, (0, 0, 1280, 720))
     assert not ocr._boxes_changed(prev.copy(), prev, dets, (0, 0, 1280, 720))
+
+
+def test_resolve_workers(monkeypatch):
+    monkeypatch.setattr(ocr, "resolve", lambda c: dict(c, use_cuda=False))
+    monkeypatch.setattr("os.cpu_count", lambda: 10)
+    assert ocr.resolve_workers({"workers": 0}) == (4, 2)
+    assert ocr.resolve_workers({"workers": 1}) == (1, -1)
+    assert ocr.resolve_workers({"workers": 6}) == (6, 1)
+    assert ocr.resolve_workers({"workers": 2, "intra_threads": 4}) == (2, 4)
+    assert ocr.resolve_workers({"workers": 1, "intra_threads": 2}) == (1, 2)
+
+    monkeypatch.setattr("os.cpu_count", lambda: 2)
+    assert ocr.resolve_workers({"workers": 0}) == (1, -1)
+
+    monkeypatch.setattr(ocr, "resolve", lambda c: dict(c, use_cuda=True))
+    assert ocr.resolve_workers({"workers": 0}) == (2, -1)
+    assert ocr.resolve_workers({"workers": 3}) == (3, -1)
+
+
+def test_scan_parallel_matches_serial(monkeypatch, tmp_path):
+    """并行扫描（含静态帧跳过和框内局部变化）与串行扫描输出完全一致。"""
+    import numpy as np
+    from nyasub.core.config import OcrCfg
+    from nyasub.sources import media
+
+    W, H = 320, 180
+    # 构造 12 帧：前 4 帧背景渐变（触发 OCR），中间 4 帧完全静止，后 4 帧仅文字框内变亮（触发 _boxes_changed）
+    frames = []
+    for i in range(12):
+        t = round(i * 0.5, 2)
+        if i < 4:
+            img = np.full((H, W, 3), 20 + i * 15, dtype=np.uint8)
+        elif i < 8:
+            img = frames[3][1].copy()
+        else:
+            img = frames[3][1].copy()
+            img[120:150, 40:260] = 240  # 仅字幕区域变化（面积 < 0.5% 不会触发全帧 thumb 差分）
+        frames.append((t, img))
+
+    def fake_iter_frames(*args, **kwargs):
+        for t, img in frames:
+            yield t, img.copy()
+
+    class FakeEng:
+        def __init__(self):
+            self.unread = []
+
+    def fake_detect(eng, img, min_score):
+        bright = int(img[135, 150, 0]) > 200
+        eng.unread = []
+        return [{
+            "rect": (40.0, 120.0, 260.0, 150.0),
+            "text": "新しい字幕" if bright else "最初の字幕",
+            "score": 0.99,
+            "vertical": False,
+        }]
+
+    monkeypatch.setattr(media, "iter_frames", fake_iter_frames)
+    monkeypatch.setattr(media, "frame_size", lambda vinfo, h: (W, H))
+    monkeypatch.setattr(ocr, "make_engine", lambda *a, **kw: FakeEng())
+    monkeypatch.setattr(ocr, "_detect", fake_detect)
+    monkeypatch.setattr(ocr, "resolve", lambda c: dict(c, use_cuda=False, det_model="small", rec_model="small"))
+
+    info = {"duration": 120.0, "start_time": 0.0, "video": {"width": W, "height": H, "aspect": W / H}}
+    cfg_serial = OcrCfg(fps=2.0, height=H, workers=1, skip_static=True).model_dump()
+    cfg_par = OcrCfg(fps=2.0, height=H, workers=4, skip_static=True).model_dump()
+
+    ev_serial = ocr.scan("dummy.mp4", info, cfg_serial, str(tmp_path / "s"), "japan")
+    ev_par = ocr.scan("dummy.mp4", info, cfg_par, str(tmp_path / "p"), "japan")
+
+    assert len(ev_serial) == len(ev_par) >= 2
+    for a, b in zip(ev_serial, ev_par):
+        assert a["text"] == b["text"]
+        assert a["start"] == b["start"]
+        assert a["end"] == b["end"]
+        assert a["rect"] == b["rect"]

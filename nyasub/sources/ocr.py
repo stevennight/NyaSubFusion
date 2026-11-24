@@ -5,10 +5,12 @@
 """
 import math
 import os
+import queue
 import shutil
 import statistics
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
 import cv2
@@ -43,10 +45,28 @@ def resolve(c):
                 rec_model=size if c["rec_model"] == "auto" else c["rec_model"])
 
 
-def make_engine(c, ocr_lang="japan"):
+def resolve_workers(c):
+    """确定并行线程数与每个 ONNX Runtime 实例的算子内线程数（intra_op_num_threads）。
+    返回 (workers, intra_threads)；intra_threads = -1 表示沿用 ONNX Runtime 默认值。"""
+    use_cuda = resolve(c)["use_cuda"]
+    req = int(c.get("workers", 0) or 0)
+    req_intra = int(c.get("intra_threads", 0) or 0)
+    ncpu = os.cpu_count() or 4
+    if use_cuda:
+        w = 2 if req <= 0 else max(1, req)
+        return w, -1
+    w = min(4, max(1, ncpu // 2)) if req <= 0 else max(1, req)
+    if req_intra > 0:
+        intra = min(req_intra, ncpu)
+    else:
+        intra = max(1, min(2, ncpu // w)) if w > 1 else -1
+    return w, intra
+
+
+def make_engine(c, ocr_lang="japan", threads=-1, quiet=False):
     from rapidocr import LangRec, ModelType, RapidOCR
 
-    if c.get("use_cuda") and not resolve(c)["use_cuda"]:
+    if not quiet and c.get("use_cuda") and not resolve(c)["use_cuda"]:
         from .. import gpu
 
         if not gpu.is_macos():
@@ -61,6 +81,9 @@ def make_engine(c, ocr_lang="japan"):
     }
     if c.get("use_cuda"):
         params["EngineConfig.onnxruntime.use_cuda"] = True
+    elif threads and threads > 0:
+        params["EngineConfig.onnxruntime.intra_op_num_threads"] = int(threads)
+        params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
     eng = RapidOCR(params=params)
     _keep_raw(eng)
     return eng
@@ -495,9 +518,11 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
 
     frames_dir = os.path.join(workdir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
-    eng = make_engine(c, ocr_lang)
     r = resolve(c)
-    log(f"扫描画面字：{fps} 帧/秒，分辨率 {W}x{H}，识别模型 {ocr_lang} / {r['det_model']}，{'GPU' if r['use_cuda'] else 'CPU'}")
+    workers, intra = resolve_workers(c)
+    engines = [make_engine(c, ocr_lang, threads=intra, quiet=(i > 0)) for i in range(workers)]
+    w_note = f"（{workers} 线程）" if workers > 1 else ""
+    log(f"扫描画面字：{fps} 帧/秒，分辨率 {W}x{H}，识别模型 {ocr_lang} / {r['det_model']}，{'GPU' if r['use_cuda'] else 'CPU'}{w_note}")
 
     active, closed = [], []
     next_id = 1
@@ -508,28 +533,33 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
     last_report = 0.0
     duration = info["duration"] or 1
     max_gap = float(c["max_gap"])
+    min_score = float(c["min_score"])
     change_frames = max(2, math.ceil(CHANGE_SECONDS * fps))  # 同一处换成另一句、稳定这么多帧才拆开
 
-    for t, frame in media.iter_frames(video, vinfo, fps, c["height"], info["start_time"], c.get("hwaccel", False)):
-        check_cancel()
-        n_frames += 1
-        img = frame if full_roi else frame[roi[1]:roi[3], roi[0]:roi[2]]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        thumb = cv2.resize(gray, (192, 108), interpolation=cv2.INTER_AREA).astype(np.int16)
-        if (c["skip_static"] and prev_thumb is not None and np.percentile(np.abs(thumb - prev_thumb), 99.5) < 8
-                and not _boxes_changed(gray, prev_gray, prev_dets, roi)):
-            dets, blank = prev_dets, prev_blank
-        else:
-            dets = _detect(eng, np.ascontiguousarray(img), float(c["min_score"]))
-            blank = getattr(eng, "unread", [])
-            if not full_roi:
-                for d in dets:
-                    r = d["rect"]
-                    d["rect"] = (r[0] + roi[0], r[1] + roi[1], r[2] + roi[0], r[3] + roi[1])
-                blank = [(r[0] + roi[0], r[1] + roi[1], r[2] + roi[0], r[3] + roi[1]) for r in blank]
-            if filter_regions:
-                dets = [d for d in dets if _in_regions(d["rect"], W, H, include, exclude)]
-                blank = [r for r in blank if _in_regions(r, W, H, include, exclude)]
+    eng_pool = queue.Queue()
+    for e in engines:
+        eng_pool.put(e)
+
+    def _run_ocr(img_buf):
+        eng = eng_pool.get()
+        try:
+            dets = _detect(eng, img_buf, min_score)
+            blank = list(getattr(eng, "unread", []))
+        finally:
+            eng_pool.put(eng)
+        if not full_roi:
+            for d in dets:
+                rc = d["rect"]
+                d["rect"] = (rc[0] + roi[0], rc[1] + roi[1], rc[2] + roi[0], rc[3] + roi[1])
+            blank = [(rc[0] + roi[0], rc[1] + roi[1], rc[2] + roi[0], rc[3] + roi[1]) for rc in blank]
+        if filter_regions:
+            dets = [d for d in dets if _in_regions(d["rect"], W, H, include, exclude)]
+            blank = [rc for rc in blank if _in_regions(rc, W, H, include, exclude)]
+        return dets, blank
+
+    def _consume(idx, t, frame, gray, thumb, dets, blank, was_ocr):
+        nonlocal active, closed, next_id, prev_thumb, prev_gray, prev_dets, prev_blank, n_ocr, last_report
+        if was_ocr:
             prev_thumb, prev_gray, prev_dets, prev_blank = thumb, gray, dets, blank
             n_ocr += 1
         _track_unread(unread_regions, blank, t, max_gap)
@@ -539,9 +569,10 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
         def snap():  # 这一帧存一张截图（同一帧只存一次）
             nonlocal snap_path
             if snap_path is None:
-                snap_path = os.path.join(frames_dir, f"f{n_frames:06d}.jpg")
+                snap_path = os.path.join(frames_dir, f"f{idx:06d}.jpg")
                 _imwrite(snap_path, frame)
             return snap_path
+
         next_id = _step(active, dets, t, next_id, change_frames, snap)
         still = []
         for tr in active:
@@ -553,6 +584,62 @@ def scan(video, info, c, workdir, ocr_lang="japan", unread=None):
             last_report = t
             el = time.time() - t0
             log(f"  画面字扫描到 {t / 60:.0f} 分钟，已用 {el:.0f}s，预计还要 {el / max(t, 1) * (duration - t):.0f}s")
+
+    frame_iter = media.iter_frames(video, vinfo, fps, c["height"], info["start_time"], c.get("hwaccel", False))
+    if workers <= 1:
+        for t, frame in frame_iter:
+            check_cancel()
+            n_frames += 1
+            img = frame if full_roi else frame[roi[1]:roi[3], roi[0]:roi[2]]
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            thumb = cv2.resize(gray, (192, 108), interpolation=cv2.INTER_AREA).astype(np.int16)
+            if (c["skip_static"] and prev_thumb is not None and np.percentile(np.abs(thumb - prev_thumb), 99.5) < 8
+                    and not _boxes_changed(gray, prev_gray, prev_dets, roi)):
+                _consume(n_frames, t, frame, gray, thumb, prev_dets, prev_blank, False)
+            else:
+                dets, blank = _run_ocr(np.ascontiguousarray(img))
+                _consume(n_frames, t, frame, gray, thumb, dets, blank, True)
+    else:
+        max_inflight = workers * 2
+        pending = deque()
+        last_sub_thumb = None
+        ex = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="nyasub-ocr")
+
+        def _drain_one():
+            idx, t, frame, img, gray, thumb, fut = pending.popleft()
+            check_cancel()
+            if fut is not None:
+                dets, blank = fut.result()
+                _consume(idx, t, frame, gray, thumb, dets, blank, True)
+            elif prev_gray is not None and not _boxes_changed(gray, prev_gray, prev_dets, roi):
+                _consume(idx, t, frame, gray, thumb, prev_dets, prev_blank, False)
+            else:
+                dets, blank = _run_ocr(np.ascontiguousarray(img))
+                _consume(idx, t, frame, gray, thumb, dets, blank, True)
+
+        try:
+            for t, frame in frame_iter:
+                check_cancel()
+                n_frames += 1
+                img = frame if full_roi else frame[roi[1]:roi[3], roi[0]:roi[2]]
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                thumb = cv2.resize(gray, (192, 108), interpolation=cv2.INTER_AREA).astype(np.int16)
+                coarse_static = bool(
+                    c["skip_static"] and last_sub_thumb is not None
+                    and np.percentile(np.abs(thumb - last_sub_thumb), 99.5) < 8
+                )
+                if coarse_static:
+                    pending.append((n_frames, t, frame, img, gray, thumb, None))
+                else:
+                    fut = ex.submit(_run_ocr, np.ascontiguousarray(img))
+                    last_sub_thumb = thumb
+                    pending.append((n_frames, t, frame, img, gray, thumb, fut))
+                while len(pending) >= max_inflight:
+                    _drain_one()
+            while pending:
+                _drain_one()
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
     closed = _rejoin(closed + active)
     log(f"  共 {n_frames} 帧，实际 OCR {n_ocr} 帧，跟踪到 {len(closed)} 条文字轨迹")
 
