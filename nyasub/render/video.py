@@ -194,7 +194,7 @@ def streams(path):
     return json.loads(out.decode("utf-8", "replace")).get("streams", [])
 
 
-def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, vinfo=None):
+def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, vinfo=None, pipe_cmd=None):
     """运行 ffmpeg，推 {"type": "progress"} 事件。返回 (返回码, 错误输出末尾, 处理到的秒数)。
     给了 video / vinfo 时按视频帧数也算一份进度（某条音轨中途断了时 ffmpeg 报的时间会卡住）。"""
     from ..sources import media
@@ -203,7 +203,7 @@ def _ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, 
         env.progress(min(done, total) if total else done, total, {"mux": "封装", "burn": "压制"}.get(label, label),
                      stage=label, every=0.5)
     fps = media.stream_fps(video, vinfo["index"])[0] if video and vinfo else 0.0
-    return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part, fps=fps)
+    return media.run_ffmpeg(cmd, duration, progress, cancel, cwd, part, fps=fps, pipe_cmd=pipe_cmd)
 
 
 def _finish(rc, tail, part, out):
@@ -362,11 +362,33 @@ def _resolve_bit_depth(enc, bit_depth, do_709):
     return True, "yuv420p10le", [], False
 
 
-def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_backend="cuda"):
+_TS_SUFFIXES = (".ts", ".m2ts", ".mts")
+
+
+def _vt_ts_pipe(video, vinfo):
+    """广播 TS/M2TS 裸流缺少容器级 extradata 且开头常有残缺 GOP，Apple VideoToolbox 硬解会直接报 -17694。
+    通过无损 NUT 管道流式封装（同时带视频和音轨、保留相对时间戳且不占磁盘）即可稳定走硬解。"""
+    if Path(video).suffix.lower() not in _TS_SUFFIXES:
+        return None
+    return ["ffmpeg", "-nostdin", "-v", "error", "-i", str(Path(video).resolve()),
+            "-map", f"0:{vinfo['index']}", "-map", "0:a?", "-c", "copy", "-f", "nut", "pipe:1"]
+
+
+def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_backend="cuda", src_10=False):
     """构建压制时的前置输入参数与 -vf 滤镜链。"""
     scaled = (w, h) != (vinfo["width"], vinfo["height"])
     extra = [extra_vf] if extra_vf else []
     subs = ["subtitles=sub.ass:fontsdir=fonts"]
+    if use_gpu_decode and hw_backend == "videotoolbox" and not inter and (do_709 or scaled):
+        # Apple Silicon：VideoToolbox 硬件解码 + scale_vt 硬件缩放/转 BT.709，避免 4K60 走 CPU zscale
+        pre = ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+        vt_sw = "p010le" if src_10 else "nv12"
+        vt_opts = ([f"w={w}", f"h={h}"] if scaled else []) + (
+            ["color_matrix=bt709", "color_primaries=bt709", "color_transfer=bt709"] if do_709 else []
+        )
+        tag709 = ["setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"] if do_709 else []
+        vf = [f"scale_vt={':'.join(vt_opts)}", "hwdownload", f"format={vt_sw}", "setsar=1"] + extra + subs + tag709
+        return pre, vf
     if do_709:
         pre = ["-hwaccel", hw_backend] if use_gpu_decode else []
         out_fmt = "yuv420p10le" if use_10 else "yuv420p"
@@ -380,7 +402,7 @@ def _burn_vf(vinfo, w, h, inter, use_gpu_decode, do_709, use_10, extra_vf, hw_ba
         pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
         vf = (["yadif_cuda=mode=send_frame:deint=all"] if inter else []) + [f"scale_cuda={w}:{h}:format={gpu_fmt}", "hwdownload", f"format={gpu_fmt}", "setsar=1"] + extra + subs
         return pre, vf
-    # VideoToolbox（统一内存，FFmpeg 无 scale_cuda 类滤镜）和纯 CPU：硬件解码 + CPU 滤镜链
+    # VideoToolbox（无需缩放/转色或需反交错时）和纯 CPU：硬件解码 + CPU 滤镜链
     pre = ["-hwaccel", hw_backend] if use_gpu_decode else []
     vf = (["bwdif=mode=send_frame:deint=all"] if inter else []) + ([f"scale={w}:{h}:flags=lanczos"] if scaled else []) + ["setsar=1"] + extra + subs
     return pre, vf
@@ -411,7 +433,12 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
     w, h = media.frame_size(vinfo, height)
     inter = vinfo.get("interlaced")
     extra_vf_clean = (extra_vf or "").strip()
-    audio = [s.get("codec_name") for s in streams(video) if s.get("codec_type") == "audio"]
+    src_streams = streams(video)
+    vs = next((s for s in src_streams if s.get("index") == vinfo["index"]), None) or next(
+        (s for s in src_streams if s.get("codec_type") == "video"), {}
+    )
+    src_10 = "10" in (vs.get("pix_fmt") or "")
+    audio = [s.get("codec_name") for s in src_streams if s.get("codec_type") == "audio"]
     acodec = ["-c:a", "copy"] if all(c in MP4_COPY_AUDIO for c in audio) else ["-c:a", "aac", "-b:a", "192k"]
     part = _part(Path(out).resolve())
     encs = pick_encoders(encoder, vinfo.get("codec"), bit_depth=bit_depth)
@@ -428,7 +455,7 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
             env.log(f"{enc} 不支持 10-bit，已改用 8-bit（如需 10-bit 请选 H.265 或 libx264）")
             warned_h264_10 = True
         hw_backend = "videotoolbox" if enc.endswith("_videotoolbox") else "cuda"
-        pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean, hw_backend=hw_backend)
+        pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean, hw_backend=hw_backend, src_10=src_10)
         cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
         limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
         is_hevc = enc in HEVC_ENCODERS
@@ -439,11 +466,15 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
         )
         out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, *acodec, "-movflags", "+faststart"]
         out_args = merge_ffmpeg_args(out_args, extra_args)
-        cmd = ["ffmpeg", "-y", "-v", "error", *pre, "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}",
-               "-map", "0:a?", "-vf", ",".join(vf), *out_args, str(part)]
+        pipe_cmd = _vt_ts_pipe(video, vinfo) if (hw_backend == "videotoolbox" and use_gpu) else None
+        in_args = ["-i", "pipe:0", "-map", "0:v:0", "-map", "0:a?"] if pipe_cmd else [
+            "-i", str(Path(video).resolve()), "-map", f"0:{vinfo['index']}", "-map", "0:a?"
+        ]
+        cmd = ["ffmpeg", "-y", "-v", "error", *pre, *in_args, "-vf", ",".join(vf), *out_args, str(part)]
         how = f"{enc}{'，显卡解码' if pre else ''}，{'10-bit' if use_10 else '8-bit'}" + ("，BT.709" if do_709 else "")
         env.log(f"压制硬字幕：{how}，画质 {quality}，{w}×{h}" + (f"，码率不超过 {cap / 1e6:.1f} Mbps" if cap else ""))
-        rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part, video=video, vinfo=vinfo)
+        ff_kw = {"pipe_cmd": pipe_cmd} if pipe_cmd else {}
+        rc, tail, done = _ffmpeg(cmd, duration, "burn", cancel, cwd=str(work), part=part, video=video, vinfo=vinfo, **ff_kw)
         if rc != 0 and done < 1 and i + 1 < len(tried):  # 一开始就失败（没有 N 卡、显卡不支持这种编码）：换下一种
             env.log(f"{how} 不可用（{tail.splitlines()[-1] if tail else rc}），换下一种")
             continue

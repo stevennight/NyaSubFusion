@@ -31,14 +31,63 @@ def test_resolve_bit_depth_videotoolbox():
 
 def test_burn_vf_videotoolbox():
     vinfo = {"width": 1920, "height": 1080, "index": 0}
-    pre, vf = video._burn_vf(vinfo, 1280, 720, inter=False, use_gpu_decode=True, do_709=False, use_10=False, extra_vf="", hw_backend="videotoolbox")
-    assert pre == ["-hwaccel", "videotoolbox"]
-    assert "scale=1280:720:flags=lanczos" in vf
+    pre, vf = video._burn_vf(vinfo, 1280, 720, inter=False, use_gpu_decode=True, do_709=False, use_10=False, extra_vf="", hw_backend="videotoolbox", src_10=False)
+    assert pre == ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+    assert "scale_vt=w=1280:h=720" in vf
+    assert "hwdownload" in vf and "format=nv12" in vf
     assert not any("cuda" in x for x in vf)
 
-    pre709, vf709 = video._burn_vf(vinfo, 1920, 1080, inter=False, use_gpu_decode=True, do_709=True, use_10=True, extra_vf="", hw_backend="videotoolbox")
-    assert pre709 == ["-hwaccel", "videotoolbox"]
-    assert any("zscale=" in x for x in vf709)
+    pre709, vf709 = video._burn_vf(vinfo, 1920, 1080, inter=False, use_gpu_decode=True, do_709=True, use_10=True, extra_vf="", hw_backend="videotoolbox", src_10=True)
+    assert pre709 == ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+    assert "scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709" in vf709
+    assert "hwdownload" in vf709 and "format=p010le" in vf709
+    assert not any("zscale=" in x for x in vf709)
+
+    # 回退到 CPU 解码或隔行片源时仍走 zscale
+    pre_cpu, vf_cpu = video._burn_vf(vinfo, 1920, 1080, inter=False, use_gpu_decode=False, do_709=True, use_10=True, extra_vf="", hw_backend="videotoolbox", src_10=True)
+    assert pre_cpu == []
+    assert any("zscale=" in x for x in vf_cpu)
+
+    pre_inter, vf_inter = video._burn_vf(vinfo, 1920, 1080, inter=True, use_gpu_decode=True, do_709=True, use_10=True, extra_vf="", hw_backend="videotoolbox", src_10=True)
+    assert pre_inter == ["-hwaccel", "videotoolbox"]
+    assert any("bwdif=" in x for x in vf_inter) and any("zscale=" in x for x in vf_inter)
+
+
+def test_burn_videotoolbox_ts_pipe_and_fallback(monkeypatch, tmp_path):
+    vid = tmp_path / "broadcast.ts"
+    vid.write_bytes(b"\x00" * 1024)
+    ass = tmp_path / "s.ass"
+    ass.write_text("[Script Info]\n[Events]\n", encoding="utf-8")
+    vinfo = {"index": 0, "width": 3840, "height": 2160, "aspect": 16 / 9, "codec": "hevc", "interlaced": False}
+    calls = []
+
+    def fake_ffmpeg(cmd, duration, label, cancel=None, cwd=None, part=None, video=None, vinfo=None, pipe_cmd=None):
+        calls.append((list(cmd), list(pipe_cmd) if pipe_cmd else None))
+        if len(calls) == 1:
+            return 1, "hw fail", 0.0
+        part.write_bytes(b"ok")
+        return 0, "", 10.0
+
+    monkeypatch.setattr(video, "streams", lambda path: [
+        {"index": 0, "codec_type": "video", "codec_name": "hevc", "pix_fmt": "yuv420p10le", "color_primaries": "bt2020"},
+        {"index": 1, "codec_type": "audio", "codec_name": "aac"},
+    ])
+    monkeypatch.setattr(video, "_body_transfer", lambda path, at: [1, 1])
+    monkeypatch.setattr(video, "_ffmpeg", fake_ffmpeg)
+
+    out = tmp_path / "out.mp4"
+    video.burn(str(vid), str(ass), [], out, vinfo, encoder="hevc_videotoolbox", duration=10.0,
+               work_dir=tmp_path / "w", bit_depth="auto", color_709="auto")
+    assert len(calls) == 2
+    cmd1, pipe1 = calls[0]
+    assert pipe1 is not None and "-f" in pipe1 and "nut" in pipe1 and "pipe:1" in pipe1
+    assert "pipe:0" in cmd1 and "videotoolbox_vld" in cmd1
+    assert "scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709" in cmd1[cmd1.index("-vf") + 1]
+
+    # 硬解失败后自动回退为直读原片 + CPU zscale + hevc_videotoolbox
+    cmd2, pipe2 = calls[1]
+    assert pipe2 is None and "pipe:0" not in cmd2
+    assert "zscale=" in cmd2[cmd2.index("-vf") + 1]
 
 
 def test_merge_ffmpeg_args_overrides_vt_qv():

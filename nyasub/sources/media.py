@@ -304,17 +304,28 @@ PROXY_NAME = "proxy2.mp4"  # v2：一律 8 位 H.264、最高约 30 帧（v1 遇
 from ..env import Cancelled as Stopped  # noqa: E402（取消了：ffmpeg 已结束，半成品已删除）
 
 
-def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None, fps=0.0):
+def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=None, fps=0.0, pipe_cmd=None):
     """运行 ffmpeg，用 -progress 读进度：on_progress(处理到的秒数, 总秒数)，大约每半秒一次。
     cancel（threading.Event）设置后结束 ffmpeg、删掉半成品 part，抛 Stopped。返回 (返回码, 错误输出末尾, 处理到的秒数)。
     fps：输出视频的帧率。ffmpeg 报的 out_time 取各条流里最慢的那条，有一条音轨中途断了（广播开头的立体声音轨
-    1.9 秒后就没数据了）时会一直停在那里；给了帧率就再用“视频帧数 ÷ 帧率”算一个，取大的。"""
+    1.9 秒后就没数据了）时会一直停在那里；给了帧率就再用“视频帧数 ÷ 帧率”算一个，取大的。
+    pipe_cmd：非空时先起一条前置 ffmpeg 把流通过管道喂给 cmd 的 stdin（取消或结束时一并清理）。"""
     import threading
     import time
     from pathlib import Path
 
     cmd = cmd[:1] + ["-nostdin", "-nostats", "-progress", "pipe:1"] + cmd[1:]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    feeder = subprocess.Popen(pipe_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=cwd) if pipe_cmd else None
+    try:
+        proc = subprocess.Popen(cmd, stdin=feeder.stdout if feeder else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    except Exception:
+        if feeder:
+            feeder.kill()
+            feeder.wait()
+        raise
+    if feeder and feeder.stdout:
+        feeder.stdout.close()  # 让下游退出时上游能收到 SIGPIPE
     err = []
     threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()
     done, last = 0.0, 0.0
@@ -323,6 +334,9 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
             if cancel is not None and cancel.is_set():
                 proc.kill()
                 proc.wait()
+                if feeder and feeder.poll() is None:
+                    feeder.kill()
+                    feeder.wait()
                 if part:
                     Path(part).unlink(missing_ok=True)
                 raise Stopped()
@@ -339,6 +353,10 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        if feeder:
+            if feeder.poll() is None:
+                feeder.kill()
+            feeder.wait()
     tail = b"".join(err).decode("utf-8", "replace").strip()[-600:]
     return proc.returncode, tail, done
 
