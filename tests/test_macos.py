@@ -126,6 +126,22 @@ def test_components_manifest_empty_on_darwin(monkeypatch):
     assert components.manifest() == {}
 
 
+def test_env_terminate_children_kills_registered_subprocess():
+    import subprocess
+
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    env.register_child(p)
+    try:
+        assert p.poll() is None
+        env.terminate_children()
+        assert p.poll() is not None
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        env.unregister_child(p)
+
+
 def test_env_home_darwin(monkeypatch):
     monkeypatch.delenv("NYASUB_HOME", raising=False)
     monkeypatch.setattr(sys, "platform", "darwin")

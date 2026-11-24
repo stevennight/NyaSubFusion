@@ -7,6 +7,8 @@ from fractions import Fraction
 
 import numpy as np
 
+from .. import env
+
 TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "arib_caption"}
 
 
@@ -316,6 +318,7 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
 
     cmd = cmd[:1] + ["-nostdin", "-nostats", "-progress", "pipe:1"] + cmd[1:]
     feeder = subprocess.Popen(pipe_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=cwd) if pipe_cmd else None
+    env.register_child(feeder)
     try:
         proc = subprocess.Popen(cmd, stdin=feeder.stdout if feeder else None,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
@@ -323,7 +326,9 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
         if feeder:
             feeder.kill()
             feeder.wait()
+            env.unregister_child(feeder)
         raise
+    env.register_child(proc)
     if feeder and feeder.stdout:
         feeder.stdout.close()  # 让下游退出时上游能收到 SIGPIPE
     err = []
@@ -353,10 +358,12 @@ def run_ffmpeg(cmd, duration=0.0, on_progress=None, cancel=None, cwd=None, part=
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        env.unregister_child(proc)
         if feeder:
             if feeder.poll() is None:
                 feeder.kill()
             feeder.wait()
+            env.unregister_child(feeder)
     tail = b"".join(err).decode("utf-8", "replace").strip()[-600:]
     return proc.returncode, tail, done
 

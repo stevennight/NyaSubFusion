@@ -207,6 +207,7 @@ def _watch_parent(pid, server):
         while alive():
             time.sleep(1)
         server.should_exit = True  # 先设退出标志：桌面壳没了，标准输出管道也断了，打日志可能失败
+        env.terminate_children()
         import sys
 
         sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")  # 管道已断，退出时不再刷输出

@@ -368,12 +368,14 @@ def create_app(token: str | None = None) -> FastAPI:
     # ---------- 基本 ----------
     @app.get("/api/health")
     def health():
-        return {"ok": True, "version": __version__}
+        return {"ok": True, "version": __version__,
+                "running": [pid for pid, j in hub.jobs.items() if j.status == "running"]}
 
     @app.post("/api/shutdown")
     def shutdown():
         """桌面壳关闭前调用：优雅退出。"""
         server = getattr(app.state, "server", None)
+        running = [pid for pid, j in hub.jobs.items() if j.status == "running"]
         if hub.loop:  # 先让所有 WebSocket 正常断开，免得关闭时被强制取消
             for qs in hub.subs.values():
                 for q in list(qs):
@@ -381,9 +383,10 @@ def create_app(token: str | None = None) -> FastAPI:
         from ..llm import cli_backend
 
         cli_backend.close_all()
+        env.terminate_children()
         if server:
             server.should_exit = True
-        return {"ok": True, "running": [pid for pid, j in hub.jobs.items() if j.status == "running"]}
+        return {"ok": True, "running": running}
 
     # ---------- 全局设置（用户配置 + 凭据库） ----------
     def _user_cfg_path():

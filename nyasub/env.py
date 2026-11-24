@@ -135,11 +135,72 @@ def progress(done, total, label="", stage=None, every=1.0):
 _job = None
 
 
+_children_lock = threading.Lock()
+_children = set()
+_posix_cleanup_installed = False
+
+
+def register_child(proc):
+    """登记由内核启动的外部子进程（如 ffmpeg），退出时统一回收。"""
+    if proc is None:
+        return
+    with _children_lock:
+        _children.add(proc)
+
+
+def unregister_child(proc):
+    if proc is None:
+        return
+    with _children_lock:
+        _children.discard(proc)
+
+
+def terminate_children():
+    """结束所有已登记且仍在运行的子进程，避免内核退出后留下孤儿 ffmpeg。"""
+    with _children_lock:
+        procs = list(_children)
+        _children.clear()
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except Exception:
+            pass
+    for p in procs:
+        try:
+            p.wait(timeout=2)
+        except Exception:
+            pass
+
+
 def kill_children_on_exit():
-    """Windows：把自己放进一个“关闭即结束”的作业对象。内核退出（包括被桌面壳强行结束、崩溃）时，
-    它启动的 ffmpeg 之类的子进程也一起结束，不会留在后台继续转码。"""
-    global _job
-    if os.name != "nt" or _job is not None:
+    """Windows：把自己放进一个“关闭即结束”的作业对象；macOS/Linux：注册退出与信号钩子清理子进程。
+    内核退出（包括被桌面壳强行结束、崩溃）时，它启动的 ffmpeg 之类的子进程也一起结束，不会留在后台继续转码。"""
+    global _job, _posix_cleanup_installed
+    if os.name != "nt":
+        if not _posix_cleanup_installed:
+            import atexit
+            import signal
+
+            _posix_cleanup_installed = True
+            atexit.register(terminate_children)
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                prev = signal.getsignal(sig)
+
+                def _handler(signum, frame, _prev=prev):
+                    terminate_children()
+                    if callable(_prev):
+                        _prev(signum, frame)
+                    elif _prev == signal.SIG_DFL:
+                        signal.signal(signum, signal.SIG_DFL)
+                        os.kill(os.getpid(), signum)
+
+                try:
+                    signal.signal(sig, _handler)
+                except ValueError:
+                    pass  # 非主线程时跳过
+        return
+    if _job is not None:
         return
     import ctypes
     from ctypes import wintypes
