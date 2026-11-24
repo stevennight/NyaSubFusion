@@ -16,6 +16,7 @@ def isolated_home(tmp_path, monkeypatch):
     from nyasub import secrets
 
     secrets._memory.clear()
+    secrets._cache.clear()
     return home
 
 

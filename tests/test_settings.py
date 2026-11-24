@@ -79,3 +79,48 @@ def test_connection_test_against_mock():
             assert c.post("/api/settings/test", json={"name": "nope"}).json()["ok"] is False
     finally:
         srv.shutdown()
+
+
+def test_secrets_file_backend(isolated_home, monkeypatch):
+    import os
+    import stat
+
+    monkeypatch.setenv("NYASUB_KEYRING", "file")
+    assert "secrets.json" in secrets.available()
+    assert secrets.get("deepseek") == ""
+    secrets.set("deepseek", "sk-local")
+    assert secrets.get("deepseek") == "sk-local"
+    p = isolated_home / "secrets.json"
+    assert p.is_file()
+    if os.name != "nt":
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    secrets.delete("deepseek")
+    assert secrets.get("deepseek") == ""
+
+
+def test_secrets_system_backend_caches_reads(monkeypatch):
+    monkeypatch.setenv("NYASUB_KEYRING", "system")
+    calls = []
+
+    class _FakeKR:
+        def get_password(self, service, name):
+            calls.append((service, name))
+            return "sk-cached"
+
+        def set_password(self, service, name, key):
+            pass
+
+        def delete_password(self, service, name):
+            pass
+
+    monkeypatch.setattr(secrets, "_backend", lambda: _FakeKR())
+    assert secrets.get("deepseek") == "sk-cached"
+    assert secrets.get("deepseek") == "sk-cached"
+    assert len(calls) == 1  # 第二次命中进程内缓存，不重复访问系统钥匙串
+    secrets.set("deepseek", "sk-new")
+    assert secrets.get("deepseek") == "sk-new"
+    assert len(calls) == 1
+    secrets.delete("deepseek")
+    assert secrets.get("deepseek") == "sk-cached"
+    assert len(calls) == 2
+
