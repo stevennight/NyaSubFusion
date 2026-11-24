@@ -72,9 +72,10 @@ def build(cues, profile, cfg, src_code, tokens=None):
                     info.append(item)
             continue
         main += _expand(cue, layers, profile, cfg, (tokens or {}).get(cue.get("id"), {}), seen)
-    # 手动放过位置、跟着画面字的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
-    fixed = [m for m in main if m.get("pos") or m.get("near")]
-    main = _extend_short(_resolve_overlaps([m for m in main if not (m.get("pos") or m.get("near"))], merge=profile.simultaneous == "merge"),
+    # 手动放过位置、跟着画面字、或手动竖排的字幕各放各的（常常就是为了和别的字幕同时显示），不参与“后一句开始时前一句结束”
+    fixed = [m for m in main if m.get("pos") or m.get("near") or m.get("vertical") is True]
+    main = _extend_short(_resolve_overlaps([m for m in main if not (m.get("pos") or m.get("near") or m.get("vertical") is True)],
+                                           merge=profile.simultaneous == "merge"),
                          profile.min_duration)
     return main + fixed + info
 
@@ -95,6 +96,12 @@ def _near(cue):
     return None
 
 
+def _vertical_opt(cue):
+    """手动指定的横竖排：True 竖排 / False 横排 / None 自动。"""
+    v = cue.get("vertical")
+    return v if isinstance(v, bool) else None
+
+
 def _source_of(cue, ly, code):
     """(文字, 注音词的键)。转写层取被转写那一层的文字。"""
     if ly.role == "original" or (ly.role == "transliteration" and ly.of == "original"):
@@ -113,7 +120,8 @@ def _info_item(cue, layers, cfg):
             lines = pack.wrap(shown, _max_chars(ly, pack, opts) + 4)
             return {"start": cue["start"], "end": cue["end"], "kind": "info", "layers": [(ly, code, [[(l, None)] for l in lines])],
                     "text": shown,  # 没折行的（竖排时按原来的换行、空格分列）
-                    "rect": cue.get("rect"), "sources": cue.get("sources", []), "cue": cue.get("id"), "pos": _pos(cue)}
+                    "rect": cue.get("rect"), "sources": cue.get("sources", []), "cue": cue.get("id"), "pos": _pos(cue),
+                    "vertical": _vertical_opt(cue)}
     return None
 
 
@@ -236,7 +244,7 @@ def _expand(cue, layers, profile, cfg, tok, seen):
         if lys:
             typ = (seg_type[groups[gi][0]] if seg_type and n_seg else None) or cue.get("type")  # 这一段单独设了类型就用它
             out.append({"start": round(t0, 3), "end": round(t0 + d, 3), "kind": "main", "type": typ, "cue": cue.get("id"), "pos": _pos(cue), "near": _near(cue),
-                        "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
+                        "vertical": _vertical_opt(cue), "layers": lys, "sources": cue.get("sources", []), "onscreen": cue.get("onscreen", False)})
         t0 += d
     return out
 

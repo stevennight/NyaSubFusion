@@ -187,3 +187,40 @@ def test_turning_fine_on_keeps_organize_and_redoes_translate(sample, api_config,
     assert cli.main(["run", str(sample), "--no-asr", "--no-ocr", "--config", str(api_config)]) == 0
     assert (stages / "organize.fp").read_text(encoding="utf-8") == org
     assert json.loads((stages / "translate.fp").read_text(encoding="utf-8"))["out"] == json.loads(tr)["out"]
+
+
+def test_glossary_and_term_misses_ignore_cjk_whitespace_differences():
+    """术语表里的全角空格、多空格或单条内换行，不影响分组翻译和统一译名的匹配；纯英文词间空格仍保留。"""
+    from nyasub.llm.translate import term_misses
+
+    cues = _cues(4)
+    cues[0]["orig"]["text"] = "風の中に\n土のにおいに\nもういちど 日本を見つける。"
+    cues[0]["tr"]["zh-Hans"]["text"] = "在风中\n在泥土的气息里\n重新发现日本"
+    cues[1]["orig"]["text"] = "私を\n見つける。"
+    cues[1]["tr"]["zh-Hans"]["text"] = "找到自己"
+    cues[2]["orig"]["text"] = "china"
+    cues[2]["tr"]["zh-Hans"]["text"] = "中国"
+    cues[3]["orig"]["text"] = "New\nYork"
+    cues[3]["tr"]["zh-Hans"]["text"] = "纽约市"
+    terms = [
+        {"src": "もういちど　日本を見つける", "tr": "再次发现日本"},
+        {"src": "私を見つける", "tr": "发现自己"},
+        {"src": "in a", "tr": "在里面"},
+        {"src": "New  York", "tr": "纽约"},
+    ]
+    p = fine.group_prompt(cues, 0, 3, "开场", "zh-Hans", "概要", terms, [])
+    assert "もういちど　日本を見つける → 再次发现日本" in p
+    assert "私を見つける → 发现自己" in p
+    assert "New  York → 纽约" in p
+    assert "in a → 在里面" not in p
+    # 跨两条相邻字幕不拼成一条误命中
+    split_cues = _cues(2)
+    split_cues[0]["orig"]["text"] = "私を"
+    split_cues[1]["orig"]["text"] = "見つける。"
+    p2 = fine.group_prompt(split_cues, 0, 1, "", "zh-Hans", "", [{"src": "私を見つける", "tr": "发现自己"}], [])
+    assert "私を見つける → 发现自己" not in p2
+    # 统一译名兜底也能检出漏用
+    assert term_misses(cues, terms, "zh-Hans") == [
+        (0, [("もういちど　日本を見つける", "再次发现日本")]),
+        (1, [("私を見つける", "发现自己")]),
+    ]

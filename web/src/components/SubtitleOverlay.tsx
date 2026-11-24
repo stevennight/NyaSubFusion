@@ -199,6 +199,19 @@ const shift = (off: [number, number] | null) => (off ? ` translate(${off[0]}px, 
 
 function Main({ it, preview, k, ctl, hl }: { it: PreviewItem; preview: Preview; k: number; ctl?: Ctl; hl?: PreviewHl }) {
   const { off, props } = useDrag(it, ctl);
+  if (it.vchars && it.vbox) {  // 竖排台词：每个字按导出的 ASS 一样的位置放
+    const st = preview.styles[it.style!] ?? Object.values(preview.styles)[0];
+    const css: CSSProperties = { ...styleCss(st, k) };
+    const [bx, by, bw, bh] = it.vbox;
+    return (
+      <div {...props} className={`near ${props.className ?? ""}${hl?.style && it.style === hl.style ? " hl" : ""}`}
+           style={{ left: bx * k, top: by * k, width: bw * k, height: bh * k, transform: shift(off).trim() || undefined }}>
+        {it.vchars.map(([x, y, ch], i) => (
+          <span key={i} style={{ ...css, position: "absolute", left: (x - bx) * k, top: (y - by) * k, transform: "translate(-50%, -50%)" }}>{ch}</span>
+        ))}
+      </div>
+    );
+  }
   // 手动放过位置：底边中点在 (x, y)；否则居中，离底边 margin_v
   const at: CSSProperties = it.x != null && it.y != null
     ? { left: it.x * k, top: it.y * k, right: "auto", transform: `translate(-50%, -100%)${shift(off)}` }

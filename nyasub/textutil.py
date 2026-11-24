@@ -6,6 +6,13 @@ from difflib import SequenceMatcher
 from rapidfuzz import fuzz
 
 _PUNCT = re.compile(r"[\s　、。，．,.!！?？・･「」『』（）()\[\]【】〈〉《》≪≫<>\"'“”‘’…‥~〜ー―\-:：;；/／♪♬→←↑↓＞＜]+")
+_CJK_SPACE = re.compile(r"(?<=[^\x00-\x7f]) +| +(?=[^\x00-\x7f])")
+
+
+def ws_norm(text):
+    """术语 / 短语子串匹配用：NFKC、合并空白、去掉非 ASCII 字符旁的空格（保留纯英文词间单空格）。"""
+    s = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip()
+    return _CJK_SPACE.sub("", s)
 
 
 def _kata_to_hira(s):

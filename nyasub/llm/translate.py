@@ -6,11 +6,12 @@
 - export：把任务写成文件，交给 Claude Code 之类的助手完成，再导回（见 jobs.py）。
 """
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 from .. import lang
 from ..env import Cancelled, log, progress
-from ..textutil import covered, fmt_time, full_sim, norm, sim
+from ..textutil import covered, fmt_time, full_sim, norm, sim, ws_norm
 from . import prompts
 
 SPEECH, SCREEN = ("subs", "asr"), ("telop", "info")
@@ -593,12 +594,18 @@ _HIRA = "ぁ-ゖー"  # 平假名名字（“みーちゃん”）
 
 def _mentions(text, name):
     """原文里有没有提到这个名字。片假名名字要前后都不接着片假名（“イナ”不算“イナゴ”）；
-    平假名名字前面不能接着长音 / 片假名（“みー”不算“まーみー”里的那半截）；前面接助词（“これはみーちゃん”）、后面接“ちゃん”“の”照样算。"""
-    if re.fullmatch(f"[{_KATA}]+", name):
-        return re.search(f"(?<![{_KATA}]){re.escape(name)}(?![{_KATA}])", text) is not None
-    if re.fullmatch(f"[{_HIRA}]+", name):
-        return re.search(f"(?<![{_KATA}]){re.escape(name)}", text) is not None
-    return name in text
+    平假名名字前面不能接着长音 / 片假名（“みー”不算“まーみー”里的那半截）；前面接助词（“これはみーちゃん”）、后面接“ちゃん”“の”照样算。
+    其余词 / 短语忽略全角半角和空白差异（如「もういちど　日本を見つける」匹配「もういちど 日本を見つける」）。"""
+    n = unicodedata.normalize("NFKC", (name or "").strip())
+    if not n:
+        return False
+    t = unicodedata.normalize("NFKC", text or "")
+    if re.fullmatch(f"[{_KATA}]+", n):
+        return re.search(f"(?<![{_KATA}]){re.escape(n)}(?![{_KATA}])", t) is not None
+    if re.fullmatch(f"[{_HIRA}]+", n):
+        return re.search(f"(?<![{_KATA}]){re.escape(n)}", t) is not None
+    kn = ws_norm(n)
+    return bool(kn) and kn in ws_norm(t)
 
 
 def term_misses(cues, terms, tgt_code):
@@ -617,7 +624,8 @@ def term_misses(cues, terms, tgt_code):
         tr = c.get("tr", {}).get(tgt_code, {}).get("text", "")
         if not tr:
             continue
-        miss = [(s, t) for s, t in want if _mentions(c["orig"]["text"], s) and t not in tr]
+        tr_norm = ws_norm(tr)
+        miss = [(s, t) for s, t in want if _mentions(c["orig"]["text"], s) and ws_norm(t) not in tr_norm]
         if miss:
             out.append((i, miss))
     return out

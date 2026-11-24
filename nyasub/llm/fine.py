@@ -5,7 +5,7 @@
 整段一次翻几十句时，靠上下文的句子（省略的主语、改口、调侃）模型顾不过来；分成小组、按顺序翻，配合高一些的思考程度，
 这些句子明显更准，前后译法也更一致（按顺序翻，后面能看到前面怎么译的）。"""
 from ..env import Cancelled, log, progress
-from ..textutil import fmt_time
+from ..textutil import fmt_time, ws_norm
 
 KIND = {"narration": "旁白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
 MAX_GROUP = 10
@@ -136,10 +136,12 @@ def tr_system(src, tgt, context, opts):
 
 def _glossary_for(text, terms, cast):
     """只给这一组（含前后文）里出现了的术语和人物。"""
-    tl = [f"{t.get('src')} → {t.get('tr')}" for t in terms if t.get("src") and t["src"] in text]
+    norm_text = ws_norm(text)
+    has = lambda src: bool(src) and bool(k := ws_norm(src)) and k in norm_text
+    tl = [f"{t.get('src')} → {t.get('tr')}" for t in terms if has(t.get("src"))]
     rows = []
     for ch in cast:
-        if any(n["src"] in text for n in ch["names"]):
+        if any(has(n["src"]) for n in ch["names"]):
             rows.append("、".join(f"{n['src']}→{n['tr']}" for n in ch["names"]) + f"（{ch['who']}）")
     return (("## 本集人物（同一行里的叫法指同一个人 / 动物）\n" + "\n".join(rows) + "\n\n") if rows else "") + \
         "## 术语表\n" + ("\n".join(tl) if tl else "（无）")
@@ -162,7 +164,7 @@ def group_prompt(cues, a, b, topic, tgt_code, summary, terms, cast, done=None):
 
     done = cues[:a] if done is None else done
     pre, grp, post = done[-8:], cues[a:b + 1], cues[b + 1:b + 7]
-    seen = "\n".join(c["orig"]["text"] for c in pre + grp + post)
+    seen = "\x00".join(c["orig"]["text"] for c in pre + grp + post)
     tr = lambda c: c.get("tr", {}).get(tgt_code, {}).get("text", "")
     return (f"## 本集概要\n{summary or '（无）'}\n\n{_glossary_for(seen, terms, cast)}\n\n"
             + ("## 前文（只帮助理解）\n" + "\n".join(f"{_mmss(c['start'])} {_show(c['orig']['text'])} → {_show(tr(c))}" for c in pre)

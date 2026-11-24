@@ -156,11 +156,14 @@ def vertical_columns(text, max_rows):
     return [c for c in cols if c]
 
 
-def _vertical(it, size, px, py):
-    """竖排说明译文的列和大小：一列最多和原来的竖条一样高（至少 3 个字），也不超出画面。返回 (列, 宽, 高)。"""
-    x0, y0, x1, y1 = it["rect"]
-    rows = max(3, min(int((y1 - y0) * py / (size * _ROW)), int((py - 40) / (size * _ROW))))
-    text = it.get("text") or "\n".join(plain(l) for l in it["layers"][0][2])
+def _vertical(it, size, px, py, aspect=16 / 9):
+    """竖排译文的列和大小：贴着竖条时一列最多和原来的竖条一样高（至少 3 个字），否则按画面高度算。返回 (列, 宽, 高)。"""
+    ref = it.get("rect") or it.get("near")
+    if ref and is_vertical(ref, aspect):
+        rows = max(3, min(int((ref[3] - ref[1]) * py / (size * _ROW)), int((py - 40) / (size * _ROW))))
+    else:
+        rows = max(3, int((py * 0.72) / (size * _ROW)))
+    text = it.get("text") or "\n".join("\n".join(plain(l) for l in lines) for _, _, lines in it["layers"])
     cols = vertical_columns(text, rows)
     return cols, len(cols) * size * _COL, max((len(c) for c in cols), default=0) * size * _ROW
 
@@ -241,15 +244,18 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
     info_st = used.get(profile.info_style)
     for it in (i for i in items if i["kind"] == "info"):
         lines = [plain(l) for l in it["layers"][0][2]]
-        vert = (getattr(profile, "info_vertical", True) and profile.info_mode == "near" and it.get("rect")
-                and is_vertical(it["rect"], aspect) and it["layers"][0][1].split("-")[0] in VERTICAL_LANGS)
+        auto_v = (getattr(profile, "info_vertical", True) and profile.info_mode == "near" and bool(it.get("rect"))
+                  and is_vertical(it["rect"], aspect) and it["layers"][0][1].split("-")[0] in VERTICAL_LANGS)
+        vert = it["vertical"] if it.get("vertical") is not None else auto_v
         if vert:  # 竖排：贴着竖条放，手动拖过的底边中点放在拖到的地方
             size = info_st.size
-            cols, w, h = _vertical(it, size, px, py)
+            cols, w, h = _vertical(it, size, px, py, aspect)
             if it.get("pos"):
                 bx0, by0 = it["pos"][0] * px - w / 2, it["pos"][1] * py - h
-            else:
+            elif it.get("rect"):
                 _, _, _, bx0, by0 = _info_spot(it, True, w, h, px, py, boxes)
+            else:
+                bx0, by0 = (px - w) / 2, 24
             if profile.avoid_hardsub:
                 boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
             placed.append({"kind": "info", "item": it, "an": 7, "x": round(bx0), "y": round(by0),
@@ -271,6 +277,25 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
     for it in sorted((i for i in items if i["kind"] == "main"), key=lambda i: (not i.get("near"), i["start"])):
         rows = _rows(it, used)
         ruby = any(r["ruby"] for r in rows)
+        auto_v = (getattr(profile, "info_vertical", True) and bool(it.get("near"))
+                  and is_vertical(it["near"], aspect) and it["layers"][0][1].split("-")[0] in VERTICAL_LANGS)
+        vert = it["vertical"] if it.get("vertical") is not None else auto_v
+        if vert:
+            style_name = it["layers"][0][0].style
+            size = used[style_name].size
+            cols, w, h = _vertical(it, size, px, py, aspect)
+            if it.get("pos"):
+                bx0, by0 = it["pos"][0] * px - w / 2, it["pos"][1] * py - h
+            elif it.get("near"):
+                _, _, _, bx0, by0 = _info_spot(dict(it, rect=it["near"]), is_vertical(it["near"], aspect), w, h, px, py, boxes)
+            else:
+                mv = avoid_margin(it, boxes, margin_v, px / 2 - w / 2, px / 2 + w / 2, h, py)
+                bx0, by0 = (px - w) / 2, max(8, py - mv - h)
+            boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
+            placed.append({"kind": "main", "item": it, "margin_v": round(py - (by0 + h)), "rows": rows, "ruby": False,
+                           "style": style_name, "x": round(bx0), "y": round(by0),
+                           "vbox": [round(bx0), round(by0), round(w), round(h)], "vchars": _vchars(cols, bx0, by0, w, size)})
+            continue
         if it.get("pos"):  # 手动拖过：不再自动避让硬字幕
             x, y = round(it["pos"][0] * px), round(it["pos"][1] * py)
             placed.append({"kind": "main", "item": it, "margin_v": py - y, "rows": rows, "ruby": ruby, "x": x, "y": y})
@@ -278,7 +303,7 @@ def place(items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46, fall
         w = max((r["width"] for r in rows), default=0) + 12
         h = sum(r["height"] for r in rows)
         if it.get("near"):  # 跟着画面上的某块字（几个人同时说话、各自的字打在各自旁边）：和说明一样贴着那块字放
-            _, _, _, bx0, by0 = _info_spot(dict(it, rect=it["near"]), False, w, h, px, py, boxes)
+            _, _, _, bx0, by0 = _info_spot(dict(it, rect=it["near"]), is_vertical(it["near"], aspect), w, h, px, py, boxes)
             x, y = round(bx0 + w / 2), round(by0 + h)
             placed.append({"kind": "main", "item": it, "margin_v": py - y, "rows": rows, "ruby": ruby, "x": x, "y": y})
             boxes.append(_box(it["start"], it["end"], bx0, bx0 + w, by0, by0 + h))
@@ -303,8 +328,10 @@ def write(path, items, profile, styles: dict, aspect, hardsub_boxes, margin_v=46
     out = [header(px, py, used, info_styles={profile.info_style})]
     for p in placed:
         it = p["item"]
-        if p["kind"] == "info" and p.get("vchars"):  # 竖排：一个字一个事件，各自定位（各家播放器显示得都一样）
-            out += [f"Dialogue: 1,{ts(it['start'])},{ts(it['end'])},{profile.info_style},,0,0,0,,{{\\an5\\pos({x},{y})}}{esc(ch)}"
+        if p.get("vchars"):  # 竖排：一个字一个事件，各自定位（各家播放器显示得都一样）
+            st_name = profile.info_style if p["kind"] == "info" else p.get("style") or it["layers"][0][0].style
+            layer_no = 1 if p["kind"] == "info" else 0
+            out += [f"Dialogue: {layer_no},{ts(it['start'])},{ts(it['end'])},{st_name},,0,0,0,,{{\\an5\\pos({x},{y})}}{esc(ch)}"
                     for x, y, ch in p["vchars"]]
             continue
         if p["kind"] == "info":

@@ -1150,6 +1150,9 @@ def create_app(token: str | None = None) -> FastAPI:
                 base.update(style=prof.info_style, lines=[layout.plain(l) for l in it["layers"][0][2]],
                             top=bool(p.get("top")), an=p.get("an"), x=p.get("x"), y=p.get("y"),
                             **({"vbox": p["vbox"], "vchars": p["vchars"]} if p.get("vchars") else {}))
+            elif p.get("vchars"):
+                base.update(style=p.get("style") or it["layers"][0][0].style, type=it.get("type"),
+                            x=p.get("x"), y=p.get("y"), vbox=p["vbox"], vchars=p["vchars"])
             else:
                 base.update(margin_v=p["margin_v"], type=it.get("type"), x=p.get("x"), y=p.get("y"), rows=[
                     {"style": r["ly"].style, "role": r["ly"].role, "layer": lidx.get(id(r["ly"]), -1), "chunks": [[t, rt] for t, rt, _, _ in r["chunks"]],

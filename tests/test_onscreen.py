@@ -815,6 +815,39 @@ def test_vertical_name_card_translation_is_vertical(tmp_path):
     assert "vchars" not in ass.place(layout.build([en], prof3, cfg, "ja"), prof3, cfg.render.styles, 16 / 9, [])[3][0]
 
 
+def test_dialogue_vertical_preset_and_manual_override(tmp_path):
+    """台词跟着竖排画面字时自动竖排；台词和说明都可以手动强制横排 / 竖排，并正常导出 ASS。"""
+    cfg = config.Config()
+    prof = ProfileCfg(name="t", layers=[LayerCfg(role="translation")])
+    vrect = [0.75, 0.2, 0.81, 0.72]   # 竖排框
+    hrect = [0.2, 0.8, 0.8, 0.88]     # 横排框
+    dlg = {"id": "q1", "start": 1, "end": 4, "type": "dialogue", "onscreen": True, "near": vrect,
+           "orig": {"lang": "ja", "text": "私を見つける"}, "tr": {"zh-Hans": {"text": "发现自己"}}, "sources": ["o1"]}
+    # 1. 台词跟随竖排画面字：自动预设竖排，贴在竖条外侧（右边）
+    items = layout.build([dlg], prof, cfg, "ja")
+    px, _, _, placed = ass.place(items, prof, cfg.render.styles, 16 / 9, [])
+    assert placed[0]["kind"] == "main" and len(placed[0]["vchars"]) == 4
+    assert placed[0]["vbox"][0] >= vrect[2] * px
+    out = tmp_path / "dlg_v.ass"
+    ass.write(out, items, prof, cfg.render.styles, 16 / 9, [])
+    ev = [l for l in out.read_text(encoding="utf-8-sig").splitlines() if l.startswith("Dialogue")]
+    assert len(ev) == 4 and all("{\\an5\\pos(" in l for l in ev)
+    # 2. 手动改横排：覆盖自动竖排
+    dlg_h = dict(dlg, vertical=False)
+    assert "vchars" not in ass.place(layout.build([dlg_h], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])[3][0]
+    # 3. 底部台词（无 near）手动改竖排：也能竖排
+    dlg_bottom_v = {"id": "q2", "start": 5, "end": 8, "type": "dialogue", "onscreen": False, "vertical": True,
+                    "orig": {"lang": "ja", "text": "風の中に"}, "tr": {"zh-Hans": {"text": "在风中"}}, "sources": ["c1"]}
+    p_bv = ass.place(layout.build([dlg_bottom_v], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])[3][0]
+    assert len(p_bv["vchars"]) == 3
+    # 4. 说明类横排框手动改竖排、竖排框手动改横排
+    info_h_to_v = {"id": "q3", "start": 9, "end": 12, "type": "info", "onscreen": True, "rect": hrect, "vertical": True,
+                   "orig": {"lang": "ja", "text": "青森"}, "tr": {"zh-Hans": {"text": "青森县"}}, "sources": ["o2"]}
+    assert len(ass.place(layout.build([info_h_to_v], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])[3][0]["vchars"]) == 3
+    info_v_to_h = dict(info_h_to_v, rect=vrect, vertical=False)
+    assert "vchars" not in ass.place(layout.build([info_v_to_h], prof, cfg, "ja"), prof, cfg.render.styles, 16 / 9, [])[3][0]
+
+
 def test_edited_translation_keeps_segments(sample):
     """只改了译文（把放错段的半句剪掉）：原文照没改过时一样整理（落在同一条字幕中间的“｜”合回去），
     和译文段数一样，照常分段——不会因为对不上整条变成一段、“｜”露在字里。"""

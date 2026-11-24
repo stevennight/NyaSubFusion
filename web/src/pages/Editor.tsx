@@ -711,6 +711,25 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
               </select>
             </>);
           })()}
+          {(() => {
+            const isInfo = ["info", "name", "title"].includes(cue.type);
+            const refRect = isInfo ? cue.rect : cue.near;
+            const autoV = !!refRect && (refRect[3] - refRect[1]) > (refRect[2] - refRect[0]) * (d.aspect || 16 / 9) * 1.5;
+            const value = cue.vertical === true ? "v" : cue.vertical === false ? "h" : "auto";
+            return (<>
+              <span className="lbl">排布</span>
+              <select className="inp" value={value}
+                      title="字幕横排还是竖排（自动：贴在竖排画面字旁边时竖排，其余横排；可随时手动切换）"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        patch({ vertical: v === "auto" ? null : v === "v" }, "已更改排布方向");
+                      }}>
+                <option value="auto">自动（{autoV ? "竖排" : "横排"}）</option>
+                <option value="h">横排</option>
+                <option value="v">竖排</option>
+              </select>
+            </>);
+          })()}
         </div>
         {cue.flags.length > 0 && <div className="row wrap" style={{ marginTop: 8 }}>{cue.flags.map((f) => <span key={f} className="chip warn">{FLAG_LBL[f] ?? f}</span>)}</div>}
       </div>
