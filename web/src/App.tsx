@@ -57,7 +57,7 @@ export default function App() {
     <div className={`app${isMacDesktop() ? " mac-desktop" : ""}`}>
       <header className="top" onMouseDown={dragWindow}>
         <div className="logo">
-          <svg width="26" height="26" viewBox="0 0 32 32"><path d="M5 8 L9 3 L13 9 Q16 8 19 9 L23 3 L27 8 Q29 13 28 19 Q26 28 16 28 Q6 28 4 19 Q3 13 5 8Z" fill="#ff7aa8" /><circle cx="11.5" cy="16" r="2" fill="#2a0d18" /><circle cx="20.5" cy="16" r="2" fill="#2a0d18" /><path d="M14 21 Q16 23 18 21" stroke="#2a0d18" strokeWidth="1.6" fill="none" strokeLinecap="round" /><rect x="7" y="23.5" width="18" height="2.2" rx="1.1" fill="#fff" opacity=".85" /></svg>
+          <img src="/favicon.png" width={26} height={26} alt="" draggable={false} />
           <span>Nya<b>Sub</b>Fusion</span>
           {s.appVersion && <span className="ver">v{s.appVersion}</span>}
         </div>
