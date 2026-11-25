@@ -31,9 +31,18 @@ MKV_COPY_SUBS = {"subrip", "ass", "ssa", "hdmv_pgs_subtitle", "dvd_subtitle", "d
 MKV_CONVERT_SUBS = {"mov_text": "srt", "text": "srt"}
 MP4_COPY_AUDIO = {"aac", "mp3", "ac3", "eac3"}
 MKV_CONVERT_AUDIO = {"aac_latm"}  # 日本广播的 LATM 封装 AAC：放进 MKV 很多播放器不认，转成普通 AAC
+# Apple VideoToolbox 的 -q:v（1~100）是非线性的；按实测码率曲线分段插值，使常用档位（14~32）与 NVENC -cq 体积/观感对齐
+_VT_CURVE = ((0, 100), (14, 80), (18, 73), (20, 69), (23, 63), (28, 54), (32, 46), (51, 10))
+
+
 def vt_quality(q):
-    """把 CRF/CQ（0~51，越小越清晰）映射到 Apple VideoToolbox 的 -q:v（1~100，越大越清晰）。"""
-    return max(1, min(100, round(100 - float(q) * 1.8)))
+    """把 CRF/CQ（0~51，越小越清晰）按实测非线性曲线映射到 Apple VideoToolbox 的 -q:v（1~100，越大越清晰）。"""
+    x = max(0.0, min(51.0, float(q)))
+    for (x0, y0), (x1, y1) in zip(_VT_CURVE, _VT_CURVE[1:]):
+        if x <= x1:
+            t = (x - x0) / (x1 - x0)
+            return max(1, min(100, round(y0 + t * (y1 - y0))))
+    return _VT_CURVE[-1][1]
 
 
 ENCODERS = {

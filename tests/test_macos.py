@@ -9,9 +9,15 @@ from nyasub.sources import asr, media
 
 def test_vt_quality_mapping():
     assert video.vt_quality(0) == 100
-    assert video.vt_quality(20) == 64
-    assert video.vt_quality(28) == 50
-    assert video.vt_quality(51) == 8
+    assert video.vt_quality(14) == 80
+    assert video.vt_quality(18) == 73
+    assert video.vt_quality(20) == 69
+    assert video.vt_quality(23) == 63
+    assert video.vt_quality(28) == 54
+    assert video.vt_quality(32) == 46
+    assert video.vt_quality(51) == 10
+    vals = [video.vt_quality(q) for q in range(52)]
+    assert vals == sorted(vals, reverse=True)
 
 
 def test_pick_encoders_darwin(monkeypatch):
