@@ -455,6 +455,58 @@ def _burn_fingerprint(video, ass_path, encoder, quality, w, h, bit_depth, do_709
     return h_obj.hexdigest()[:24]
 
 
+_USER_RATE_FLAGS = {"-b:v", "-q:v", "-maxrate", "-crf", "-cq"}
+
+
+def _probe_vt_bitrate(src, v_index, enc, quality, pix_fmt, prof, w, h, src_w, src_h, duration, work):
+    """对 VideoToolbox 做 2 点 × 2 秒快速抽样，预估纯 -q:v 模式的平均码率（bps）；失败返回 None。"""
+    if not duration or duration < 10:
+        return None
+    scaled = (w, h) != (src_w, src_h)
+    vf = [f"scale={w}:{h}:flags=bicubic", "setsar=1"] if scaled else []
+    rates = []
+    for idx, frac in enumerate((0.25, 0.65)):
+        at = max(0.0, duration * frac)
+        tmp = Path(work) / f"_vt_probe_{idx}.mp4"
+        cmd = [
+            "ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}", "-i", str(src),
+            "-map", f"0:{v_index}", "-t", "2",
+            *(["-vf", ",".join(vf)] if vf else []),
+            *ENCODERS[enc](quality), *prof, "-pix_fmt", pix_fmt, "-an", str(tmp),
+        ]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+            if res.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+                rates.append(tmp.stat().st_size * 8 / 2.0)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            tmp.unlink(missing_ok=True)
+    return (sum(rates) / len(rates)) if rates else None
+
+
+def _encoder_rate_args(enc, quality, cap, pix_fmt, prof, src, v_index, w, h, src_w, src_h, duration, work, extra_args=""):
+    """返回 (编码器参数, 码率上限参数)。
+    Apple VideoToolbox 一旦传 -maxrate 就会无视 -q:v 并把平均码率打折到约 65%；
+    因此 VideoToolbox 绝不传 -maxrate：先 2 秒抽样，不超上限用纯 -q:v，预计爆码率则改用精准的 -b:v <cap>。"""
+    if not enc.endswith("_videotoolbox"):
+        return ENCODERS[enc](quality), (["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else [])
+    try:
+        user_flags = {t.split("=", 1)[0] for t in shlex.split(str(extra_args or "")) if t.startswith("-")}
+    except ValueError:
+        user_flags = set()
+    if not cap or (user_flags & _USER_RATE_FLAGS):
+        return ENCODERS[enc](quality), []
+    est = _probe_vt_bitrate(src, v_index, enc, quality, pix_fmt, prof, w, h, src_w, src_h, duration, work)
+    if est is not None and est > cap:
+        env.log(f"VideoToolbox 抽样预估 {est / 1e6:.1f} Mbps 超过上限 {cap / 1e6:.1f} Mbps，改用目标码率 -b:v {cap / 1e6:.1f} Mbps")
+        tag = ["-tag:v", "hvc1"] if enc == "hevc_videotoolbox" else []
+        return ["-c:v", enc, "-b:v", str(cap), *tag], []
+    if est is not None:
+        env.log(f"VideoToolbox 抽样预估 {est / 1e6:.1f} Mbps ≤ 上限 {cap / 1e6:.1f} Mbps，使用恒定画质 -q:v {vt_quality(quality)}")
+    return ENCODERS[enc](quality), []
+
+
 def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w, h, inter, src_10, do_709,
                     encoder, quality, bit_depth, extra_args, extra_vf_clean, acodec, src_bps, tried,
                     duration, cancel, chunk_seconds=CHUNK_SECONDS):
@@ -564,14 +616,23 @@ def _burn_resumable(video, ass_path, out, part, work, vinfo, src_streams, vs, w,
             pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean,
                                hw_backend=hw_backend, src_10=src_10)
             cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
-            limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
+            vt_cache = manifest.setdefault("vt_enc_args", {})
+            if enc.endswith("_videotoolbox") and enc in vt_cache:
+                enc_args, limit = list(vt_cache[enc]), []
+            else:
+                enc_args, limit = _encoder_rate_args(
+                    enc, quality, cap, pix_fmt, prof, src_file, v_index, w, h,
+                    vinfo["width"], vinfo["height"], total_dur, work, extra_args=extra_args,
+                )
+                if enc.endswith("_videotoolbox"):
+                    vt_cache[enc] = list(enc_args)
             is_hevc = enc in HEVC_ENCODERS
             color_flags = (
                 ["-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
                  "-bsf:v", f"{'hevc_metadata' if is_hevc else 'h264_metadata'}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]
                 if do_709 else []
             )
-            out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, "-an"]
+            out_args = [*enc_args, *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, "-an"]
             out_args = merge_ffmpeg_args(out_args, extra_args)
             in_seek = ["-ss", f"{pre_t:.6f}"] if pre_t > 0 else []
             out_seek = ["-ss", f"{trim_ss:.6f}"] if trim_ss > 0 else []
@@ -668,6 +729,7 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
             duration, cancel, chunk_seconds=chunk_seconds,
         )
     warned_h264_10 = False
+    vt_cache = {}
     for i, (enc, use_gpu) in enumerate(tried):
         use_10, pix_fmt, prof, downgraded = _resolve_bit_depth(enc, bit_depth, do_709)
         if downgraded and not warned_h264_10:
@@ -676,14 +738,22 @@ def burn(video, ass_path, font_files, out, vinfo, encoder="auto", quality=20, he
         hw_backend = "videotoolbox" if enc.endswith("_videotoolbox") else "cuda"
         pre, vf = _burn_vf(vinfo, w, h, inter, use_gpu, do_709, use_10, extra_vf_clean, hw_backend=hw_backend, src_10=src_10)
         cap = rate_cap(src_bps, vinfo.get("codec"), (vinfo["width"], vinfo["height"]), (w, h), enc)
-        limit = ["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else []
+        if enc.endswith("_videotoolbox") and enc in vt_cache:
+            enc_args, limit = list(vt_cache[enc]), []
+        else:
+            enc_args, limit = _encoder_rate_args(
+                enc, quality, cap, pix_fmt, prof, Path(video).resolve(), vinfo["index"], w, h,
+                vinfo["width"], vinfo["height"], duration, work, extra_args=extra_args,
+            )
+            if enc.endswith("_videotoolbox"):
+                vt_cache[enc] = list(enc_args)
         is_hevc = enc in HEVC_ENCODERS
         color_flags = (
             ["-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
              "-bsf:v", f"{'hevc_metadata' if is_hevc else 'h264_metadata'}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]
             if do_709 else []
         )
-        out_args = [*ENCODERS[enc](quality), *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, *acodec, "-movflags", "+faststart"]
+        out_args = [*enc_args, *prof, *limit, "-pix_fmt", pix_fmt, *color_flags, *acodec, "-movflags", "+faststart"]
         out_args = merge_ffmpeg_args(out_args, extra_args)
         pipe_cmd = _vt_ts_pipe(video, vinfo) if (hw_backend == "videotoolbox" and use_gpu) else None
         in_args = ["-i", "pipe:0", "-map", "0:v:0", "-map", "0:a?"] if pipe_cmd else [

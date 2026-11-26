@@ -96,6 +96,41 @@ def test_burn_videotoolbox_ts_pipe_and_fallback(monkeypatch, tmp_path):
     assert "zscale=" in cmd2[cmd2.index("-vf") + 1]
 
 
+def test_vt_encoder_rate_args_probe_and_no_maxrate(monkeypatch, tmp_path):
+    # NVENC 仍保留 -maxrate / -bufsize
+    enc_nv, lim_nv = video._encoder_rate_args(
+        "hevc_nvenc", 20, 24_000_000, "p010le", ["-profile:v", "main10"],
+        tmp_path / "a.mp4", 0, 3840, 2160, 3840, 2160, 600.0, tmp_path,
+    )
+    assert "-cq" in enc_nv and lim_nv == ["-maxrate", "24000000", "-bufsize", "48000000"]
+
+    # VideoToolbox 预估不超上限 -> 纯 -q:v，不传 -maxrate
+    monkeypatch.setattr(video, "_probe_vt_bitrate", lambda *a, **kw: 18_000_000.0)
+    enc_q, lim_q = video._encoder_rate_args(
+        "hevc_videotoolbox", 20, 24_000_000, "p010le", ["-profile:v", "main10"],
+        tmp_path / "a.mp4", 0, 3840, 2160, 3840, 2160, 600.0, tmp_path,
+    )
+    assert "-q:v" in enc_q and "-b:v" not in enc_q and lim_q == []
+
+    # VideoToolbox 预估会爆码率 -> 切到 -b:v <cap>，不传 -q:v 也不传 -maxrate
+    monkeypatch.setattr(video, "_probe_vt_bitrate", lambda *a, **kw: 30_000_000.0)
+    enc_b, lim_b = video._encoder_rate_args(
+        "hevc_videotoolbox", 20, 24_000_000, "p010le", ["-profile:v", "main10"],
+        tmp_path / "a.mp4", 0, 3840, 2160, 3840, 2160, 600.0, tmp_path,
+    )
+    assert enc_b == ["-c:v", "hevc_videotoolbox", "-b:v", "24000000", "-tag:v", "hvc1"]
+    assert lim_b == []
+
+    # 用户显式传了 -q:v 时跳过抽样，且不传 -maxrate
+    probed = []
+    monkeypatch.setattr(video, "_probe_vt_bitrate", lambda *a, **kw: probed.append(1) or 99_000_000.0)
+    enc_u, lim_u = video._encoder_rate_args(
+        "hevc_videotoolbox", 20, 24_000_000, "p010le", ["-profile:v", "main10"],
+        tmp_path / "a.mp4", 0, 3840, 2160, 3840, 2160, 600.0, tmp_path, extra_args="-q:v 72",
+    )
+    assert not probed and "-q:v" in enc_u and lim_u == []
+
+
 def test_merge_ffmpeg_args_overrides_vt_qv():
     base = [*video.ENCODERS["hevc_videotoolbox"](20), "-pix_fmt", "yuv420p"]
     merged = video.merge_ffmpeg_args(base, "-b:v 4M")
