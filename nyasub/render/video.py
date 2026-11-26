@@ -490,7 +490,8 @@ def _encoder_rate_args(enc, quality, cap, pix_fmt, prof, src, v_index, w, h, src
     Apple VideoToolbox 一旦传 -maxrate 就会无视 -q:v 并把平均码率打折到约 65%；
     因此 VideoToolbox 绝不传 -maxrate：先 2 秒抽样，不超上限用纯 -q:v，预计爆码率则改用精准的 -b:v <cap>。"""
     if not enc.endswith("_videotoolbox"):
-        return ENCODERS[enc](quality), (["-maxrate", str(cap), "-bufsize", str(cap * 2)] if cap else [])
+        peak = int(cap * 1.5) if cap else 0  # 峰值上限放宽到原片平均码率的 1.5 倍，给高动态场景留足余量
+        return ENCODERS[enc](quality), (["-maxrate", str(peak), "-bufsize", str(peak * 2)] if peak else [])
     try:
         user_flags = {t.split("=", 1)[0] for t in shlex.split(str(extra_args or "")) if t.startswith("-")}
     except ValueError:

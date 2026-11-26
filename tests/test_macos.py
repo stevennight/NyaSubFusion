@@ -97,12 +97,12 @@ def test_burn_videotoolbox_ts_pipe_and_fallback(monkeypatch, tmp_path):
 
 
 def test_vt_encoder_rate_args_probe_and_no_maxrate(monkeypatch, tmp_path):
-    # NVENC 仍保留 -maxrate / -bufsize
+    # NVENC 保留 -maxrate / -bufsize，峰值上限放宽到原片平均码率的 1.5 倍
     enc_nv, lim_nv = video._encoder_rate_args(
         "hevc_nvenc", 20, 24_000_000, "p010le", ["-profile:v", "main10"],
         tmp_path / "a.mp4", 0, 3840, 2160, 3840, 2160, 600.0, tmp_path,
     )
-    assert "-cq" in enc_nv and lim_nv == ["-maxrate", "24000000", "-bufsize", "48000000"]
+    assert "-cq" in enc_nv and lim_nv == ["-maxrate", "36000000", "-bufsize", "72000000"]
 
     # VideoToolbox 预估不超上限 -> 纯 -q:v，不传 -maxrate
     monkeypatch.setattr(video, "_probe_vt_bitrate", lambda *a, **kw: 18_000_000.0)
