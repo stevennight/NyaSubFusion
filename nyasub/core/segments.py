@@ -212,8 +212,68 @@ def proportional(cue):
     return out
 
 
+def _anchor_parts(normed, srcs, t0, t1, fallback_bounds=None):
+    """当来源之间有时间重叠或与原文语序倒挂时，逐段匹配来源并以最长有效单调锚点链定边界，
+    只对局部冲突区间按字数比例插值，不因一处冲突作废整条字幕其余分段的真实时间。"""
+    n = len(normed)
+    src_norms = [norm(s["text"].replace("➡", "")) for s in srcs]
+    matched_total = 0
+    cands = {0: t0, n: t1}
+    for m, p in enumerate(normed):
+        if not p:
+            continue
+        best_hit, best_s = 0, None
+        for s, st in zip(srcs, src_norms):
+            if not st:
+                continue
+            hit = sum(b.size for b in SequenceMatcher(None, p, st, autojunk=False).get_matching_blocks() if b.size)
+            if hit > best_hit:
+                best_hit, best_s = hit, s
+        if best_s is not None and best_hit >= min(2, len(p)) and best_hit >= 0.5 * min(len(p), len(norm(best_s["text"].replace("➡", "")))) and best_hit >= 0.35 * len(p):
+            matched_total += best_hit
+            if m > 0:
+                cands[m] = min(t1, max(t0, best_s["start"]))
+        elif m > 0 and fallback_bounds is not None:
+            cands[m] = fallback_bounds[m - 1]
+    if matched_total < 0.5 * max(1, sum(len(p) for p in normed)):
+        return None
+    pts = sorted(cands.items())  # [(seg_idx, time), ...]，含 (0, t0) 与 (n, t1)
+    # 最长有效单调锚点链：相邻锚点之间至少留出每段 MIN_PART 秒
+    dp = [(-1, -1)] * len(pts)  # (已选锚点数, 前驱下标)
+    dp[0] = (1, -1)
+    for j in range(1, len(pts)):
+        ij, tj = pts[j]
+        for i in range(j):
+            if dp[i][0] < 0:
+                continue
+            ii, ti = pts[i]
+            if tj - ti >= MIN_PART * (ij - ii) - 1e-6:
+                score = dp[i][0] + 1
+                if score > dp[j][0]:
+                    dp[j] = (score, i)
+    if dp[-1][0] <= 2:  # 没有保住任何内部锚点：交回调用方按字数比例
+        return None
+    chain, cur = [], len(pts) - 1
+    while cur >= 0:
+        chain.append(pts[cur])
+        cur = dp[cur][1]
+    chain.reverse()
+    out = []
+    for (i, ti), (j, tj) in zip(chain, chain[1:]):
+        if j - i == 1:
+            out.append([round(ti, 3), round(tj, 3)])
+        else:
+            ws = [max(1, len(normed[k])) for k in range(i, j)]
+            cur_t = ti
+            for w in ws:
+                d = (tj - ti) * w / sum(ws)
+                out.append([round(cur_t, 3), round(cur_t + d, 3)])
+                cur_t += d
+    return out
+
+
 def part_times(cue, items):
-    """每段的 [开始, 结束]；算不出来（来源对不上、某段太短）返回 None，排版时按字数比例分。"""
+    """每段的 [开始, 结束]；算不出来（来源对不上、没有任何有效锚点）返回 None，排版时按字数比例分。"""
     ps = pieces(cue["orig"]["text"])
     if len(ps) < 2:
         return None
@@ -231,8 +291,6 @@ def part_times(cue, items):
     orig = "".join(normed)
     sm = SequenceMatcher(None, orig, text, autojunk=False)
     blocks = [b for b in sm.get_matching_blocks() if b.size]
-    if sum(b.size for b in blocks) < 0.5 * len(orig):
-        return None
 
     def to_src(i):
         """原文第 i 个字 → 来源文字里的位置。"""
@@ -258,11 +316,13 @@ def part_times(cue, items):
         k = min(len(times) - 1, max(0, int(round(pos))))
         return times[k]
 
-    bounds, i = [], 0
-    for p in normed[:-1]:
-        i += len(p)
-        bounds.append(min(t1, max(t0, at(to_src(i)))))
-    cuts = [t0] + bounds + [t1]
-    if any(b - a < MIN_PART for a, b in zip(cuts, cuts[1:])):
-        return None
-    return [[round(a, 3), round(b, 3)] for a, b in zip(cuts, cuts[1:])]
+    bounds = None
+    if sum(b.size for b in blocks) >= 0.5 * len(orig):
+        bounds, i = [], 0
+        for p in normed[:-1]:
+            i += len(p)
+            bounds.append(min(t1, max(t0, at(to_src(i)))))
+        cuts = [t0] + bounds + [t1]
+        if all(b - a >= MIN_PART for a, b in zip(cuts, cuts[1:])):
+            return [[round(a, 3), round(b, 3)] for a, b in zip(cuts, cuts[1:])]
+    return _anchor_parts(normed, srcs, t0, t1, fallback_bounds=bounds)

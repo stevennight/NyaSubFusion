@@ -419,14 +419,26 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     return finalize(all_cues), glossary
 
 
-MERGE_MAX, MERGE_GAP = 4, 2.0
+MERGE_MAX, MERGE_GAP, MERGE_DUR, ONSCREEN_GAP = 4, 2.0, 12.0, 0.8
 
 
 def can_merge(group):
-    """翻译时合成一条的几条：都是对话或都是旁白、相邻两条间隔不超过 MERGE_GAP 秒、最多 MERGE_MAX 条。"""
+    """翻译时合成一条的几条：都是对话或都是旁白、总“｜”分段不超过 MERGE_MAX、总时长不超过 MERGE_DUR、
+    相邻间隔不超过 MERGE_GAP（两条均含画面字时不超过 ONSCREEN_GAP，避免跨明显画面空档硬并多块屏幕字）。"""
+    from ..core import segments
+
     if len(group) > MERGE_MAX or len({c.get("type") for c in group}) != 1 or group[0].get("type") not in ("dialogue", "narration"):
         return False
-    return all(b["start"] - a["end"] <= MERGE_GAP for a, b in zip(group, group[1:]))
+    if sum(len(segments.pieces(c["orig"]["text"])) or 1 for c in group) > MERGE_MAX:
+        return False
+    if max(c["end"] for c in group) - min(c["start"] for c in group) > MERGE_DUR:
+        return False
+    for a, b in zip(group, group[1:]):
+        gap = b["start"] - a["end"]
+        limit = ONSCREEN_GAP if (a.get("onscreen") and b.get("onscreen")) else MERGE_GAP
+        if gap > limit:
+            return False
+    return True
 
 
 def merge_cues(group, tr, tgt_code):

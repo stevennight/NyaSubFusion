@@ -291,11 +291,20 @@ def overlap(a, b):
     return ix * iy / min(_area(a), _area(b))
 
 
-def _covered(a, b):
-    """框 b 有多少被框 a 盖住。"""
+def _inter(a, b):
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    return ix * iy / _area(b)
+    return ix * iy
+
+
+def _iou(a, b):
+    inter = _inter(a, b)
+    return inter / max(1e-9, _area(a) + _area(b) - inter) if inter > 0 else 0.0
+
+
+def _covered(a, b):
+    """框 b 有多少被框 a 盖住。"""
+    return _inter(a, b) / _area(b)
 
 
 def _union(rs):
@@ -353,21 +362,22 @@ def match_moment(items, visible, mine):
     visible：[(这一刻在画面上的本地字, 它这一刻的框)]（包括不在这一刻复核的，免得当成漏检）；mine：这一刻复核的字的 id。
     返回 (groups, misses)：groups = [(合成一条的本地字（第一条留下）, 对上的模型字)]（没对上模型字的组，模型字为空），
     misses = 和本地哪条都对不上的模型字。
-    每块模型字归重叠最多的那条本地字；几条一起出现的本地字都是和同一块模型字重叠最多（被切开的标题），合成一条。
-    标题的大框顺带盖住下面的字幕不算：字幕和它自己那块模型字重叠得更多。"""
-    hits = [[(overlap(it["box"], b), e) for e, b in visible] for it in items]
-    hits = [[(o, e) for o, e in h if o >= MATCH] for h in hits]
-    best = {}  # 本地字 id → 和它重叠最多的模型字序号
+    每块模型字按实际交集面积归属于真实文本（或已合并的同组多行），避免极小的振假名以 overlap=1.0 截胡主字幕；
+    几条一起出现的本地字都是和同一块模型字重叠最多（被切开的标题），合成一条。"""
+    hits = [[(overlap(it["box"], b), _iou(it["box"], b), e, b) for e, b in visible] for it in items]
+    hits = [[x for x in h if x[0] >= MATCH] for h in hits]
+    best = {}  # 本地字 id → ((overlap, iou), 模型字序号)
     for k, h in enumerate(hits):
-        for o, e in h:
-            if e["id"] not in best or o > best[e["id"]][0]:
-                best[e["id"]] = (o, k)
+        for o, iou, e, _ in h:
+            score = (o, iou)
+            if e["id"] not in best or score > best[e["id"]][0]:
+                best[e["id"]] = (score, k)
     by_id = {e["id"]: e for e, _ in visible}
-    groups = []  # [[本地字...], [模型字序号...]]
+    groups = []  # [[本地字...], [模型字...], {认领的模型字序号}]
     where = {}
     for i in (i for i in by_id if i in mine):
         e = by_id[i]
-        k = best.get(i, (0, None))[1]
+        k = best.get(i, (None, None))[1]
         g = next((g for g in groups if k is not None and k in g[2] and all(_together(e, x) for x in g[0])), None)
         if g is None:
             g = [[], [], set() if k is None else {k}]
@@ -379,9 +389,21 @@ def match_moment(items, visible, mine):
         if not h:
             misses.append(it)
             continue
-        o, e = max(h, key=lambda x: (x[0], x[1]["id"] in where))
-        if e["id"] in where:
-            where[e["id"]][1].append(it)
+        by_owner = {}  # owner_key -> [is_real, total_inter_area, group_or_None]
+        for _, _, e, b in h:
+            g = where.get(e["id"])
+            key = ("g", id(g)) if g is not None else ("e", e["id"])
+            ia = _inter(it["box"], b)
+            real = not e.get("prefiltered")
+            prev = by_owner.get(key)
+            if prev is None:
+                by_owner[key] = [real, ia, g]
+            else:
+                prev[0] = prev[0] or real
+                prev[1] += ia
+        _, _, winner = max(by_owner.values(), key=lambda x: (x[0], x[1], x[2] is not None))
+        if winner is not None:
+            winner[1].append(it)
     return [(sorted(evs, key=lambda e: (e["start"], e["rect"][1])), its) for evs, its, _ in groups], misses
 
 
@@ -395,6 +417,18 @@ def _line_px(rect, text, vertical, aspect):
     """每行（竖排是每列）字的大小，按画面高的比例算。"""
     n = max(1, len([ln for ln in text.split("\n") if ln.strip()]))
     return ((rect[2] - rect[0]) * aspect if vertical else rect[3] - rect[1]) / n
+
+
+def _vlm_expanded(text, local):
+    """模型是否补出了本地漏检的字（例如花字标题本地只认出半截、或漏掉一整行）：
+    只有在这种情况下，模型的框才比本地 DBNet 框多出真实文字区域；
+    本地已认全（包括仅修正错别字/标点）时，本地 DBNet 框就是像素级几何真相。"""
+    a, b = _fold(text), _fold(local)
+    if not a:
+        return False
+    if not b:
+        return True
+    return len(a) > len(b) and covered(a, b) < 0.85
 
 
 def _clipped(box, text, vertical, aspect):
@@ -587,11 +621,21 @@ def _recheck(llm, frame, r, cands, name):
 
 
 def _merge_into(keep, others):
-    """被切开的几块合成一条：时间取并集，每块字的框和文字都留着。"""
-    keep["start"] = round(min(e["start"] for e in [keep, *others]), 3)
-    keep["end"] = round(max(e["end"] for e in [keep, *others]), 3)
-    keep["pieces"] = [p for e in [keep, *others] for p in e.get("pieces") or []]
+    """被切开的几块合成一条：时间与几何框均取并集，维持事件对象不变量（每块字的框和文字都留着）。"""
+    from ..sources.ocr import _zone
+
+    all_evs = [keep, *others]
+    keep["start"] = round(min(e["start"] for e in all_evs), 3)
+    keep["end"] = round(max(e["end"] for e in all_evs), 3)
+    keep["pieces"] = [p for e in all_evs for p in (e.get("pieces") or [[*e["rect"], e["text"]]])]
     keep["merged"] = [*keep.get("merged", []), *[e["id"] for e in others]]
+    if not keep.get("moving"):
+        rect = [round(v, 4) for v in _union([e["rect"] for e in all_evs])]
+        crop_rect = [round(v, 4) for v in _union([e.get("crop_rect") or e["rect"] for e in all_evs])]
+        keep["rect"] = rect
+        keep["crop_rect"] = crop_rect
+        keep["snap_rect"] = list(rect)
+        keep["zone"] = _zone(rect, keep.get("vertical"))
 
 
 def fold_dups(events):
@@ -721,10 +765,12 @@ def _plan_frame_groups(frame, key, groups, gone, aspect, n, recheck_jobs, frame_
     entries = []
     for ei, (evs, its) in enumerate(groups):
         keep = evs[0]
-        local, _, _ = compose_text(evs, vertical=bool(keep.get("vertical")))
+        local, n_lines, _ = compose_text(evs, vertical=bool(keep.get("vertical")))
         keep["text_local"] = local
         if len(evs) > 1:
             _merge_into(keep, evs[1:])
+            keep["text"] = local
+            keep["lines"] = n_lines
             gone.update(e["id"] for e in evs[1:])
             n["merged"] += len(evs) - 1
             log(f"  {keep['id']}：和 {'、'.join(e['id'] for e in evs[1:])} 是同一块字（本地切开了），合成一条")
@@ -760,16 +806,17 @@ def _plan_unseen_crops(entries, frame, key, boxes, recheck_jobs, frame_tag):
     """为模型整帧没读到的本地字提前裁好特写，并排入本批共享的 recheck_jobs。"""
     if frame.img is None:
         return
-    for ei, mode, _, keep, local, *_ in entries:
+    for ei, mode, evs, keep, local, *_ in entries:
         if mode == "unseen":
-            p = frame.crop(boxes[keep["id"]], f"{key}_{keep['id']}")
+            r = _union([boxes[e["id"]] for e in evs])
+            p = frame.crop(r, f"{key}_{keep['id']}")
             if p:
                 recheck_jobs.append(((frame_tag, "g", ei), p, [local]))
 
 
 def _apply_frame_groups(entries, boxes, short, aspect, video, t, logo, n, rechecks, frame_tag):
     """按原顺序把并发特写复核结果写回各组，并做超框补找时间。"""
-    from ..sources.ocr import _zone, track_region
+    from ..sources.ocr import _zone, tight_rect, track_region
 
     for ei, mode, evs, keep, local, text, kind, box, score in entries:
         g = rechecks.get((frame_tag, "g", ei), {})
@@ -784,6 +831,7 @@ def _apply_frame_groups(entries, boxes, short, aspect, video, t, logo, n, rechec
             if g.get("text") and max(e.get("score", 0) for e in evs) >= TRUST_LOCAL:
                 g["text"] = _keep_local(g["text"], "", local)  # 只有特写一次读法，本地有把握的字照留
             _apply(keep, g)
+            keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
             continue
         if mode == "settle":
             # 有证据才用：模型整帧读的和本地读的不一样，截特写再读一遍，对着两次读法定（_settle）。
@@ -807,23 +855,27 @@ def _apply_frame_groups(entries, boxes, short, aspect, video, t, logo, n, rechec
             continue
         _apply(keep, {"text": text, "kind": kind})
         keep["lines"] = len([ln for ln in keep["text"].split("\n") if ln.strip()]) or 1
-        if not keep.get("moving"):  # 位置用模型框的（本地框常常不全）；滚动的字只有那一刻的框，不动
-            mine_box = _union([boxes[e["id"]] for e in evs])
-            if norm(text) == norm(local) and _covered(mine_box, box) >= 0.8 \
-                    and _clipped(box, text, keep.get("vertical"), aspect) and not _clipped(mine_box, text, keep.get("vertical"), aspect):
-                box = mine_box  # 模型的框只框住了字的一部分（扁得装不下这几个字）、字和本地一样：用本地的框
-            if _covered(mine_box, box) < 0.6:
-                # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
-                # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
-                # 最多往前后各放宽 RETIME_MAX 秒：背景满是边缘时（雪中的树林）按边缘找会找过头，
-                # 片尾的「新日本風土記」本地 58:58 才认出，按框找成了 58:51，比字出现早了 7 秒，盖住旁白
-                start, end = track_region(str(video), t, box, aspect)
-                start, end = max(start, keep["start"] - RETIME_MAX), min(end, keep["end"] + RETIME_MAX)
-                keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
-                n["retimed"] += 1
-            keep["rect_local"] = keep["rect"]
-            keep["rect"] = keep["snap_rect"] = box
-            keep["zone"] = _zone(box, keep.get("vertical"))
+        if not keep.get("moving"):
+            # 几何真相边界：本地已覆盖全部文字时，以 DBNet 像素级框（mine_box）为准，避免 VLM 坐标漂移/虚大；
+            # 只有 VLM 确实补出了本地漏检的字（花字标题只认出半截等）时，才采用 VLM 框并回视频重找时间。
+            mine_box = [round(v, 4) for v in _union([boxes[e["id"]] for e in evs])]
+            if _vlm_expanded(text, local):
+                chosen = mine_box if (_clipped(box, text, keep.get("vertical"), aspect)
+                                      and not _clipped(mine_box, text, keep.get("vertical"), aspect)) else box
+                if _covered(mine_box, chosen) < 0.6:
+                    # 本地只认出这块字的一小部分（花字标题），认出的那一小块常常只闪了一下，时间也不全：
+                    # 按模型的框回原视频前后找这块字待了多久，和本地的时间合起来
+                    start, end = track_region(str(video), t, chosen, aspect)
+                    start, end = max(start, keep["start"] - RETIME_MAX), min(end, keep["end"] + RETIME_MAX)
+                    keep["start"], keep["end"] = round(min(keep["start"], start), 3), round(max(keep["end"], end), 3)
+                    n["retimed"] += 1
+            else:
+                tight = (tight_rect(keep.get("pieces") or [], local, text)
+                         if len(_fold(text)) < len(_fold(local)) and keep.get("pieces") else None)
+                chosen = [round(v, 4) for v in tight] if tight else mine_box
+            keep["rect_local"] = mine_box
+            keep["rect"] = keep["snap_rect"] = chosen
+            keep["zone"] = _zone(chosen, keep.get("vertical"))
 
 
 def _plan_frame_misses(frame, key, misses, only, events, gone, added, W, H, aspect, t, recheck_jobs, frame_tag,

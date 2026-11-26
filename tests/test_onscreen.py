@@ -318,7 +318,7 @@ def test_vlm_groups_atomic_caption_lines_and_keeps_adjacent_scene_separate(tmp_p
     scenes = [e for e in out if e.get("kind") == "scene"]
     assert len(caps) == 1 and len(scenes) == 1
     assert caps[0]["text"] == "ここだったら白浜中学校に\n避難するんですけど"
-    assert caps[0]["rect"] == [0.27, 0.822, 0.718, 0.982]
+    assert caps[0]["rect"] == [0.27, 0.826, 0.716, 0.98]
     assert scenes[0]["text"] == "24"
 
 
@@ -358,7 +358,7 @@ def test_refine_frames_end_to_end(tmp_path, monkeypatch):
     t, v = (next(e for e in out if e["id"] == i) for i in ("o1", "v1"))
     assert (t["text"], t["text_local"], t["kind"], t["start"], t["merged"]) == \
         ("サヨナラまでの日々", "坂道の上の家わでの曰々", "caption", 10.0, ["o2"])
-    assert t["rect"] == [0.354, 0.764, 0.957, 0.892] and t["rect_local"] == [0.62, 0.75, 0.96, 0.91]
+    assert t["rect"] == [0.35, 0.75, 0.96, 0.91] and t["rect_local"] == [0.35, 0.75, 0.96, 0.91]
     assert len(t["pieces"]) == 2
     assert (v["text"], v["kind"], v["start"], v["end"], v["found_by"]) == ("せふり さしみコンニャク", "scene", 10.0, 15.0, "vlm")
     assert (tmp_path / v["crop"]).exists()
@@ -491,9 +491,9 @@ def test_refine_rechecks_small_changes_to_confident_caption_and_caps_retime(tmp_
     video.write_bytes(b"x")
     events = [{"id": "o858", "start": 1973.9, "end": 1980.5, "snap_t": 1974.0, "rect": [0.06, 0.85, 0.27, 0.98], "text": "鮭とば",
                "vertical": False, "lines": 1, "score": 0.987, "crop": "crops/o858.jpg", "pieces": [[0.06, 0.85, 0.27, 0.98, "鮭とば"]]},
-              {"id": "o1360", "start": 3538.4, "end": 3541.2, "snap_t": 3538.5, "rect": [0.53, 0.68, 0.92, 1.0], "text": "新日本風土記",
+              {"id": "o1360", "start": 3538.4, "end": 3541.2, "snap_t": 3538.5, "rect": [0.53, 0.68, 0.92, 1.0], "text": "風土記",
                "vertical": False, "lines": 1, "score": 0.878, "crop": "crops/o1360.jpg",
-               "pieces": [[0.53, 0.68, 0.92, 1.0, "新日本風土記"]]}]
+               "pieces": [[0.53, 0.68, 0.92, 1.0, "風土記"]]}]
     asked = []
 
     class Fake:
@@ -503,13 +503,15 @@ def test_refine_rechecks_small_changes_to_confident_caption_and_caps_retime(tmp_
                 if "1974" in str(images):
                     return {"items": [{"text": "鮭とは", "kind": "caption", "bbox": [60, 850, 270, 980]}]}
                 return {"items": [{"text": "新日本風土記", "kind": "caption", "bbox": [300, 400, 950, 1000]}]}
+            if "風土記" in user:
+                return {"text": "新日本風土記", "kind": "caption"}
             return {"text": "鮭とば", "kind": "caption"}
 
     import nyasub.llm.client as client
     monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
     out = {e["id"]: e for e in refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(3840, 2160))}
     assert out["o858"]["text"] == "鮭とば"
-    assert sum(1 for s, _ in asked if s == refine.RECHECK_SYSTEM) == 1
+    assert sum(1 for s, u in asked if s == refine.RECHECK_SYSTEM and "鮭" in u) == 1
     assert out["o1360"]["start"] == round(3538.4 - refine.RETIME_MAX, 3)
 
 
@@ -1557,5 +1559,93 @@ def test_refine_skip_small_scene_option(tmp_path, monkeypatch):
         ("小字旁白", "caption"), ("神社絵馬", "scene"), ("遠景看板", "scene"),
     ]
     assert len(out_on) == len(out_off)
+
+
+def test_vlm_bbox_drift_and_bloat_do_not_override_accurate_local_box(tmp_path, monkeypatch):
+    """本地已认全文字时，以 DBNet 本地框为几何真相：
+    - VLM 框向右虚大（o18 模型）不撑大框，也不误触发 track_region 拉长结束时间；
+    - VLM 框整帧上偏（o378 模型）不把框往上拉偏；
+    - 花字标题本地只认出一小截、VLM 补全整句时，仍采用 VLM 框并触发 track_region。"""
+    import cv2
+    import numpy as np
+
+    from nyasub.core.config import Config
+    from nyasub.llm import client, refine
+    from nyasub.sources import media, ocr
+
+    frame = tmp_path / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((720, 1280, 3), 90, np.uint8))
+    monkeypatch.setattr(media, "grab_frames", lambda video, times, out, **kw: {round(t, 3): frame for t in times})
+    retimed = []
+    monkeypatch.setattr(ocr, "track_region", lambda video, t, rect, aspect=16 / 9: (retimed.append(round(t, 1)) or (t - 1.5, t + 1.5)))
+    (tmp_path / "crops").mkdir()
+    video = tmp_path / "v.ts"
+    video.write_bytes(b"x")
+
+    events = [
+        {"id": "o18", "start": 84.038, "end": 88.338, "snap_t": 84.188,
+         "rect": [0.3148, 0.8986, 0.6828, 0.9889], "text": "清めたまえ祓いたまえ",
+         "vertical": False, "lines": 1, "score": 0.988,
+         "pieces": [[0.3148, 0.8986, 0.6828, 0.9889, "清めたまえ祓いたまえ"]]},
+        {"id": "o378", "start": 2168.038, "end": 2171.238, "snap_t": 2168.188,
+         "rect": [0.2477, 0.9014, 0.7539, 0.9833], "text": "平穏な日々台風などの来ないこと",
+         "vertical": False, "lines": 1, "score": 1.0,
+         "pieces": [[0.2477, 0.9014, 0.7539, 0.9833, "平穏な日々台風などの来ないこと"]]},
+        {"id": "o99", "start": 500.0, "end": 502.0, "snap_t": 501.0,
+         "rect": [0.55, 0.75, 0.65, 0.88], "text": "たり",
+         "vertical": False, "lines": 1, "score": 0.85,
+         "pieces": [[0.55, 0.75, 0.65, 0.88, "たり"]]},
+    ]
+
+    class Fake:
+        def chat_json(self, system, user, images=None):
+            if system == refine.READ_SYSTEM:
+                s = str(images)
+                if "000084188" in s:
+                    return {"items": [{"text": "清めたまえ、祓いたまえ", "kind": "caption", "bbox": [321, 879, 827, 987]}]}
+                if "002168188" in s:
+                    return {"items": [{"text": "平穏な日々 台風などの来ないこと", "kind": "caption", "bbox": [251, 852, 739, 928]}]}
+                return {"items": [{"text": "森のなかのふたり", "kind": "caption", "bbox": [200, 700, 700, 900]}]}
+            return {"text": "森のなかのふたり", "kind": "caption"}
+
+    monkeypatch.setattr(client, "LLM", lambda *a, **k: Fake())
+    out = {e["id"]: e for e in refine.refine_ocr(events, Config(), str(tmp_path), None, video=str(video), size=(1280, 720))}
+    assert out["o18"]["rect"] == [0.3148, 0.8986, 0.6828, 0.9889]
+    assert out["o18"]["end"] == 88.338
+    assert out["o378"]["rect"] == [0.2477, 0.9014, 0.7539, 0.9833]
+    assert out["o378"]["end"] == 2171.238
+    assert out["o99"]["rect"] == [0.2, 0.7, 0.7, 0.9]
+    assert retimed == [501.0]
+    # 单字漏检补成两字大标题（「り」→「祟り」）：同样判定为 VLM 补字，采用 VLM 框
+    assert refine._vlm_expanded("祟り", "り")
+    assert not refine._vlm_expanded("鮭とば", "鮭とは")
+
+
+def test_prefiltered_ruby_does_not_steal_vlm_box_and_merge_maintains_rect():
+    """多行标题（o29 + o31）伴随完全落在 VLM 大框内的振假名（o30, prefiltered）：
+    1. match_moment 中 o30 不以 overlap=1.0 截胡 VLM 框；
+    2. _merge_into 合并后同步更新 rect、crop_rect、zone，维持数据结构不变量。"""
+    from nyasub.llm.refine import _merge_into, match_moment
+
+    o29 = {"id": "o29", "start": 122.338, "end": 129.438, "rect": [0.1812, 0.6528, 0.4742, 0.8333],
+           "text": "入らずの森", "vertical": False, "lines": 1, "pieces": [[0.1812, 0.6528, 0.4742, 0.8333, "入らずの森"]]}
+    o30 = {"id": "o30", "start": 122.338, "end": 129.438, "rect": [0.5172, 0.7583, 0.5617, 0.8097],
+           "text": "モリ", "vertical": False, "lines": 1, "prefiltered": True}
+    o31 = {"id": "o31", "start": 122.338, "end": 129.438, "rect": [0.3273, 0.7917, 0.5875, 0.9528],
+           "text": "畏れの杜", "vertical": False, "lines": 1, "pieces": [[0.3273, 0.7917, 0.5875, 0.9528, "畏れの杜"]]}
+    items = [{"text": "入らずの\n眠れの杜", "kind": "caption", "box": [0.205, 0.697, 0.579, 0.942]}]
+    visible = [(e, e["rect"]) for e in (o29, o30, o31)]
+    groups, misses = match_moment(items, visible, {"o29", "o31"})
+    assert misses == []
+    assert len(groups) == 1
+    evs, its = groups[0]
+    assert [e["id"] for e in evs] == ["o29", "o31"]
+    assert len(its) == 1 and its[0]["text"] == "入らずの\n眠れの杜"
+
+    _merge_into(o29, [o31])
+    assert o29["rect"] == [0.1812, 0.6528, 0.5875, 0.9528]
+    assert o29["crop_rect"] == [0.1812, 0.6528, 0.5875, 0.9528]
+    assert len(o29["pieces"]) == 2
+
 
 

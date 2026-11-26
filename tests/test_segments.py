@@ -350,3 +350,42 @@ def test_segment_time_trimmed_to_its_words():
     plain = {"id": "a3", "start": 1.0, "end": 9.0, "text": "x", "words": []}
     out = repair([seg, one, plain])
     assert [(s["start"], s["end"]) for s in out] == [(15.84, 16.12), (804.39, 804.48), (1.0, 9.0)]
+
+
+def test_part_times_keeps_valid_anchors_when_middle_sources_overlap():
+    """5 段中仅第 3、4 段来源（c284 与 o352）时间重叠倒挂时，不作废全局：
+    前后能对上的 c283、o351、o353 仍锚定到各自真实边界，仅在局部冲突区间内按字数插值。"""
+    items = {
+        "c283": {"id": "c283", "src": "subs", "start": 1946.4, "end": 1949.734, "text": "ところが　その後…"},
+        "o351": {"id": "o351", "src": "telop", "start": 1949.338, "end": 1953.638, "text": "そういうことに携わった人たち誰もが"},
+        "o352": {"id": "o352", "src": "telop", "start": 1953.938, "end": 1957.038, "text": "言ってみれば祟りでしょうか"},
+        "c284": {"id": "c284", "src": "subs", "start": 1954.4, "end": 1957.067, "text": "分かりやすく言えば…"},
+        "o353": {"id": "o353", "src": "telop", "start": 1958.838, "end": 1961.838, "text": "気が変になったりした\nという話が続いてます"},
+    }
+    cue = _cue(
+        "ところが　その後…｜そういうことに携わった人たち誰もが｜分かりやすく言えば…｜祟りでしょうか｜気が変になったりした\nという話が続いてます",
+        "可后来……｜凡是参与这件事的人｜说白了……｜大概是遭了神罚吧｜据说都出了些状况 比如精神失常\n这种说法一直流传下来",
+        1946.4, 1961.838, items,
+    )
+    parts = segments.part_times(cue, items)
+    assert parts is not None and len(parts) == 5
+    assert parts[0] == [1946.4, 1949.338]
+    assert parts[1][0] == 1949.338
+    assert parts[4] == [1958.838, 1961.838]
+    assert all(b - a >= segments.MIN_PART for a, b in parts)
+
+
+def test_can_merge_bounds_segments_duration_and_onscreen_gap():
+    """can_merge 按实际“｜”总段数、总时长与屏幕字空档约束，避免把多条屏幕字硬并成十几秒的巨型条目。"""
+    from nyasub.llm.translate import can_merge
+
+    q1 = _cue("ところが　その後…｜そういうことに携わった人たち誰もが", "", 1946.4, 1953.638, onscreen=True)
+    q2 = _cue("分かりやすく言えば…｜祟りでしょうか", "", 1953.938, 1957.067, onscreen=True)
+    q3 = _cue("気が変になったりした\nという話が続いてます", "", 1958.838, 1961.838, onscreen=True)
+    assert not can_merge([q1, q2, q3])  # 5 段 > 4，且总时长 15.4s > 12s，且 q2→q3 屏幕字空档 1.77s > 0.8s
+    assert not can_merge([q2, q3])      # 两条均含屏幕字，空档 1.77s > 0.8s
+    # 相邻且总段数、时长合理的对话照常可合并
+    a = _cue("今日はいい天気ですね", "", 10.0, 12.5, onscreen=False)
+    b = _cue("散歩に行きましょう", "", 13.5, 16.0, onscreen=False)
+    assert can_merge([a, b])
+
