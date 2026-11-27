@@ -340,3 +340,39 @@ def test_fuse_drops_unconfirmed_screen_lines_nobody_says():
     kept = {it["id"] for it in out["items"]}
     assert {"o244", "o300", "o301"} <= kept and "o245" not in kept and "o1036" not in kept
     assert ocr[0]["dropped"] == ocr[1]["dropped"] == "unverified" and out["stats"]["ocr_unverified"] == 2
+
+
+def test_asr_load_audio_bypasses_pyav(tmp_path, monkeypatch):
+    """16kHz 16-bit WAV 直接用 wave 读取，不经过 faster-whisper 内部的 av.open（兼容 PyAV 19+）。"""
+    import wave
+
+    import av
+    import numpy as np
+
+    from nyasub.sources.asr import _load_audio
+
+    def _boom(*args, **kwargs):
+        raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+
+    monkeypatch.setattr(av, "open", _boom)
+
+    mono = tmp_path / "mono.wav"
+    samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
+    with wave.open(str(mono), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(samples.tobytes())
+    arr = _load_audio(mono)
+    assert arr.dtype == np.float32 and len(arr) == 4
+    assert np.allclose(arr[:3], [0.0, 0.5, -0.5], atol=1e-4)
+
+    stereo = tmp_path / "stereo.wav"
+    st = np.array([16384, -16384, 16384, 16384], dtype=np.int16)
+    with wave.open(str(stereo), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(st.tobytes())
+    arr2 = _load_audio(stereo)
+    assert arr2.dtype == np.float32 and np.allclose(arr2, [0.0, 0.5], atol=1e-4)

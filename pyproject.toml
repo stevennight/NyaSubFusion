@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 语音识别
-asr = ["faster-whisper>=1.1"]
+# 语音识别（av<19：faster-whisper 1.2.x 调用 av.open(..., metadata_errors="ignore")，PyAV 19+ 移除了该参数）
+asr = ["faster-whisper>=1.1", "av<19"]
 # 画面字识别
 ocr = ["rapidocr>=3.0", "opencv-python-headless>=4.8"]
 # 注音与转写：日语分词（振假名、罗马字、断行）、中文拼音、中文分词（断行不拆开词）、字体度量（ASS 注音定位）

@@ -5,6 +5,30 @@ import time
 from ..env import check_cancel, log, progress
 
 
+def _load_audio(path, sampling_rate=16000):
+    """读取 16kHz 16-bit WAV 为 float32 单声道波形（绕开 faster-whisper 内部 av.open，兼容 PyAV >= 19）。
+    非 16kHz / 非 16-bit WAV 时回退到 faster_whisper.audio.decode_audio。"""
+    import wave
+
+    import numpy as np
+
+    if isinstance(path, np.ndarray):
+        return path
+    try:
+        with wave.open(str(path), "rb") as w:
+            if w.getsampwidth() == 2 and w.getframerate() == sampling_rate:
+                ch = w.getnchannels()
+                x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+                if ch > 1:
+                    x = x[: len(x) // ch * ch].reshape(-1, ch).mean(axis=1)
+                return x
+    except (wave.Error, EOFError):
+        pass
+    from faster_whisper.audio import decode_audio
+
+    return decode_audio(str(path), sampling_rate=sampling_rate)
+
+
 def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=False, junk=(), detect_wav=None):
     """c 是 AsrCfg 的 dict；language 为 None 时自动检测。返回 (语音段列表, 检测到的语言)。
     fill_gaps：wav 是分离出的人声时，再补识别一遍“有声音、但没识别出字”的地方（见 fill_gaps）。
@@ -47,13 +71,11 @@ def transcribe(wav, c: dict, language=None, offset=0.0, duration=0.0, fill_gaps=
         log(f"GPU 加载失败（{e}），改用 CPU，会慢很多")
         model = WhisperModel(path, device="cpu", compute_type="int8", download_root=root)
     if not language and detect_wav:
-        from faster_whisper.audio import decode_audio
-
-        language, prob, _ = model.detect_language(decode_audio(str(detect_wav)), vad_filter=True,
+        language, prob, _ = model.detect_language(_load_audio(detect_wav), vad_filter=True,
                                                   language_detection_segments=4)
         log(f"语音语言检测（按原音频）：{language}（{prob:.0%}）")
     segments, info = model.transcribe(
-        wav,
+        _load_audio(wav),
         language=language or None,
         beam_size=c["beam_size"],
         vad_filter=c["vad"],
