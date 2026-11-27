@@ -973,6 +973,43 @@ def create_app(token: str | None = None) -> FastAPI:
         save_json(config_mod.series_dir(name) / "glossary.json", {"version": gl_mod.SCHEMA_VERSION, "terms": terms})
         return {"terms": terms}
 
+    @app.get("/api/series/{name}/songs")
+    def series_songs(name: str):
+        """作品级歌曲库（跨集复用的 OP/ED/插曲标准歌词与译文）。"""
+        from ..core import songs as songs_mod
+
+        return {"series": name, "songs": songs_mod.load_songs(config_mod.series_dir(name))}
+
+    @app.put("/api/series/{name}/songs")
+    def put_series_songs(name: str, body: dict = Body(...)):
+        from ..core import songs as songs_mod
+
+        items = [s for s in (body.get("songs") or []) if isinstance(s, dict) and (s.get("title") or "").strip()]
+        songs_mod.save_songs(config_mod.series_dir(name), items)
+        return {"series": name, "songs": items}
+
+    @app.post("/api/series/{name}/research")
+    def research_series(name: str, body: dict = Body(default={})):
+        """三层联网检索作品背景、结构化人物卡与已知 OP/ED（返回草稿，由用户确认后保存）。"""
+        from ..llm import research
+
+        raw = config_mod.read_series(name)
+        kind = str(body.get("content_kind") or (raw.get("project") or {}).get("content_kind") or "auto")
+        query = str(body.get("query") or name).strip()
+        cfg = config_mod.load(None)
+        return research.research_work(query, content_kind=kind, cfg=cfg)
+
+    @app.post("/api/projects/{pid}/research")
+    def research_project(pid: str, body: dict = Body(default={})):
+        """三层联网检索单集/作品背景与专有名词草稿。"""
+        from ..llm import research
+
+        run = make_run(pid)
+        query = str(body.get("query") or run.cfg.project.series or run.proj.stem).strip()
+        ep = str(body.get("episode") or run.proj.stem).strip()
+        return research.research_work(query, content_kind=run.cfg.project.content_kind, cfg=run.cfg,
+                                      cache_dir=run.proj / "llm_cache", episode_title=ep if run.cfg.project.series else "")
+
     def _series_reading_files(name):
         return {"global": env.home() / "readings.json", "series": config_mod.series_dir(name) / "readings.json"}
 

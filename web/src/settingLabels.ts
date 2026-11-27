@@ -19,7 +19,7 @@ const LBL: Record<string, string> = {
   "llm.mode": "翻译 › 方式", "llm.translate": "翻译 › 接口", "llm.translate_model": "翻译 › 模型",
   "llm.organize": "整理 › 接口", "llm.organize_model": "整理 › 模型", "llm.organize_effort": "整理 › 思考程度",
   "llm.vision": "画面字复核 › 接口", "llm.refine_model": "画面字复核 › 模型", "llm.vision_effort": "画面字复核 › 思考程度",
-  "llm.frames": "翻译 › 参考画面", "llm.listen_audio": "翻译 › 参考语音",
+  "llm.frames": "翻译 › 参考画面", "llm.listen_audio": "翻译 › 参考语音", "llm.song_align": "翻译 › 歌曲识别与对齐",
   "llm.listen": "翻译 › 听音接口", "llm.listen_model": "翻译 › 听音模型", "llm.listen_effort": "翻译 › 听音思考程度",
   "llm.grouped": "翻译 › 分组按顺序翻", "llm.reasoning_effort": "翻译 › 思考程度",
   "render.profiles": "输出 › 字幕文件（整份）", "render.strip_marks": "输出 › 文字清理", "render.fallback_style": "输出 › 兜底样式",

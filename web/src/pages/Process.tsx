@@ -776,6 +776,9 @@ function TranslateStep({ ctx }: { ctx: StepCtx }) {
         <Lbl ctx={ctx} k="llm.frames">参考画面</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.frames")} onChange={(e) => set("llm.frames", e.target.checked)} />每条附一张画面截图
           <Tip text="翻译时每条字幕附一张它出现时的画面小图，让大模型看到场景再翻（比如「揚げる」是炸还是收网、省略的主语是谁）。输入用量大约多一倍；接口不支持图片时自动改为不带图。" /></label>
+        <Lbl ctx={ctx} k="llm.song_align">歌曲识别与对齐</Lbl>
+        <label className="row"><input type="checkbox" checked={val("llm.song_align") !== false} onChange={(e) => set("llm.song_align", e.target.checked)} />自动辨认 OP / ED / 插曲并对齐作品歌曲库
+          <Tip text="遇到歌曲片段时先匹配作品歌曲库（保证多集歌词原文与译文一字不差）；未命中则切完整原声辨曲并查官方歌词对齐，翻完后自动沉淀到作品歌曲库供后续集数复用。" /></label>
         <Lbl ctx={ctx} k="llm.listen_audio">参考语音</Lbl>
         <label className="row"><input type="checkbox" checked={!!val("llm.listen_audio")} onChange={(e) => set("llm.listen_audio", e.target.checked)} />翻译前先听对话原声，标出问句 / 陈述、语气
           <Tip text="翻译前把对话的原声一段段（几十秒）发给能听音频的模型，逐条标出问句还是陈述、说话的语气（生气地骂、开玩笑……），只有语音识别来源的句子还标出听到的说法，翻译时附在每条后面作参考。解决光看文字分不出的：「…あれなの」是在讲解还是在问、「いじめて」是骂还是逗。支持 OpenAI 兼容接口和 Antigravity CLI（agy）。" /></label>

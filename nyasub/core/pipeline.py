@@ -1034,6 +1034,17 @@ class Run:
 
         cues, glossary = copy.deepcopy(organized["cues"]), copy.deepcopy(organized["glossary"])  # 整理的结果另存着，不改它
         if mode == "api" and cues:
+            tgt_code = lang.canonical(self.cfg.project.targets[0])
+            sdir = config_mod.series_dir(self.cfg.project.series) if self.cfg.project.series else None
+            orig_wav_rel = (self.results.get("audio") or {}).get("wav")
+            orig_wav_path = (self.proj / orig_wav_rel) if orig_wav_rel else None
+            if self.cfg.llm.song_align:
+                from . import songs as songs_mod
+
+                songs_mod.align_and_fill_songs(cues, sdir, self.cfg, self.proj / "llm_cache",
+                                               orig_wav=orig_wav_path, tgt_code=tgt_code)
+            locked_tr = {c["id"]: copy.deepcopy(c["tr"][tgt_code]) for c in cues
+                         if c.get("song_locked") and tgt_code in (c.get("tr") or {})}
             frames = self._frames(fused["items"]) if self._use_frames(mode) else None
             if self.cfg.llm.listen_audio and not self._use_listen(mode):
                 lep = self.cfg.endpoint("listen")
@@ -1048,6 +1059,14 @@ class Run:
                                 self.proj.media("listen"))
             cues, glossary = translate.translate_api(cues, glossary, fused["items"], self.cfg, self.proj / "llm_cache",
                                                      self.src, self._series_terms(), frames)
+            if locked_tr:
+                for c in cues:
+                    if c["id"] in locked_tr:
+                        c.setdefault("tr", {})[tgt_code] = locked_tr[c["id"]]
+            if self.cfg.llm.song_align:
+                from . import songs as songs_mod
+
+                songs_mod.save_translated_songs(cues, sdir, tgt_code)
         translate.add_quality_flags(cues)
         self._save_series_terms(glossary)
         todo = sum(1 for c in cues if c["review"] == "todo")
