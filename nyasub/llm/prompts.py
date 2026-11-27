@@ -178,6 +178,8 @@ def item_line(it, asr_only: bool = False) -> str:
     if it["src"] == "asr":
         if not asr_only:
             extra.append("无字幕覆盖")
+        if it.get("speaker"):
+            extra.append(f"说话人：{it['speaker']}")
         if it.get("second_pass"):
             extra.append("补识别：可能是哭喊、歌声，也可能是噪音或幻觉")
     extra = [e for e in extra if e]
@@ -328,7 +330,7 @@ def translate_rules(tgt, tgt_opts: dict) -> str:
     return f"""输出 JSON：{{"items": [{{"ids": ["q12"], "tr": "译文"}}, {{"ids": ["q13", "q14"], "tr": "合成一条的译文"}}]}}，
 要翻的每个 id 都要出现且只出现一次；一般一条字幕一项（ids 里只有它自己）。
 - 合成一条：同一个人说的一句话被拆在相邻几条字幕里（原来是前后几屏），按原来的分法拆开，{tgt.name}就不通顺（语序要颠倒、半句话没法单独译）时，
-  可以把这几条（最多 4 条、连续、都是对话或都是独白或都是旁白、间隔不超过 2 秒）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合。
+  可以把这几条（最多 4 条、连续、都是对话或都是独白或都是旁白、间隔不超过 2 秒，且不是不同说话人）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合，不同说话人严禁合并。
   合成的那条原文就是这几条按顺序用“｜”接起来：译文能按原来的几屏分开就用“｜”分成同样多段（语序可以在段之间微调），实在分不开就写成一段。
 - 原文里的“｜”是分屏标记：译文要分成同样多段，每段的主要信息与原文同一段对应。
 {SUBTITLE_FLOW_RULES}
@@ -355,8 +357,9 @@ def translate_system(src, tgt, context: str, tgt_opts: dict) -> str:
 def cue_line(c) -> str:
     from .listen import note_text
 
+    spk = f"　〔说话人：{c['speaker']}〕" if c.get("speaker") else ""
     return (f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])} {KIND.get(c.get('type'), c.get('type'))}："
-            f"{c['orig']['text'].replace(chr(10), ' / ')}{note_text(c)}")
+            f"{c['orig']['text'].replace(chr(10), ' / ')}{spk}{note_text(c)}")
 
 
 def translate_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> str:

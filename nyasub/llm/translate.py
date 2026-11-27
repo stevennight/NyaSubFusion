@@ -75,6 +75,9 @@ def make_cue(srcs, orig, tr, tgt, typ, src_lang, fallback=False):
         flags.append("conflict")
     if fallback:
         flags.append("llm_fallback")
+    spks = [s.get("speaker") for s in srcs if (s.get("speaker") or "").strip()]
+    if spks and len(set(spks)) == 1:
+        cue["speaker"] = spks[0]
     cue["flags"] = flags
     return cue
 
@@ -434,6 +437,9 @@ def can_merge(group):
     from ..core import segments
 
     if len(group) > MERGE_MAX or len({c.get("type") for c in group}) != 1 or group[0].get("type") not in ("dialogue", "monologue", "narration"):
+        return False
+    spks = {c.get("speaker") for c in group if (c.get("speaker") or "").strip()}
+    if len(spks) > 1:
         return False
     if sum(len(segments.pieces(c["orig"]["text"])) or 1 for c in group) > MERGE_MAX:
         return False

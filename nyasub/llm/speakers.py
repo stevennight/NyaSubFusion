@@ -19,7 +19,9 @@ def _item_text(c, prev, nxt, segs):
         where = f"位置 {ln['pos']}" if ln.get("pos") else "位置不明"
         color = f"，颜色 {ln['color']}" if ln.get("color") else ""
         lines.append(f"　第{k}行（{where}{color}）：{ln['text']}")
-    heard = [f"{fmt_time(s['start'])}-{fmt_time(s['end'])} {s['text']}" for s in segs
+    heard = [f"{fmt_time(s['start'])}-{fmt_time(s['end'])}"
+             + (f"[{s['speaker']}]" if s.get("speaker") else "")
+             + f" {s['text']}" for s in segs
              if s["end"] > c["start"] - 1 and s["start"] < c["end"] + 1]
     return (f"[{c['id']}] {fmt_time(c['start'])}-{fmt_time(c['end'])}\n" + "\n".join(lines)
             + f"\n　前一条字幕：{(prev or {}).get('text', '（无）').replace(chr(10), ' / ')}"

@@ -16,7 +16,7 @@ const STATUS_LBL: Record<string, string> = { pending: "待执行", done: "可复
   failed: "失败", waiting: "等外部翻译", cancelled: "已取消", off: "关", empty: "没有内容" };
 const DOT: Record<string, string> = { done: "done", cached: "done", stale: "stale", missing: "stale", pending: "stale", running: "run", failed: "fail",
   waiting: "stale", cancelled: "stale", off: "off", empty: "off" };
-const SEP_LBL: Record<string, string> = { auto: "自动", on: "开", off: "关" };
+const SEP_LBL: Record<string, string> = { auto: "自动", on: "开", off: "关", hybrid: "双轨自适应" };
 const ASR_API_KINDS = {
   transcribe: { label: "转写接口", model: "gpt-transcribe", desc: "OpenAI 兼容的 /v1/audio/transcriptions（gpt-transcribe、whisper-1 等）；只给文字的接口会切成小段识别" },
   gemini: { label: "多模态大模型", model: "gemini-2.5-flash", desc: "Gemini 等能听音频的大模型（chat/completions + 音频），按句给时间，没有逐字时间。会带上「资料」里的节目说明，和术语表里手动加的、导入的名字（汉字和读音），人名能写对，例如八犬伝的「四白（よしろ）」；自动整理的术语不带" },
@@ -501,6 +501,23 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
               models={apiFetched?.models}
               tip="多模态大模型听音转写时的思考程度（空 = 使用模型/接口默认）。通常 low 或不设即可。"
             />
+            <Lbl ctx={ctx} k="asr.api_visual">参考画面</Lbl>
+            <div className="row wrap">
+              <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={Boolean(val("asr.api_visual"))} onChange={(e) => set("asr.api_visual", e.target.checked)} />
+                <span>听音时附带画面网格拼图</span>
+              </label>
+              {Boolean(val("asr.api_visual")) && (
+                <label className="row" style={{ gap: 6 }}>
+                  <span className="muted">间隔</span>
+                  <input className="inp" type="number" min={2} max={30} step={1} style={{ width: 68 }}
+                         value={Number(val("asr.api_visual_interval") ?? 5)}
+                         onChange={(e) => set("asr.api_visual_interval", Math.max(2, Number(e.target.value) || 5))} />
+                  <span className="muted">秒/帧</span>
+                </label>
+              )}
+              <span className="hint">辅助分辨称呼（如姐姐/哥哥）、说话人形象、画面人名条与 OP/ED</span>
+            </div>
             <Lbl ctx={ctx} k="asr.api_timing_provider">对时接口</Lbl>
             <div className="row">
               <select className="inp" style={{ maxWidth: 340 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>

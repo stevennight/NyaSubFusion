@@ -154,6 +154,8 @@ class Run:
             return {"src": self.src}
         if name == "asr":  # 人声分离 / 云端识别开着时才有（都关着时和以前的指纹一样，不会重新识别）
             d = {"vocals": self._separation_model(), "fill_gaps": 1, "v": 2} if self._separate() else {}  # v2：按原音频判断语言
+            if self.cfg.asr.separate == "hybrid":
+                d["hybrid"] = 1
             if self.cfg.asr.backend == "api":
                 ep = self.cfg.endpoint("asr")
                 from ..sources.asr_api import chunk_seconds
@@ -163,6 +165,8 @@ class Run:
                             "chunk": chunk_seconds(self.cfg.asr.model_dump(), ep)}
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.effort("asr"):
                     d["api"]["effort"] = self.cfg.effort("asr")
+                if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_visual:
+                    d["api"]["visual"] = float(self.cfg.asr.api_visual_interval or 5.0)
                 if self.cfg.asr.api_kind == "gemini":
                     from ..sources.asr_api import ALIGN_V
 
@@ -722,7 +726,7 @@ class Run:
         c = self.cfg.asr
         if not c.enabled or c.separate == "off":
             return False
-        if c.separate == "on":
+        if c.separate in ("on", "hybrid"):
             return True
         subs = self.results["subs"] if "subs" in self.results else load_json(self._out_path("subs"), None)
         return subs is not None and len(subs) == 0
@@ -754,6 +758,7 @@ class Run:
             return {"segments": [], "language": None}
         from ..sources import asr
 
+        orig_wav_rel = wav
         separated = self._separate()
         if separated:
             wav = str(self._vocals(self.results["probe"]).relative_to(self.proj.root))
@@ -772,6 +777,10 @@ class Run:
             asr_context = "\n\n".join(x for x in (self.cfg.project.context.strip(), self.cfg.project.synopsis.strip()) if x)
             extra_kw = {}
             if c.api_kind == "gemini":
+                if c.api_visual and info.get("video"):
+                    extra_kw["video_path"] = str(self.proj.video)
+                if c.separate == "hybrid" and separated:
+                    extra_kw["orig_wav"] = str(self.proj / orig_wav_rel)
                 if c.api_timing_provider == "local":
                     extra_kw["local_ref"] = lambda: asr.transcribe(
                         str(self.proj / wav), c.model_dump(), whisper_lang,

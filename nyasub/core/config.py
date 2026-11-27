@@ -55,7 +55,7 @@ class AsrCfg(_M):
     beam_size: int = 5
     vad: bool = True
     vad_threshold: float = 0.25              # 默认 0.5 会漏掉小声说话（采访里很常见）
-    separate: Literal["auto", "on", "off"] = "auto"  # 人声分离（去掉背景音乐再识别）：auto = 没有字幕时才做
+    separate: Literal["auto", "on", "off", "hybrid"] = "auto"  # 人声分离：auto = 无字幕时启用；hybrid = 按块 BGM 干扰度自适应选原声或人声轨
     download_root: str = ""
     hf_endpoint: str = ""                    # 模型下载镜像，例如 https://hf-mirror.com
     backend: Literal["local", "api"] = "local"  # local：本机 Whisper（macOS 优先 MLX-Whisper，其余 faster-whisper）；api：云端接口
@@ -69,6 +69,8 @@ class AsrCfg(_M):
     api_timing_provider: str = ""            # 对时用哪个接口（空 = 和识别同一个；"local" = 本机 faster-whisper；或 providers 里的 name）
     api_timing_model: str = ""
     api_effort: str = ""                     # 多模态大模型识别时的思考程度；空 = 不设（使用模型默认）
+    api_visual: bool = False                 # 多模态云端语音识别附带画面网格拼图参考（辅助分辨称呼、说话人、人名条与 OP/ED）
+    api_visual_interval: float = 5.0         # 画面参考抽帧间隔（秒）
 
 
 class Region(_M):

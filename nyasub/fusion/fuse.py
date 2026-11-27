@@ -431,7 +431,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         quotes = [x for x in hit if x["src"] == "telop" and not sentence(x) and _quoted(x["text"], a["text"])]
         if quotes and not any(x["src"] == "subs" for x in hit) and _share(_content(a["text"]), [x["text"] for x in hit]) < 0.5:
             asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
-                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
+                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {}),
+                              **({"speaker": a["speaker"]} if a.get("speaker") else {})})
             for x in quotes:  # 这几个字语音里念了，和有字幕时一样按重复去掉
                 quoted_ids.setdefault(x["id"], a["id"])
             continue
@@ -441,7 +442,8 @@ def fuse(subs, ocr_events, asr, m: dict, pack, duration=0.0):
         cov = _coverage([(x["start"], x["end"]) for x in hit], a["start"], a["end"])
         if cov < m["asr_uncovered_ratio"] or _unrelated(a["text"], hit):
             asr_items.append({"id": a["id"], "src": "asr", "start": a["start"], "end": a["end"], "text": a["text"],
-                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {})})
+                              "uncovered": True, **({"second_pass": True} if a.get("second_pass") else {}),
+                              **({"speaker": a["speaker"]} if a.get("speaker") else {})})
             continue
         target = max(hit, key=lambda x: overlap(x["start"], x["end"], a["start"], a["end"]))
         target["asr_hint"] = (target.get("asr_hint", "") + " " + a["text"]).strip()

@@ -242,9 +242,15 @@ def _transcribe_file(ep, path, fmt, language, timed):
 
 SYSTEM = """你是逐字转写员。把音频里说出来的每一句话按原语言逐字写下来：不翻译、不总结、不润色，口语、语气词、方言照原样写；
 不写音乐、音效、笑声之类的说明；听不清的地方按听到的写，不要编。日语、中文照常写，词和词之间不加空格，句末照常加标点。
-按句子分段（一句话一段，长句在停顿处断开，每段不超过 8 秒），每段给出开始和结束时间（相对这段音频开头，格式 MM:SS.ss）。
-只输出 JSON：{"language": "ISO 639-1 语言代码", "segments": [{"start": "MM:SS.ss", "end": "MM:SS.ss", "text": "..."}]}
+按句子分段（一句话一段，长句在停顿处断开，每段不超过 8 秒；换人说话必须另起一段，不要把两个人的话合在同一段），每段给出开始和结束时间（相对这段音频开头，格式 MM:SS.ss）。
+如果能分辨说话人，可选填 speaker（优先填节目信息里的角色名，认不出就填简短编号如「男1」「女1」「旁白」，拿不准可省略）。
+只输出 JSON：{"language": "ISO 639-1 语言代码", "segments": [{"start": "MM:SS.ss", "end": "MM:SS.ss", "text": "...", "speaker": "可选"}]}
 没有人说话就输出 {"language": "", "segments": []}。"""
+
+
+VISUAL_NOTE = ("\n\n附有本段音频对应的参考画面拼图（按时间顺序排列）："
+               "请结合画面分辨说话人的性别/年龄/形象、称呼（如姐姐/哥哥）、画面人名条/标题与是否在播 OP/ED；"
+               "只转写实际听到的语音和歌词，不要把没人念出来的画面文字写进转写。")
 
 
 CONTEXT_NOTE = ("\n\n节目信息（只用来写对人名、地名、专有名词的汉字写法：听到的名字照这里的写法写；"
@@ -263,8 +269,8 @@ def names_text(terms):
     return "\n".join(rows)
 
 
-def _chat_audio_agy(ep, path, fmt, seconds, user, effort=""):
-    """通过本机 Antigravity CLI（agy acp）读取临时音频文件完成多模态语音识别。"""
+def _chat_audio_agy(ep, path, fmt, seconds, user, effort="", images=None):
+    """通过本机 Antigravity CLI（agy acp）读取临时音频文件（及可选参考画面拼图）完成多模态语音识别。"""
     from ..llm import cli_backend
     from ..llm.client import FatalLLMError
 
@@ -278,6 +284,7 @@ def _chat_audio_agy(ep, path, fmt, seconds, user, effort=""):
                 ep["model"],
                 SYSTEM,
                 user,
+                images=images or None,
                 audio=(path, fmt),
                 effort=effort,
                 timeout=max(180.0, float(seconds) * 2.5),
@@ -302,23 +309,32 @@ def _chat_audio_agy(ep, path, fmt, seconds, user, effort=""):
     raise AsrApiError(f"Antigravity CLI 语音识别多次失败：{last_err}") from last_err
 
 
-def _chat_audio(ep, path, fmt, language, seconds, context="", effort=""):
+def _chat_audio(ep, path, fmt, language, seconds, context="", effort="", images=None):
     """多模态大模型（chat/completions + input_audio，或本机 Antigravity CLI）：返回 {"language", "segments": [...]}。
-    context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。"""
+    context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。
+    images：可选参考画面拼图列表 [{"path", "label"}]。"""
     from ..llm.client import parse_json
 
     user = f"这段音频长 {seconds:.1f} 秒（{int(seconds // 60):02d}:{seconds % 60:05.2f}）。语言：{language or '请自动判断'}。"
+    if images:
+        user += VISUAL_NOTE
     if context.strip():
         user += CONTEXT_NOTE.format(context=context.strip())
     if ep.get("kind") == "agy":
-        text = _chat_audio_agy(ep, path, fmt, seconds, user, effort=effort)
+        text = _chat_audio_agy(ep, path, fmt, seconds, user, effort=effort, images=images)
     else:
         b64 = base64.b64encode(Path(path).read_bytes()).decode()
+        user_content: list[dict] = [{"type": "text", "text": user}]
+        for img in images or []:
+            if img.get("label"):
+                user_content.append({"type": "text", "text": img["label"]})
+            ib64 = base64.b64encode(Path(img["path"]).read_bytes()).decode()
+            user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ib64}"}})
+        user_content.append({"type": "input_audio", "input_audio": {"data": b64, "format": fmt}})
         body = {"model": ep["model"], "temperature": 0, "response_format": {"type": "json_object"},
                 "max_tokens": max_out(seconds),
                 "messages": [{"role": "system", "content": SYSTEM},
-                             {"role": "user", "content": [{"type": "text", "text": user},
-                                                          {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
+                             {"role": "user", "content": user_content}]}
         if (effort or "").strip():
             body["reasoning_effort"] = effort.strip()
 
@@ -435,8 +451,12 @@ def _from_chat(resp, t0, seconds):
         if a is None or not text or a > seconds + 2:
             continue
         b = b if b is not None and b > a else a + max(0.5, len(text) * 0.12)
-        segs.append({"start": round(t0 + max(0.0, a), 3), "end": round(t0 + min(seconds, b), 3), "text": text,
-                     "words": [], "timing": "segment"})
+        seg = {"start": round(t0 + max(0.0, a), 3), "end": round(t0 + min(seconds, b), 3), "text": text,
+               "words": [], "timing": "segment"}
+        spk = (s.get("speaker") or "").strip()
+        if spk:
+            seg["speaker"] = spk
+        segs.append(seg)
     return segs
 
 
@@ -529,9 +549,30 @@ def chunk_seconds(c: dict, ep: dict) -> float:
     return CHUNK_SHORT if ("openrouter.ai" in (ep.get("base_url") or "") or ep.get("kind") == "agy") else CHUNK
 
 
-def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None, timing_ep=None, local_ref=None):
+def choose_hybrid_track(orig_w: Wav, vocal_w: Wav, a: float, b: float, bgm_db_threshold: float = 4.5) -> str:
+    """自适应双轨选择：比较 [a, b] 内原声与人声分离轨的能量差。
+    若原声能量显著高于人声轨（平均高出 bgm_db_threshold dB 以上），说明 BGM/音效/歌声干扰重，选用人声轨（'vocals'）；
+    否则人声本身清晰，优先用原声（'orig'）以保留自然音色、气声与哭喊细节。"""
+    i0, j0 = orig_w._range(a, b)
+    i1, j1 = vocal_w._range(a, b)
+    o_seg = orig_w.db[i0:j0]
+    v_seg = vocal_w.db[i1:j1]
+    n = min(len(o_seg), len(v_seg))
+    if n < 4:
+        return "vocals"
+    # 仅在有声音的帧（原声高于 -45 dB）上统计原声与人声的能量差
+    mask = o_seg[:n] > -45.0
+    if not mask.any():
+        return "orig"
+    diff = float(np.median(o_seg[:n][mask] - v_seg[:n][mask]))
+    return "vocals" if diff >= bgm_db_threshold else "orig"
+
+
+def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, junk=(), cache_dir=None,
+               timing_ep=None, local_ref=None, video_path=None, orig_wav=None):
     """c 是 AsrCfg 的 dict，ep 是 Config.endpoint("asr")。返回 (语音段列表, 检测到的语言)，和 asr.transcribe 一样。
-    duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。"""
+    duration 只为和本地后端同样的签名（进度按 wav 实际长度算）。
+    video_path：开启 api_visual 时用于抽取低帧率画面拼图；orig_wav：hybrid 模式下用于按块自适应选择原声或人声轨。"""
     kind = c.get("api_kind", "transcribe")
     context = (c.get("context") or "").strip() if kind == "gemini" else ""  # 节目说明 + 术语表里的名字：只给多模态大模型
     names = names_text(c.get("names")) if kind == "gemini" else ""
@@ -550,14 +591,23 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
             raise AsrApiError("云端语音识别没有可用的接口：请在「设置」里添加接口并设置 API Key，再在流程页选它")
         _gran_ok.pop((ep["base_url"], ep["model"]), None)  # 每次运行重新试一下支持哪种时间（接口可能升级了）
     w = Wav(wav)
+    orig_w = Wav(orig_wav) if (kind == "gemini" and orig_wav and str(orig_wav) != str(wav)) else None
+    use_visual = bool(c.get("api_visual")) and kind == "gemini" and bool(video_path)
+    vis_interval = float(c.get("api_visual_interval") or 5.0)
     total = w.duration
     size = chunk_seconds(c, ep)
     chunks = plan_chunks(total, w.quiet, size, None, min(SEARCH, size / 4))
-    log(f"云端语音识别：{ep.get('name') or ep.get('base_url') or ep_kind} · {ep['model']}（{'转写接口' if kind == 'transcribe' else '多模态大模型'}），"
+    mode_notes = []
+    if use_visual:
+        mode_notes.append(f"附画面参考/{vis_interval:g}s")
+    if orig_w is not None:
+        mode_notes.append("原声+人声自适应双轨")
+    note_s = f"，{'，'.join(mode_notes)}" if mode_notes else ""
+    log(f"云端语音识别：{ep.get('name') or ep.get('base_url') or ep_kind} · {ep['model']}（{'转写接口' if kind == 'transcribe' else '多模态大模型'}{note_s}），"
         f"{total / 60:.1f} 分钟切成 {len(chunks)} 块{'识别' if ep_kind == 'agy' else '上传'}（每块约 {size / 60:g} 分钟）")
     # 取消时还在上传的工作线程可能开着块文件（Windows 删不掉）：清理失败不报错，留给系统临时目录
     tmp = tempfile.TemporaryDirectory(prefix="nyasub-asr-", ignore_cleanup_errors=True)
-    state = {"timed": True, "lang": None, "done": 0.0, "hits": 0, "calls": 0}
+    state = {"timed": True, "lang": None, "done": 0.0, "hits": 0, "calls": 0, "orig_chunks": 0, "vocal_chunks": 0}
     lock = threading.Lock()
     effort = (c.get("api_effort") or "").strip() if kind == "gemini" else ""
     ep_id = ep["base_url"] if ep_kind == "openai" else f"cli:{ep_kind}"
@@ -568,20 +618,34 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
 
     def one(a, b, timed):
         """识别 [a, b] 这一段（相对 wav 开头），返回 (段列表（相对 wav 开头）, 语言)。"""
-        path, f = _encode(wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
+        chosen_wav = wav
+        if orig_w is not None:
+            pick = choose_hybrid_track(orig_w, w, a, b)
+            chosen_wav = orig_wav if pick == "orig" else wav
+            with lock:
+                state["orig_chunks" if pick == "orig" else "vocal_chunks"] += 1
+        path, f = _encode(chosen_wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
+        grids = []
+        if use_visual:
+            from . import asr_visual
+
+            grids = asr_visual.extract_chunk_grids(video_path, a + offset, b + offset,
+                                                   Path(tmp.name) / f"vis_{a:09.3f}", interval=vis_interval)
         try:
             if kind == "gemini":
-                if context or effort:
+                if context or effort or grids:
                     extra = ["chat"]
                     if context:
                         extra.append(hashlib.sha1(context.encode()).hexdigest())
                     if effort:
                         extra.append(f"effort:{effort}")
+                    if grids:
+                        extra.append(f"vis:{vis_interval:g}:{len(grids)}")
                 else:
                     extra = "chat"
                 try:
                     resp, hit = _cached(cache_dir, key_of(path, extra),
-                                        lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort))
+                                        lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort, images=grids))
                 except _Truncated as e:
                     if b - a < SPLIT_MIN * 2:
                         raise AsrApiError(f"语音识别：{e}，这一块已经很短，没法再切") from e
@@ -599,6 +663,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                     segs = [{"start": a, "end": b, "text": resp["text"].strip(), "words": [], "timing": "clip"}]
         finally:
             Path(path).unlink(missing_ok=True)
+            for g in grids:
+                Path(g["path"]).unlink(missing_ok=True)
         with lock:
             state["hits" if hit else "calls"] += 1
         return segs, _lang_code(lang)
@@ -654,8 +720,11 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
             continue
         s = dict(s, start=round(s["start"] + offset, 3), end=round(s["end"] + offset, 3),
                  words=[dict(x, s=round(x["s"] + offset, 3), e=round(x["e"] + offset, 3)) for x in s["words"]])
-        out.append({"id": f"a{len(out) + 1}", "start": s["start"], "end": s["end"], "text": s["text"],
-                    "words": s["words"], "timing": s["timing"]})
+        item = {"id": f"a{len(out) + 1}", "start": s["start"], "end": s["end"], "text": s["text"],
+                "words": s["words"], "timing": s["timing"]}
+        if s.get("speaker"):
+            item["speaker"] = s["speaker"]
+        out.append(item)
     timing_provider = (c.get("api_timing_provider") or "").strip() if kind == "gemini" else ""
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
     if timing_provider == "local":
