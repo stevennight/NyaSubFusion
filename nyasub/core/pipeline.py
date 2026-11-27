@@ -924,9 +924,16 @@ class Run:
         return self.opts.translate or self.cfg.llm_mode()
 
     def glossary_path(self):
-        """术语表存哪：归入作品时存作品目录（多集共享），否则存项目目录。"""
+        """主术语表路径：归入作品时指向作品共享表，否则指向单集表（兼容旧调用）。"""
         name = self.cfg.project.series
         return config_mod.series_dir(name) / "glossary.json" if name else self.proj / "glossary.json"
+
+    def series_glossary_path(self):
+        name = self.cfg.project.series
+        return config_mod.series_dir(name) / "glossary.json" if name else None
+
+    def episode_glossary_path(self):
+        return self.proj / "glossary.json"
 
     def _use_frames(self, mode):
         info = self.results.get("probe") or {}
@@ -954,14 +961,25 @@ class Run:
         return t.get("from") == self.proj.stem and not t.get("edited")
 
     def _series_terms(self):
-        """翻译时已知的术语。不含这一集自己存进去的（否则存完术语，指纹一变就会重新翻译一遍），改过的除外。"""
-        terms = load_json(self.glossary_path(), {"terms": []})["terms"]
-        return [t for t in terms if not self._own_auto(t)]
+        """翻译时已知的术语：作品共享术语（自动迁移旧版膨胀表） + 本集人工/确认术语（不含本集旧自动条目）。"""
+        from . import glossary as gl_mod
+
+        series_terms = gl_mod.load_series_terms(self.series_glossary_path())
+        ep_terms = gl_mod.load_episode_terms(self.episode_glossary_path())
+        return gl_mod.merge_tiered_terms(series_terms, ep_terms, self.proj.stem)
 
     def _user_terms(self):
         """术语表里人工给的（手动加的、导入的）：语音识别（多模态大模型）照这些写人名。自动整理的可能带着识别错字，不给。"""
-        return [t for t in load_json(self.glossary_path(), {"terms": []})["terms"]
-                if t.get("from") in ("manual", "import") and (t.get("src") or "").strip()]
+        from . import glossary as gl_mod
+
+        all_terms = gl_mod.load_series_terms(self.series_glossary_path()) + gl_mod.load_episode_terms(self.episode_glossary_path())
+        out, seen = [], set()
+        for t in all_terms:
+            src = (t.get("src") or "").strip()
+            if src and src not in seen and t.get("from") in ("manual", "import"):
+                seen.add(src)
+                out.append(t)
+        return out
 
     def _series_terms_digest(self):
         return digest(self._series_terms())
@@ -1028,17 +1046,18 @@ class Run:
         return {"cues": cues, "glossary": glossary}
 
     def _save_series_terms(self, glossary):
-        """把这一集新发现的术语存回术语表（记上来自哪一集）。这一集以前整理的换成这次的；改过的留着。"""
-        path = self.glossary_path()
-        saved = load_json(path, {"terms": []})["terms"]
-        keep = [t for t in saved if not self._own_auto(t)]
-        known = {t.get("src") for t in keep}
-        new = [dict(t, **{"from": self.proj.stem}) for t in glossary.get("terms", []) if t.get("src") not in known]
-        if not new and len(keep) == len(saved):
-            return
-        save_json(path, {"terms": keep + new})
-        where = f"作品「{self.cfg.project.series}」" if self.cfg.project.series else "项目"
-        log(f"{where}术语表已更新：本集新增 {len(new)} 条，共 {len(keep) + len(new)} 条")
+        """把本集新发现的术语按双层策略保存：单集表始终保存；作品表仅在允许同步时回写（纪录片/单元剧不污染作品表）。"""
+        from . import glossary as gl_mod
+
+        terms = glossary.get("terms", [])
+        ep_added = gl_mod.save_episode_glossary(self.episode_glossary_path(), terms, self.proj.stem)
+        sp = self.series_glossary_path()
+        if sp and gl_mod.should_sync_to_series(self.cfg):
+            added, total = gl_mod.save_series_glossary(sp, terms, self.proj.stem)
+            if added:
+                log(f"作品「{self.cfg.project.series}」术语表已更新：本集新增 {added} 条，共 {total} 条")
+        elif ep_added:
+            log(f"单集术语表已更新：本集新增 {ep_added} 条")
 
     def _hint(self, job_dir):
         log("下一步：在 Claude Code 里对它说（翻译完它会自己生成最终字幕）：")
@@ -1325,7 +1344,7 @@ class Run:
                 if not long:
                     for k, v in c["tr"].items():
                         v["text"] = segments.unbar(v["text"], k)
-            if segments.bars_ok(c) and not touched and c.get("type") in ("dialogue", "narration"):
+            if segments.bars_ok(c) and not touched and c.get("type") in ("dialogue", "monologue", "narration"):
                 # 大模型把一条字幕里的换行也当成了分屏（“藩は｜餌場である…”）：合回一屏；合起来两行放不下的不合。
                 # 片尾职员表这种一行一项的不合
                 for k in reversed(segments.card_bars(c, items)):

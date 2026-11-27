@@ -3,6 +3,7 @@ import type { Cfg } from "./types";
 
 const LBL: Record<string, string> = {
   "project.source": "语言 › 源语言", "project.targets": "语言 › 翻译成",
+  "project.content_kind": "基本 › 节目类型", "project.glossary_sync": "基本 › 自动术语存放",
   "subs.enabled": "读取字幕 › 开关", "subs.ruby_size_ratio": "读取字幕 › 振假名小字比例",
   "subs.skip_sound_annotations": "整理 › 跳过声音说明",
   "asr.enabled": "语音识别 › 开关", "asr.backend": "语音识别 › 识别方式", "asr.model": "语音识别 › 模型", "asr.separate": "语音识别 › 人声分离",

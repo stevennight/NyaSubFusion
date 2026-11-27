@@ -32,6 +32,8 @@ class ProjectCfg(_M):
     source: str = "auto"                     # 源语言：ja / zh-Hans / en …；auto = 按语音或字幕自动判断
     targets: list[str] = ["zh-Hans"]         # 目标语言，可多个；第一个用于融合+翻译，其余在其基础上翻译
     series: str = ""                         # 所属作品：共享节目说明、术语表
+    content_kind: Literal["auto", "anime", "drama", "documentary", "variety"] = "auto"  # 节目类型：决定术语回写、旁白/独白倾向等默认行为
+    glossary_sync: Literal["auto", "series", "episode"] = "auto"  # 自动提取术语存放位置：auto（纪录片/综艺存单集，动画/剧集存作品）/ series / episode
     context: str = ""                        # 节目说明，会告诉大模型
     synopsis: str = ""                       # 本集简介：先用于生成本集概要，再供大模型翻译参考
     preset: str = ""                         # 新建项目时选的内容预设（不属于作品时，它就是这一集的模板）

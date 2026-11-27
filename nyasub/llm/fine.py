@@ -7,7 +7,7 @@
 from ..env import Cancelled, log, progress
 from ..textutil import fmt_time, ws_norm
 
-KIND = {"narration": "旁白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
+KIND = {"narration": "旁白", "monologue": "独白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
 MAX_GROUP = 10
 
 
@@ -229,7 +229,7 @@ def run(deep, plain, cues, cfg, src, tgt, tgt_code, glossary, known_terms, frame
         progress(n, len(groups), f"分组翻 {n + 1}/{len(groups)} 组", every=0)
         grp = cues[a:b + 1]
         prompt = group_prompt(cues, a, b, topic, tgt_code, glossary.get("summary"), terms, cast, done)
-        pics = [c for c in grp if c.get("type") in ("dialogue", "narration")]
+        pics = [c for c in grp if c.get("type") in ("dialogue", "monologue", "narration")]
         try:
             out, missing = apply_translation(grp, ask(system, prompt, pics, limit=12), tgt_code)
             if missing:

@@ -160,7 +160,10 @@ export interface TauriGlobal {
   event: { listen: (name: string, cb: (e: { payload: { paths?: string[] } }) => void) => Promise<() => void> };
 }
 
-export interface Term { src: string; reading?: string; tr?: string; type?: string; note?: string; from?: string; edited?: boolean }
+export interface Term {
+  src: string; reading?: string; tr?: string; type?: string; note?: string; from?: string; edited?: boolean;
+  aliases?: string[]; relations?: string; scope?: "series" | "episode";
+}
 export interface Glossary { series: string; context: string; summary: string; path: string; episode: string; terms: Term[] }
 export interface Reading { lang: string; src: string; reading: string; proper?: boolean }
 

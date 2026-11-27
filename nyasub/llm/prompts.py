@@ -13,10 +13,29 @@ def _background(context: str = "", synopsis: str = "") -> str:
     return "\n\n".join(rows) or "（未提供）"
 
 
-def glossary_system(src, tgt, context: str = "", synopsis: str = "") -> str:
+def is_asr_only(items) -> bool:
+    """本集候选条目是否全部来自语音识别（无自带字幕、无画面字 OCR）。"""
+    return bool(items) and all(it.get("src") == "asr" for it in items)
+
+
+def _kind_hint(content_kind: str = "auto") -> str:
+    if content_kind in ("anime", "drama"):
+        return ("\n- 类型区分：角色内心独白、回忆自述标为 monologue（保留角色第一人称口吻）；"
+                "仅在确为客观第三人称画外解说/预告时才标 narration。")
+    if content_kind == "documentary":
+        return ("\n- 类型区分：节目画外解说标为 narration；受访者或人物自述标为 dialogue / monologue。")
+    return ("\n- 类型区分：角色内心独白或第一人称回忆自述标为 monologue；客观画外解说标为 narration。")
+
+
+def glossary_system(src, tgt, context: str = "", synopsis: str = "", asr_only: bool = False) -> str:
+    source_desc = (
+        f"给你一集节目里由语音识别得到的全部{src.name}文本（无内封字幕与画面字，专有名词可能有同音错字，请结合节目说明与上下文辨别）。"
+        if asr_only else
+        f"给你一集节目里出现的全部{src.name}文本（字幕 + 画面字 OCR，可能有 OCR 错字）。"
+    )
     return f"""你是影视字幕翻译的术语整理助手，负责{src.name}→{tgt.name}。
 {_background(context, synopsis)}
-给你一集节目里出现的全部{src.name}文本（字幕 + 画面字 OCR，可能有 OCR 错字）。
+{source_desc}
 请输出 JSON：
 {{"summary": "用中文 3~6 句话概括本集内容（地点、人物、主题）",
  "terms": [{{"src": "原文写法", "reading": "读音（知道就填）", "tr": "{tgt.name}译法", "type": "地名/人名/团体/场所/物品/方言/其他", "note": "可选"}}]}}
@@ -67,20 +86,32 @@ def _sound_annotation_rule(num: int, with_tr: bool = False) -> str:
     )
 
 
-def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "", skip_sound_annotations: bool = False) -> str:
+def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "",
+                 skip_sound_annotations: bool = False, asr_only: bool = False, content_kind: str = "auto") -> str:
     notes = src.prompt_source_notes()
-    types = "dialogue|narration|info|song" if skip_sound_annotations else "dialogue|narration|info|song|sfx"
+    types = "dialogue|monologue|narration|info|song" if skip_sound_annotations else "dialogue|monologue|narration|info|song|sfx"
     rule7 = (f"画外音、歌曲按{tgt.name}字幕习惯表达，歌曲前加 ♪；声音 / 音效 / 伴奏说明按第 10 条跳过。"
              if skip_sound_annotations else f"音效、画外音、歌曲按{tgt.name}字幕习惯表达，例如音效写在括号里，歌曲前加 ♪。")
     extra = f"\n{_sound_annotation_rule(10, with_tr=True)}" if skip_sound_annotations else ""
+    asr_desc = (
+        "- 语音识别（asr）：本集没有自带字幕和画面字，语音识别是唯一主来源，请尽量保留有意义的台词、独白和歌词。"
+        if asr_only else
+        "- 语音识别（asr）：只列出没有任何字幕覆盖的语音，文字不可靠（尤其方言）。\n"
+        "  另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。"
+    )
+    rule5 = (
+        "5. 语音识别条目是本集唯一主来源：正常台词、独白、外语短句和歌词都应保留成 cue；"
+        "只把明显的纯噪音、无意义单字拟声、或确凿的识别幻觉放进 drop，不要因为语句略生硬或夹杂外语就轻易丢弃。"
+        if asr_only else
+        "5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。"
+    )
     return f"""你是资深{src.name}→{tgt.name}影视字幕译者兼校对。背景资料：
 {_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
 - 字幕（subs）：视频自带的字幕，文字最可信。注意官方字幕常会省略画面上已经有字的台词。
 - 画面字：从画面 OCR 识别的硬字幕，可能有错字、漏字。后面标了位置和“像台词 / 像说明”，那只是粗略猜测，以内容为准：
   说话内容（口语、带语气、是某人说的话）就是台词 dialogue，哪怕它在画面偏左偏右；地名、人名、说明、标题、资料来源才是 info。
-- 语音识别（asr）：只列出没有任何字幕覆盖的语音，文字不可靠（尤其方言）。
-  另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。
+{asr_desc}{_kind_hint(content_kind)}
 {notes}
 你的任务：把这些条目整理成最终字幕，并翻译成{tgt.name}。输出 JSON：
 {{"cues": [{{"src": ["c12", "o5"], "type": "{types}", "orig": "整理后的{src.name}原文", "tr": "{tgt.name}译文"}}],
@@ -98,7 +129,7 @@ def chunk_system(src, tgt, context: str, tgt_opts: dict, synopsis: str = "", ski
 3. cue 按时间顺序输出。不要自己编时间，时间由 src 决定。
 4. 字幕（subs）是官方文字：orig 里照抄字幕的字，人名等任何字都不要改（只能去掉换行）。OCR 错字结合上下文、语音参考和术语表纠正后写进 orig。条目里的“ / ”表示原来的换行，orig 和译文里不要写“ / ”或“／”（需要换行用换行符，需要分屏用“｜”；同一条字幕里的“ / ”不是分屏，不要换成“｜”）。
    “ ‖ ”表示这里换了一个人说话（同一条字幕里两个人各说一句）：orig 和译文里两个人的话都用换行符分开，不要接成一句，也不要写“‖”。
-5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。
+{rule5}
 6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
    拿不准时宁可 drop。绝不能输出“地图文字”“画面文字”之类的占位译文。
@@ -131,7 +162,7 @@ def lines_text(it) -> str:
     return ls[0] + "".join((" ‖ " if vs[i] != vs[i - 1] else " / ") + ls[i] for i in range(1, len(ls)))
 
 
-def item_line(it) -> str:
+def item_line(it, asr_only: bool = False) -> str:
     label = SRC_LABEL[it["src"]]
     extra = []
     if it["src"] in ("telop", "info"):
@@ -145,7 +176,8 @@ def item_line(it) -> str:
     if it.get("split_from"):  # 原来一条字幕里两个人各说一句，拆开了（见 fusion/speakers.py）
         extra.append("原字幕里和相邻那条是不同的人在同一时刻说的，单独成一条")
     if it["src"] == "asr":
-        extra.append("无字幕覆盖")
+        if not asr_only:
+            extra.append("无字幕覆盖")
         if it.get("second_pass"):
             extra.append("补识别：可能是哭喊、歌声，也可能是噪音或幻觉")
     extra = [e for e in extra if e]
@@ -159,19 +191,28 @@ def glossary_text(terms) -> str:
     if not terms:
         return "（无）"
     lines = []
-    for t in terms[:200]:
+    for t in terms[:400]:
         r = f"（{t['reading']}）" if t.get("reading") else ""
-        # 人工写的备注（手动加的、导入的）一起给：是谁、和谁什么关系、说话习惯（村雨用「村雨」称呼自己，「それ村雨の！」是“那是我的！”）。
-        # 自动整理的备注是从字幕里猜的，不给（也免得没有人工备注的工程提示词变了）
-        note = (t.get("note") or "").strip() if t.get("from") in ("manual", "import") else ""
+        # 人工写的备注（手动加的、导入的）以及结构化人物关系一起给；自动整理的备注不给
+        note_parts = []
+        if t.get("from") in ("manual", "import"):
+            if (t.get("note") or "").strip():
+                note_parts.append(t["note"].strip())
+            if (t.get("relations") or "").strip():
+                note_parts.append(t["relations"].strip())
+            aliases = [str(a).strip() for a in (t.get("aliases") or []) if str(a).strip()]
+            if aliases:
+                note_parts.append("别名：" + " / ".join(aliases))
+        note = "；".join(note_parts)
         lines.append(f"{t.get('src', '')}{r} → {t.get('tr', '')}" + (f"　备注：{note}" if note else ""))
     return "\n".join(lines)
 
 
 def glossary_input(items, known_terms) -> str:
+    asr_only = is_asr_only(items)
     seen, lines, total = set(), [], 0
     for it in items:
-        if it["src"] == "asr":
+        if not asr_only and it["src"] == "asr":
             continue
         t = it["text"].replace("\n", " ")
         if t in seen:
@@ -208,18 +249,30 @@ def chunk_prompt(chunk, gl_text, summary, context_cues, tgt_code, memory=()) -> 
 
 
 # ---------- 整理（只出原文）→ 翻译（只翻一次）。上面的 chunk_system / chunk_prompt 是两件事一起做的，导出任务模式还在用 ----------
-def organize_system(src, context: str, synopsis: str = "", skip_sound_annotations: bool = False) -> str:
+def organize_system(src, context: str, synopsis: str = "",
+                    skip_sound_annotations: bool = False, asr_only: bool = False, content_kind: str = "auto") -> str:
     notes = src.prompt_source_notes(with_tr=False)
-    types = "dialogue|narration|info|song" if skip_sound_annotations else "dialogue|narration|info|song|sfx"
+    types = "dialogue|monologue|narration|info|song" if skip_sound_annotations else "dialogue|monologue|narration|info|song|sfx"
     extra = f"\n{_sound_annotation_rule(8, with_tr=False)}" if skip_sound_annotations else ""
+    asr_desc = (
+        "- 语音识别（asr）：本集没有自带字幕和画面字，语音识别是唯一主来源，请尽量保留有意义的台词、独白和歌词。"
+        if asr_only else
+        "- 语音识别（asr）：只列出没有任何字幕覆盖的语音，文字不可靠（尤其方言）。\n"
+        "  另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。"
+    )
+    rule5 = (
+        "5. 语音识别条目是本集唯一主来源：正常台词、独白、外语短句和歌词都应保留成 cue；"
+        "只把明显的纯噪音、无意义单字拟声、或确凿的识别幻觉放进 drop，不要因为语句略生硬或夹杂外语就轻易丢弃。"
+        if asr_only else
+        "5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。"
+    )
     return f"""你是资深{src.name}影视字幕编辑。背景资料：
 {_background(context, synopsis)}
 你会收到一段时间窗口内的全部“候选字幕条目”，来自三个来源：
 - 字幕（subs）：视频自带的字幕，文字最可信。注意官方字幕常会省略画面上已经有字的台词。
 - 画面字：从画面 OCR 识别的硬字幕，可能有错字、漏字。后面标了位置和“像台词 / 像说明”，那只是粗略猜测，以内容为准：
   说话内容（口语、带语气、是某人说的话）就是台词 dialogue，哪怕它在画面偏左偏右；地名、人名、说明、标题、资料来源才是 info。
-- 语音识别（asr）：只列出没有任何字幕覆盖的语音，文字不可靠（尤其方言）。
-  另外，部分条目后面附有「语音参考」，是同一时段语音识别听到的内容，常有听错，只用来帮助纠正 OCR 错字、理解句意，不要当成另一句话。
+{asr_desc}{_kind_hint(content_kind)}
 {notes}
 你的任务：只整理{src.name}原文（不翻译），把这些条目整理成一条条字幕。输出 JSON：
 {{"cues": [{{"src": ["c12", "o5"], "type": "{types}", "orig": "整理后的{src.name}原文"}}],
@@ -240,14 +293,14 @@ def organize_system(src, context: str, synopsis: str = "", skip_sound_annotation
 4. 字幕（subs）是官方文字：orig 里照抄字幕的字，人名等任何字都不要改（只能去掉换行）。OCR 错字结合上下文、语音参考和术语表纠正后写进 orig。
    条目里的“ / ”表示原来的换行，orig 里不要写“ / ”或“／”（需要换行用换行符；合并了几条来源时，在来源和来源的交界处用“｜”分屏；同一条字幕里的“ / ”不是分屏，不要换成“｜”）。
    “ ‖ ”表示这里换了一个人说话（同一条字幕里两个人各说一句）：orig 里两个人的话用换行符分开，不要接成一句，也不要写“‖”。
-5. 语音识别条目：确实有意义、而且画面和字幕里都没有的台词，单独成一条 cue；与前后字幕重复、听错、噪音、无意义的，放进 drop。
+{rule5}
 6. 画面文字只保留节目后期加上的字幕：采访台词、人名条、地名、说明文字、标题、资料来源。
    画面里实物上本来就有的字一律放进 drop：地图和古文书上的字、招牌、海报、日历、商品包装和标签、价格牌、手写字、台标。
    拿不准时宁可 drop。
 7. 人名、地名、专有名词的原文写法按术语表纠正 OCR / 语音识别的错字（字幕里的字照抄，不改）。{extra}"""
 
 
-def organize_prompt(chunk, gl_text, summary, context_cues) -> str:
+def organize_prompt(chunk, gl_text, summary, context_cues, asr_only: bool = False) -> str:
     parts = []
     if summary:
         parts.append(f"## 本集概要\n{summary}")
@@ -255,12 +308,12 @@ def organize_prompt(chunk, gl_text, summary, context_cues) -> str:
     if context_cues:
         parts.append("## 前文（已整理，仅供衔接参考，不要输出）\n" + "\n".join(
             c["orig"]["text"].replace("\n", " / ") for c in context_cues))
-    parts.append("## 本段候选条目\n" + "\n".join(item_line(it) for it in chunk))
+    parts.append("## 本段候选条目\n" + "\n".join(item_line(it, asr_only=asr_only) for it in chunk))
     parts.append("请按规则输出 JSON。")
     return "\n\n".join(parts)
 
 
-KIND = {"narration": "旁白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
+KIND = {"narration": "旁白", "monologue": "独白", "dialogue": "对话", "info": "说明", "name": "人名条", "title": "标题", "sfx": "音效", "song": "歌"}
 
 
 SUBTITLE_FLOW_RULES = """- 每屏译文按目标语言的语序组织，连接词与它引出的分句一起显示，让每屏形成自然的意群。
@@ -275,14 +328,15 @@ def translate_rules(tgt, tgt_opts: dict) -> str:
     return f"""输出 JSON：{{"items": [{{"ids": ["q12"], "tr": "译文"}}, {{"ids": ["q13", "q14"], "tr": "合成一条的译文"}}]}}，
 要翻的每个 id 都要出现且只出现一次；一般一条字幕一项（ids 里只有它自己）。
 - 合成一条：同一个人说的一句话被拆在相邻几条字幕里（原来是前后几屏），按原来的分法拆开，{tgt.name}就不通顺（语序要颠倒、半句话没法单独译）时，
-  可以把这几条（最多 4 条、连续、都是对话或都是旁白、间隔不超过 2 秒）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合。
+  可以把这几条（最多 4 条、连续、都是对话或都是独白或都是旁白、间隔不超过 2 秒）写进同一项的 ids，合成一条翻译；能一条一条译通顺的不要合。
   合成的那条原文就是这几条按顺序用“｜”接起来：译文能按原来的几屏分开就用“｜”分成同样多段（语序可以在段之间微调），实在分不开就写成一段。
 - 原文里的“｜”是分屏标记：译文要分成同样多段，每段的主要信息与原文同一段对应。
 {SUBTITLE_FLOW_RULES}
 - 原文里的“ / ”是原来的换行：译文只在这些地方、或者一行放不下时才换行（JSON 里写作 \\n），不要另加换行；译文里不要写“ / ”。
-- 主语：原文常省略主语，没说出“我 / 你 / 他”的，译文一般也不要补；非补不可时先弄清是谁：
-  旁白是第三人称叙述（写“她 / 他”或名字，绝不能写成“我”）；说话人在讲别人的事（「（妻は）…」是在讲妻子）时主语是那个人；
-  对着动物、别人说的话主语常是“你”。拿不准是谁就不补，宁可照原文省略。
+- 主语与人称：原文已经明确说出第一 / 第二 / 第三人称（如「俺たちは」「僕は」「私は」「君は」）的，必须忠实保留原文人称，绝不能擅自改写成其他人称；
+  原文省略主语、没说出“我 / 你 / 他”的，译文一般也不要补；非补不可时先弄清是谁：
+  独白（monologue）是角色自己的第一人称心声或回忆；客观旁白（narration）在省略主语时才按第三人称叙述（写“她 / 他”或名字）；
+  说话人在讲别人的事（「（妻は）…」是在讲妻子）时主语是那个人；对着动物、别人说的话主语常是“你”。拿不准是谁就不补，宁可照原文省略。
 - 原文开头的说话人标签（「（さと子）」「（妻は）」这种括号）要保留，括号里的名字按术语表译；
   「⚟」（画外的声音）、「♪」「➡」这些记号照原样保留在同样的位置。
 - 音效、画外音按{tgt.name}字幕习惯写在括号里，歌曲前加 ♪。

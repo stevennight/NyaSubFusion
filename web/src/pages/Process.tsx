@@ -355,6 +355,25 @@ function BasicStep({ ctx }: { ctx: StepCtx }) {
               {on && targets.length > 1 ? `${targets.indexOf(l.code) + 1}. ` : ""}{l.name}</span>;
           })}
         </div>
+        <Lbl ctx={ctx} k="project.content_kind">节目类型</Lbl>
+        <div className="row wrap">
+          <select className="inp" style={{ maxWidth: 220 }} value={String(val("project.content_kind") ?? "auto")} onChange={(e) => set("project.content_kind", e.target.value)}>
+            <option value="auto">自动</option>
+            <option value="anime">动画</option>
+            <option value="drama">电视剧 / 电影</option>
+            <option value="documentary">纪录片</option>
+            <option value="variety">综艺 / 单元剧</option>
+          </select>
+          <span className="hint">决定独白/旁白倾向与自动术语是否回写作品表（纪录片/综艺默认仅存单集）</span>
+        </div>
+        <Lbl ctx={ctx} k="project.glossary_sync">自动术语</Lbl>
+        <div className="row wrap">
+          <select className="inp" style={{ maxWidth: 220 }} value={String(val("project.glossary_sync") ?? "auto")} onChange={(e) => set("project.glossary_sync", e.target.value)}>
+            <option value="auto">按节目类型自动</option>
+            <option value="series">同步到作品共享表</option>
+            <option value="episode">仅存本集（不污染作品表）</option>
+          </select>
+        </div>
         {ctx.episode && (<>
           <span className="lbl">所属作品</span>
           <div className="row"><div style={{ maxWidth: 320, flex: 1 }}><SeriesPicker value={String(val("project.series") ?? "")} onChange={(v) => set("project.series", v)} /></div>

@@ -387,8 +387,14 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
     tgt_code = lang.canonical(cfg.project.targets[0])
     tgt = lang.get(tgt_code)
 
+    asr_only = prompts.is_asr_only(items)
+    content_kind = getattr(cfg.project, "content_kind", "auto") or "auto"
+
     log("生成术语表 / 本集概要")
-    gl = llm.chat_json(prompts.glossary_system(src, tgt, cfg.project.context, cfg.project.synopsis), prompts.glossary_input(items, known_terms))
+    gl = llm.chat_json(
+        prompts.glossary_system(src, tgt, cfg.project.context, cfg.project.synopsis, asr_only=asr_only),
+        prompts.glossary_input(items, known_terms),
+    )
     terms = merge_terms(known_terms, gl.get("terms"))
     fix_terms(llm, terms, src, tgt, cfg.project.context)
     glossary = {"summary": gl.get("summary", ""), "terms": terms, "new": len(terms) - len(known_terms or [])}
@@ -396,13 +402,13 @@ def organize_api(items, cfg, cache_dir, src_code, known_terms):
 
     skip_sound = bool(cfg.subs.skip_sound_annotations)
     system = prompts.organize_system(src, cfg.project.context, cfg.project.synopsis,
-                                     skip_sound_annotations=skip_sound)
+                                     skip_sound_annotations=skip_sound, asr_only=asr_only, content_kind=content_kind)
     chunks = chunk_items(items, cfg.llm.chunk_seconds, cfg.llm.chunk_max_items)
     all_cues = []
     for i, chunk in enumerate(chunks, 1):
         progress(i - 1, len(chunks), f"整理 {i}/{len(chunks)} 段", every=0)
         log(f"整理第 {i}/{len(chunks)} 段（{fmt_time(chunk[0]['start'])} 起，{len(chunk)} 条）")
-        prompt = prompts.organize_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:])
+        prompt = prompts.organize_prompt(chunk, gl_text, glossary["summary"], all_cues[-6:], asr_only=asr_only)
         cues, missing = apply_result(chunk, llm.chat_json(system, prompt), tgt_code, src.code,
                                      skip_sound_annotations=skip_sound)
         if missing:
@@ -427,7 +433,7 @@ def can_merge(group):
     相邻间隔不超过 MERGE_GAP（两条均含画面字时不超过 ONSCREEN_GAP，避免跨明显画面空档硬并多块屏幕字）。"""
     from ..core import segments
 
-    if len(group) > MERGE_MAX or len({c.get("type") for c in group}) != 1 or group[0].get("type") not in ("dialogue", "narration"):
+    if len(group) > MERGE_MAX or len({c.get("type") for c in group}) != 1 or group[0].get("type") not in ("dialogue", "monologue", "narration"):
         return False
     if sum(len(segments.pieces(c["orig"]["text"])) or 1 for c in group) > MERGE_MAX:
         return False
@@ -792,7 +798,7 @@ def resegment(llm, cues, items, src, tgt_code, cfg, batch=15):
 
     def inside(c, orig=None):
         """“｜”落在同一条字幕 / 画面字中间：大模型把里面的换行当成了分屏（段数对得上也算，译文常错开一段）。"""
-        if c.get("type") not in ("dialogue", "narration"):
+        if c.get("type") not in ("dialogue", "monologue", "narration"):
             return False
         return bool(segments.card_bars(c if orig is None else dict(c, orig=dict(c["orig"], text=orig)), items))
 
@@ -857,7 +863,7 @@ def split_long(llm, cues, items, src, tgt_code, cfg, batch=15):
         ps = segments.pieces(t) if segments.bars_ok(c) else [segments.unbar(t, tgt_code)]
         return any(segments.screen_lines(p, tgt_code, cfg) > 2 for p in ps)
 
-    todo = [i for i, c in enumerate(cues) if c.get("type") in ("dialogue", "narration") and too_long(c)]
+    todo = [i for i, c in enumerate(cues) if c.get("type") in ("dialogue", "monologue", "narration") and too_long(c)]
     if not todo:
         return
     log(f"长句分段：{len(todo)} 条字幕一屏放不下，请大模型按意思分段")

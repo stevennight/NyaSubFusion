@@ -957,16 +957,20 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.get("/api/series/{name}/glossary")
     def series_glossary(name: str):
-        """作品共用的术语表（各集翻译时整理出来的 + 手动加的）。"""
+        """作品共用的术语表（自动迁移旧版多集膨胀表）。"""
+        from ..core import glossary as gl_mod
+
         f = config_mod.series_dir(name) / "glossary.json"
+        terms = gl_mod.load_series_terms(f)
         return {"series": name, "context": (config_mod.read_series(name).get("project") or {}).get("context", ""),
-                "summary": "", "path": str(f), "episode": "", "terms": load_json(f, {"terms": []})["terms"]}
+                "summary": "", "path": str(f), "episode": "", "terms": terms}
 
     @app.put("/api/series/{name}/glossary")
     def put_series_glossary(name: str, body: dict = Body(...)):
-        terms = [{k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from", "edited") and v not in (None, "", False)}
-                 | {"from": t.get("from") or "manual"} for t in body.get("terms") or [] if (t.get("src") or "").strip()]
-        save_json(config_mod.series_dir(name) / "glossary.json", {"terms": terms})
+        from ..core import glossary as gl_mod
+
+        terms = [c for t in body.get("terms") or [] if (c := gl_mod.clean_term(t, default_from="manual"))]
+        save_json(config_mod.series_dir(name) / "glossary.json", {"version": gl_mod.SCHEMA_VERSION, "terms": terms})
         return {"terms": terms}
 
     def _series_reading_files(name):
@@ -1575,25 +1579,40 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.get("/api/projects/{pid}/glossary")
     def get_glossary(pid: str):
+        from ..core import glossary as gl_mod
+
         run = make_run(pid)
         run.load_state()
-        saved = load_json(run.glossary_path(), {"terms": []})["terms"]
+        sp = run.series_glossary_path()
+        series_terms = gl_mod.load_series_terms(sp) if sp else []
+        ep_terms = gl_mod.load_episode_terms(run.episode_glossary_path())
+        saved = list(series_terms)
+        known = {t.get("src") for t in saved}
+        for t in ep_terms:
+            if t.get("src") not in known:
+                known.add(t.get("src"))
+                saved.append(t)
         gl = (run.results.get("translate") or {}).get("glossary") or {}
-        known = {t.get("src") for t in saved}  # 翻译结果里还没存进术语表的（旧项目），也列出来
         saved = saved + [dict(t, **{"from": run.proj.stem}) for t in gl.get("terms", []) if t.get("src") not in known]
         return {"series": run.cfg.project.series, "context": run.cfg.project.context, "summary": gl.get("summary", ""),
                 "path": str(run.glossary_path()), "episode": run.proj.stem, "terms": saved}
 
     @app.put("/api/projects/{pid}/glossary")
     def put_glossary(pid: str, body: dict = Body(...)):
-        """整表替换：{"terms": [{"src", "reading", "tr", "type", "note", "from"}]}。改了要重新翻译才生效。"""
+        """整表替换：{"terms": [{"src", "reading", "tr", "type", "note", "from", "aliases", "relations", "scope"}]}。改了要重新翻译才生效。"""
+        from ..core import glossary as gl_mod
+
         run = make_run(pid)
-        terms = []
-        for t in body.get("terms") or []:
-            if (t.get("src") or "").strip():
-                terms.append({k: v for k, v in t.items() if k in ("src", "reading", "tr", "type", "note", "from", "edited") and v not in (None, "", False)}
-                             | {"from": t.get("from") or "manual"})
-        save_json(run.glossary_path(), {"terms": terms})
+        terms = [c for t in body.get("terms") or [] if (c := gl_mod.clean_term(t, default_from="manual"))]
+        sp = run.series_glossary_path()
+        if sp and not gl_mod.should_sync_to_series(run.cfg):
+            # 纪录片 / 仅单集同步模式：明确属于作品级或人工编辑的共享条目写作品表，单集自动条目写单集表
+            ep_only = [t for t in terms if t.get("from") == run.proj.stem and not t.get("edited") and t.get("scope") != "series"]
+            shared = [t for t in terms if t not in ep_only]
+            save_json(sp, {"version": gl_mod.SCHEMA_VERSION, "terms": shared})
+            save_json(run.episode_glossary_path(), {"version": gl_mod.SCHEMA_VERSION, "terms": ep_only})
+        else:
+            save_json(run.glossary_path(), {"version": gl_mod.SCHEMA_VERSION, "terms": terms})
         return {"terms": terms, "plan": run.plan()}
 
     def _reading_files(run):

@@ -15,7 +15,7 @@ export function fmtHms(t: number) {
 }
 
 export const TYPE_LBL: Record<string, string> = {
-  dialogue: "台词", narration: "旁白", info: "说明", name: "人名条", title: "标题", song: "歌词", sfx: "音效",
+  dialogue: "台词", monologue: "独白", narration: "旁白", info: "说明", name: "人名条", title: "标题", song: "歌词", sfx: "音效",
 };
 export const FLAG_LBL: Record<string, string> = {
   asr_only: "仅语音", ocr_low_conf: "OCR 低置信", conflict: "来源冲突", reading_guess: "读音待确认",

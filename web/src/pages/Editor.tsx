@@ -773,7 +773,7 @@ function Inspector({ cue, index, onStep, time, prev, next, target, onHint, onSpl
                     <span className="lbl">类型</span>
                     <select className="inp" value={ty} onChange={(e) => onPieces({ action: "type", seg: i, type: e.target.value || null })}>
                       <option value="">跟随整条（{TYPE_LBL[cue.type] ?? cue.type}）</option>
-                      {["dialogue", "narration", "song", "sfx"].map((k) => <option key={k} value={k}>{TYPE_LBL[k]}</option>)}
+                      {["dialogue", "monologue", "narration", "song", "sfx"].map((k) => <option key={k} value={k}>{TYPE_LBL[k]}</option>)}
                       <option value="info">说明（拆成单独一条）</option>
                     </select>
                     <span className="lbl">原文</span>
