@@ -997,8 +997,11 @@ def create_app(token: str | None = None) -> FastAPI:
         kind = str(body.get("content_kind") or (raw.get("project") or {}).get("content_kind") or "auto")
         query = str(body.get("query") or name).strip()
         pasted = str(body.get("pasted_text") or "")
+        provider = str(body.get("provider") or "")
+        online_fallback = bool(body.get("online_fallback", True))
         cfg, _ = config_mod.load(None)
-        return research.research_work(query, content_kind=kind, cfg=cfg, pasted_text=pasted)
+        return research.research_work(query, content_kind=kind, cfg=cfg, pasted_text=pasted,
+                                      provider=provider, online_fallback=online_fallback)
 
     @app.post("/api/projects/{pid}/research")
     def research_project(pid: str, body: dict = Body(default={})):
@@ -1009,10 +1012,12 @@ def create_app(token: str | None = None) -> FastAPI:
         query = str(body.get("query") or run.cfg.project.series or run.proj.stem).strip()
         ep = str(body.get("episode") or run.proj.stem).strip()
         pasted = str(body.get("pasted_text") or "")
+        provider = str(body.get("provider") or "")
+        online_fallback = bool(body.get("online_fallback", True))
         return research.research_work(query, content_kind=run.cfg.project.content_kind, cfg=run.cfg,
                                       cache_dir=run.proj / "llm_cache",
                                       episode_title=ep if run.cfg.project.series else "",
-                                      pasted_text=pasted)
+                                      pasted_text=pasted, provider=provider, online_fallback=online_fallback)
 
     def _series_reading_files(name):
         return {"global": env.home() / "readings.json", "series": config_mod.series_dir(name) / "readings.json"}

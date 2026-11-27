@@ -107,80 +107,6 @@ function SeriesSongsPanel({ name }: { name: string }) {
   );
 }
 
-function SeriesResearchBar({ name, onApplied }: { name: string; onApplied: () => void }) {
-  const s = useStore();
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(name);
-  const [pasted, setPasted] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState<{ context: string; terms: { src: string; reading?: string; tr?: string; type?: string; note?: string; aliases?: string[]; relations?: string }[]; sources: string[] } | null>(null);
-
-  const run = async (usePasted: boolean) => {
-    setBusy(true);
-    try {
-      const res = await api.researchSeries(name, usePasted ? { query, pasted_text: pasted } : { query });
-      setDraft(res);
-      if (!res.context && !res.terms?.length) s.toast("未检索到资料，可尝试粘贴网页文本由 AI 整理");
-    } catch (e) { s.setError((e as Error).message); }
-    finally { setBusy(false); }
-  };
-
-  const apply = async () => {
-    if (!draft) return;
-    try {
-      const cur = await api.seriesGlossary(name);
-      const existing = cur.terms ?? [];
-      const seen = new Set(existing.map((t) => t.src));
-      const merged = [...existing, ...draft.terms.filter((t) => t.src && !seen.has(t.src)).map((t) => ({ ...t, from: "import", scope: "series" as const }))];
-      await api.putSeriesGlossary(name, merged);
-      s.toast(`已合入 ${merged.length - existing.length} 条术语到作品术语表`);
-      setDraft(null);
-      setOpen(false);
-      onApplied();
-    } catch (e) { s.setError((e as Error).message); }
-  };
-
-  if (!open) {
-    return (
-      <div className="row" style={{ marginBottom: 10 }}>
-        <button className="btn sm" onClick={() => setOpen(true)}>AI 联网查资料 / 粘贴文本建档…</button>
-        <span className="hint">自动查 Bangumi / Wikipedia 或粘贴百科文案，提炼结构化人物表</span>
-      </div>
-    );
-  }
-  return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <b>AI 联网建档 / 粘贴文本整理</b>
-        <span className="sp" />
-        <button className="btn sm" onClick={() => { setOpen(false); setDraft(null); }}>收起</button>
-      </div>
-      <div className="row wrap" style={{ gap: 8, marginBottom: 8 }}>
-        <input className="inp" style={{ flex: 1, minWidth: 200 }} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="作品名（用于检索 Bangumi / Wikipedia）" />
-        <button className="btn pri" disabled={busy || !query.trim()} onClick={() => run(false)}>{busy ? "检索中…" : "联网检索"}</button>
-      </div>
-      <textarea className="inp" rows={3} style={{ width: "100%", fontFamily: "inherit" }}
-                placeholder="或直接粘贴百科 / 官网 / 角色介绍文本，点下方按钮由 AI 整理为结构化人物卡与术语"
-                value={pasted} onChange={(e) => setPasted(e.target.value)} />
-      <div className="row" style={{ marginTop: 6 }}>
-        <span className="hint">所有结果先预览，确认后再写入作品术语表</span>
-        <span className="sp" />
-        <button className="btn" disabled={busy || !pasted.trim()} onClick={() => run(true)}>{busy ? "整理中…" : "用粘贴文本 AI 整理"}</button>
-      </div>
-      {draft && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--bd)" }}>
-          <div className="hint" style={{ marginBottom: 4 }}>来源：{draft.sources.join("、") || "无"} · 提取到 {draft.terms.length} 条术语</div>
-          {draft.context && <div className="muted" style={{ marginBottom: 6, whiteSpace: "pre-wrap" }}>{draft.context.slice(0, 300)}</div>}
-          <div className="row">
-            <span className="sp" />
-            <button className="btn pri sm" disabled={!draft.terms.length} onClick={apply}>合入作品术语表</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function SeriesPage({ name, tab, setTab, onOpened, onRenamed }: {
   name: string; tab: SeriesTab; setTab: (t: SeriesTab) => void; onOpened: () => void; onRenamed: (to: string) => void;
 }) {
@@ -243,7 +169,7 @@ export function SeriesPage({ name, tab, setTab, onOpened, onRenamed }: {
         </div>
       ))}
       {tab === "settings" && <TemplateEditor key={name} target={{ kind: "series", id: name }} embedded />}
-      {tab === "notes" && <><SeriesResearchBar name={name} onApplied={load} /><SeriesNotes name={name} /></>}
+      {tab === "notes" && <SeriesNotes name={name} />}
       {tab === "songs" && <SeriesSongsPanel name={name} />}
       {ov.ui}
     </div></div>

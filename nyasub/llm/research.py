@@ -202,18 +202,83 @@ RESEARCH_SYSTEM = """你是影视字幕翻译的资料整理助手。
 要求：只输出纯 JSON；专有名词不超过 60 条，优先收核心角色、地名和世界观专词。"""
 
 
+ONLINE_SUPPLEMENT_HINT = (
+    "\n\n如果上面提供的结构化资料缺失、或缺少核心角色称呼关系/OP和ED歌名，"
+    "请优先查阅高可信源（Bangumi、日文/中文 Wikipedia、NHK 官网、萌娘百科、Uta-Net 等）补全缺失信息，绝不编造。"
+)
+
+LYRICS_ONLINE_SYSTEM = """你是歌词核对助手。请联网查询指定歌曲的官方标准歌词原文（不要翻译，不要加时间轴，不要编造未查到的词）。
+如果查不到确切官方歌词，lines 返回空数组 []。
+只输出 JSON：{"title": "歌名", "artist": "歌手", "lines": ["第一句", "第二句"]}"""
+
+
+def _resolve_research_cfg(cfg, provider: str = ""):
+    if cfg is None or not (provider or "").strip():
+        return cfg
+    c2 = cfg.model_copy(deep=True)
+    c2.llm.organize = provider.strip()
+    c2.llm.organize_model = ""
+    return c2
+
+
+def _call_online_llm(cfg, system: str, prompt: str, cache_dir=None) -> tuple[dict | None, str]:
+    """使用带联网能力的接口（agy/codex 只读搜索，或 OpenRouter :online）请求 JSON。返回 (parsed_dict, source_tag)。"""
+    from .client import LLM, parse_json
+
+    ep = cfg.endpoint("organize")
+    ep_kind = ep.get("kind", "openai")
+    if ep_kind in ("agy", "codex") and ep.get("model"):
+        from . import cli_backend
+
+        text, _ = cli_backend.call_cli(
+            ep_kind, ep.get("command") or "", ep["model"], system, prompt, timeout=180.0, allow_web=True,
+        )
+        return parse_json(text or ""), f"agent:{ep_kind}"
+    if ep_kind == "openai" and "openrouter.ai" in (ep.get("base_url") or "") and ep.get("model"):
+        c2 = cfg.model_copy(deep=True)
+        model = ep["model"]
+        if not model.endswith(":online"):
+            c2.llm.organize_model = model + ":online"
+        llm = LLM(c2, cache_dir=cache_dir, purpose="organize")
+        return llm.chat_json(system, prompt), "openrouter:online"
+    return None, ""
+
+
+def fetch_lyrics_online(title: str, artist: str = "", cfg=None, cache_dir=None, provider: str = "") -> list[str]:
+    """第二层歌词兜底：当 LRCLIB 查不到冷门歌时，若接口支持联网（agy / OpenRouter :online），联网查官方歌词原文。"""
+    if cfg is None or cfg.llm_mode() != "api" or not (title or "").strip():
+        return []
+    rcfg = _resolve_research_cfg(cfg, provider)
+    try:
+        prompt = f"请查询歌曲官方歌词原文：\n歌名：{title.strip()}\n歌手：{(artist or '未知').strip()}"
+        parsed, src_tag = _call_online_llm(rcfg, LYRICS_ONLINE_SYSTEM, prompt, cache_dir=cache_dir)
+        if isinstance(parsed, dict) and parsed.get("lines"):
+            lines = [str(x).strip() for x in parsed["lines"] if str(x).strip()]
+            if lines:
+                log(f"歌词联网兜底（{src_tag}）：获取到《{title}》{len(lines)} 句歌词")
+                return lines
+    except Exception as e:
+        log(f"歌词联网兜底跳过：{e}")
+    return []
+
+
 def research_work(query: str, content_kind: str = "auto", cfg=None, cache_dir=None,
-                  episode_title: str = "", pasted_text: str = "") -> dict:
+                  episode_title: str = "", pasted_text: str = "",
+                  provider: str = "", online_fallback: bool = True) -> dict:
     """按三层策略检索或整理作品/单集资料：
-    - 若用户提供了 pasted_text：直接以粘贴文本作为权威输入，交由 LLM 提炼结构化背景、人物卡与歌曲列表；
-    - 否则先查第一层高可信 API（Bangumi + Wikipedia 中日双语），再交由任意已配置 LLM 融合整理。
+    - 若用户提供了 pasted_text：直接以粘贴文本作为权威输入，交由所选 LLM 提炼结构化背景、人物卡与歌曲列表；
+    - 否则先查第一层高可信 API（Bangumi + Wikipedia 中日双语）；
+    - 若第一层未命中或开启 online_fallback 且所选接口支持联网（agy / codex / OpenRouter :online），
+      走第二层联网补缺；否则由普通 LLM 整理第一层资料。
     返回 {"context", "terms", "songs", "sources"}。"""
+    rcfg = _resolve_research_cfg(cfg, provider)
     sources = []
     raw_blocks = []
     direct_terms = []
     fallback_context = ""
+    is_pasted = bool((pasted_text or "").strip())
 
-    if (pasted_text or "").strip():
+    if is_pasted:
         sources.append("pasted")
         raw_blocks.append(f"## 用户粘贴的参考资料\n{pasted_text.strip()[:12000]}")
         fallback_context = pasted_text.strip()[:600]
@@ -246,36 +311,42 @@ def research_work(query: str, content_kind: str = "auto", cfg=None, cache_dir=No
         "songs": [],
         "sources": sources,
     }
-    if not raw_blocks:
-        return result
 
-    # 若有配置 LLM，使用 LLM 将多源资料融合为干净的结构化人物卡与简介
-    if cfg is not None and cfg.llm_mode() == "api":
-        try:
-            from .client import LLM
+    # 若有配置 LLM：无第一层结果且允许联网补缺 → 第二层主动联网；有第一层结果 → 整理（若开启联网补缺且支持联网，可顺带补缺）
+    if rcfg is not None and rcfg.llm_mode() == "api":
+        base_prompt = (f"检索目标：{query}"
+                       + (f"（单集：{episode_title}）" if episode_title else "")
+                       + f"\n节目类型：{content_kind}\n\n"
+                       + ("\n\n".join(raw_blocks) if raw_blocks else "（第一层结构化数据库未检索到条目）"))
+        parsed = None
+        if not is_pasted and online_fallback and (not raw_blocks or not direct_terms):
+            try:
+                parsed, online_tag = _call_online_llm(rcfg, RESEARCH_SYSTEM, base_prompt + ONLINE_SUPPLEMENT_HINT, cache_dir=cache_dir)
+                if parsed and online_tag:
+                    sources.append(online_tag)
+            except Exception as e:
+                log(f"联网补缺跳过（回退普通整理）：{e}")
+        if parsed is None and raw_blocks:
+            try:
+                from .client import LLM
 
-            llm = LLM(cfg, cache_dir=cache_dir, purpose="organize")
-            prompt = (f"检索目标：{query}"
-                      + (f"（单集：{episode_title}）" if episode_title else "")
-                      + f"\n节目类型：{content_kind}\n\n"
-                      + "\n\n".join(raw_blocks))
-            parsed = llm.chat_json(RESEARCH_SYSTEM, prompt)
-            if isinstance(parsed, dict):
-                if (parsed.get("context") or "").strip():
-                    result["context"] = parsed["context"].strip()
-                if parsed.get("terms"):
-                    # 合并 Bangumi 原始角色与 LLM 整理的人物卡（保留 aliases/relations）
-                    by_src = {t["src"]: dict(t) for t in direct_terms if t.get("src")}
-                    for t in parsed["terms"]:
-                        if isinstance(t, dict) and (t.get("src") or "").strip():
-                            src = t["src"].strip()
-                            merged = dict(by_src.get(src, {}), **t)
-                            merged["from"] = "import"
-                            merged["scope"] = "series" if content_kind in ("auto", "anime", "drama") else "episode"
-                            by_src[src] = merged
-                    result["terms"] = list(by_src.values())
-                if parsed.get("songs"):
-                    result["songs"] = [s for s in parsed["songs"] if isinstance(s, dict) and (s.get("title") or "").strip()]
-        except Exception as e:
-            log(f"联网资料 LLM 整理失败，返回原始检索结果：{e}")
+                llm = LLM(rcfg, cache_dir=cache_dir, purpose="organize")
+                parsed = llm.chat_json(RESEARCH_SYSTEM, base_prompt)
+            except Exception as e:
+                log(f"联网资料 LLM 整理失败，返回原始检索结果：{e}")
+        if isinstance(parsed, dict):
+            if (parsed.get("context") or "").strip():
+                result["context"] = parsed["context"].strip()
+            if parsed.get("terms"):
+                by_src = {t["src"]: dict(t) for t in direct_terms if t.get("src")}
+                for t in parsed["terms"]:
+                    if isinstance(t, dict) and (t.get("src") or "").strip():
+                        src = t["src"].strip()
+                        merged = dict(by_src.get(src, {}), **t)
+                        merged["from"] = "import"
+                        merged["scope"] = "series" if content_kind in ("auto", "anime", "drama") else "episode"
+                        by_src[src] = merged
+                result["terms"] = list(by_src.values())
+            if parsed.get("songs"):
+                result["songs"] = [s for s in parsed["songs"] if isinstance(s, dict) and (s.get("title") or "").strip()]
     return result

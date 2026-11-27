@@ -1,10 +1,10 @@
 // 资料：给大模型和注音用的背景资料——节目说明、本集概要、术语表、读音词典。改了自动保存。
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Modal } from "../components/Modal";
 import { SaveChip, useDoc, useDraft, useRemote, type SaveState } from "../doc";
 import { useStore } from "../store";
-import type { Cfg, Glossary, Reading, Term } from "../types";
+import type { Cfg, Glossary, Provider, Reading, Term } from "../types";
 import { langName, setIn } from "../util";
 
 const TYPES = ["地名", "人名", "团体", "场所", "物品", "方言", "其他"];
@@ -120,6 +120,98 @@ export function SeriesNotes({ name }: { name: string }) {
                     gl={gl} rd={rd} episode={false} hint={"作品默认设置里的节目说明：新建这部作品的集时复制过去，已有的集各自在「资料」里改。" + CONTEXT_HINT} />;
 }
 
+function ResearchBar({ episode, seriesName, pid, defaultQuery, onApply }: {
+  episode: boolean; seriesName: string; pid: string | null; defaultQuery: string;
+  onApply: (res: { context: string; terms: Term[] }, writeContext: boolean) => void;
+}) {
+  const s = useStore();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(defaultQuery);
+  const [pasted, setPasted] = useState("");
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [provider, setProvider] = useState("");
+  const [onlineFallback, setOnlineFallback] = useState(true);
+  const [writeCtx, setWriteCtx] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<{ context: string; terms: Term[]; songs: { title: string; artist?: string; role?: string }[]; sources: string[] } | null>(null);
+
+  useEffect(() => { setQuery(defaultQuery); }, [defaultQuery]);
+  useEffect(() => {
+    if (!open || providers.length) return;
+    api.settings().then((st) => setProviders((st.user_config?.llm?.providers as Provider[]) ?? [])).catch(() => {});
+  }, [open, providers.length]);
+
+  const run = async (usePasted: boolean) => {
+    setBusy(true);
+    try {
+      const body = { query, ...(usePasted ? { pasted_text: pasted } : {}), ...(provider ? { provider } : {}), online_fallback: onlineFallback };
+      const res = episode && pid
+        ? await api.researchProject(pid, body)
+        : await api.researchSeries(seriesName, body);
+      setDraft(res);
+      if (!res.context && !res.terms?.length) s.toast("未检索到资料，可尝试勾选联网补缺或粘贴文本由 AI 整理");
+    } catch (e) { s.setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  if (!open) {
+    return (
+      <div className="row" style={{ marginBottom: 10 }}>
+        <button className="btn sm" onClick={() => setOpen(true)}>AI 联网查资料 / 粘贴文本建档…</button>
+        <span className="hint">优先查 Bangumi / Wikipedia，查不到可走所选接口联网补缺或手工粘贴文本整理</span>
+      </div>
+    );
+  }
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <b>{episode ? "单集" : "作品"} AI 联网建档 / 粘贴文本整理</b>
+        <span className="sp" />
+        <button className="btn sm" onClick={() => { setOpen(false); setDraft(null); }}>收起</button>
+      </div>
+      <div className="row wrap" style={{ gap: 8, marginBottom: 8 }}>
+        <input className="inp" style={{ flex: 1, minWidth: 200 }} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="作品名或单集标题" />
+        <select className="inp" style={{ maxWidth: 210 }} value={provider} onChange={(e) => setProvider(e.target.value)} title="用于整理资料或联网补缺的接口">
+          <option value="">跟随整理接口（默认）</option>
+          {providers.map((p) => <option key={p.name} value={p.name}>{p.name}{p.kind === "agy" ? " [agy]" : p.kind === "codex" ? " [codex]" : ""}</option>)}
+        </select>
+        <button className="btn pri" disabled={busy || !query.trim()} onClick={() => run(false)}>{busy ? "检索中…" : "联网检索"}</button>
+      </div>
+      <label className="row" style={{ gap: 6, marginBottom: 8, cursor: "pointer" }}>
+        <input type="checkbox" checked={onlineFallback} onChange={(e) => setOnlineFallback(e.target.checked)} />
+        <span className="hint">第一层 API 没查全时，允许所选接口联网补缺（支持 agy / codex / OpenRouter :online）</span>
+      </label>
+      <textarea className="inp" rows={3} style={{ width: "100%", fontFamily: "inherit" }}
+                placeholder="或直接粘贴百科 / 官网 / 角色介绍文本，点下方按钮由所选 AI 整理为结构化人物卡与简介"
+                value={pasted} onChange={(e) => setPasted(e.target.value)} />
+      <div className="row" style={{ marginTop: 6 }}>
+        <span className="hint">所有结果先预览，确认后再写入</span>
+        <span className="sp" />
+        <button className="btn" disabled={busy || !pasted.trim()} onClick={() => run(true)}>{busy ? "整理中…" : "用粘贴文本 AI 整理"}</button>
+      </div>
+      {draft && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--bd)" }}>
+          <div className="hint" style={{ marginBottom: 4 }}>
+            来源：{draft.sources.join("、") || "无"} · 术语 {draft.terms.length} 条
+            {draft.songs?.length ? ` · 识别到歌曲：${draft.songs.map((x) => `《${x.title}》`).join("、")}` : ""}
+          </div>
+          {draft.context && <div className="muted" style={{ marginBottom: 6, whiteSpace: "pre-wrap" }}>{draft.context.slice(0, 400)}</div>}
+          <div className="row wrap" style={{ gap: 10 }}>
+            <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={writeCtx} onChange={(e) => setWriteCtx(e.target.checked)} />
+              <span>同时写入{episode ? "本集简介" : "节目说明"}</span>
+            </label>
+            <span className="sp" />
+            <button className="btn pri sm" disabled={!draft.terms.length && !draft.context} onClick={() => { onApply(draft, writeCtx); setDraft(null); setOpen(false); }}>
+              应用到资料
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NotesView({ context, setContext, ctxState, synopsis, setSynopsis, synopsisState, gl, rd, episode, hint }: {
   context: string; setContext: (v: string) => void; ctxState: SaveState;
   synopsis: string; setSynopsis: (v: string) => void; synopsisState: SaveState;
@@ -160,6 +252,22 @@ function NotesView({ context, setContext, ctxState, synopsis, setSynopsis, synop
         {episode && translateStale && <span className="chip warn">节目说明 / 本集简介 / 术语改了：下次运行会重新翻译</span>}
         <span className="sp" /><SaveChip state={saving} />
       </div>
+      <ResearchBar
+        episode={episode}
+        seriesName={series}
+        pid={s.pid}
+        defaultQuery={episode ? (s.summary?.name ?? series) : series}
+        onApply={(res, writeCtx) => {
+          if (writeCtx && res.context) {
+            if (episode) setSynopsis(res.context);
+            else setContext(res.context);
+          }
+          if (res.terms?.length) {
+            gl.update((x) => ({ ...x, terms: importTerms(x.terms, res.terms, false) }));
+          }
+          s.toast(`已应用资料（合入 ${res.terms?.length ?? 0} 条术语${writeCtx && res.context ? (episode ? " + 本集简介" : " + 节目说明") : ""}）`);
+        }}
+      />
       <div className="notes-grid">
         <div className="col">
           <div className="card">

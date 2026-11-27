@@ -216,6 +216,11 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
             found = research.fetch_lrclib(ident["title"], ident.get("artist", ""))
             if not found and ident.get("artist"):
                 found = research.fetch_lrclib(ident["title"])
+            if not found:
+                # 第二层兜底：LRCLIB 未收录时尝试用带联网能力的接口查官方歌词原文
+                online_lines = research.fetch_lyrics_online(ident["title"], ident.get("artist", ""), cfg=cfg, cache_dir=cache_dir)
+                if online_lines:
+                    found = [{"title": ident["title"], "artist": ident.get("artist", ""), "lines": online_lines, "source": "online"}]
             for cand in found:
                 cand_lines = [{"orig": ln, "tr": {}} for ln in cand["lines"]]
                 m2, _ = align_block_to_lines(block, cand_lines)

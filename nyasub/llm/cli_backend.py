@@ -34,6 +34,11 @@ _AUDIO_TOOL_GUARD = (
     "请先且仅使用文件读取工具打开当前工作目录下的指定音频文件仔细聆听原声，"
     "然后严禁调用其他任何工具、严禁读写其他文件或执行命令，也不要附加任何解释或额外文字，只直接返回用户要求的纯 JSON。"
 )
+_WEB_RESEARCH_GUARD = (
+    "你现在作为只读的影视资料与歌词检索整理引擎运行。"
+    "允许使用只读网页搜索工具查询公开百科、官网或歌词站核实信息，严禁读写任何本地文件或执行本地命令。"
+    "整理完成后不要附加解释或额外文字，只直接返回用户要求的纯 JSON。"
+)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _AGY_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 _AGY_EFFORT_RE = re.compile(r"-(low|medium|high|xhigh|max)$")
@@ -425,7 +430,7 @@ class AgyAcpWorker(_BaseWorker):
                 out.append(item)
             return out
 
-    def call(self, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0):
+    def call(self, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0, allow_web: bool = False):
         with self.lock:
             self._ensure_started()
             assert self._cwd is not None
@@ -437,7 +442,7 @@ class AgyAcpWorker(_BaseWorker):
                 staged_name = f"audio_{self._rid + 1}.{ext}"
                 staged_path = Path(self._cwd) / staged_name
                 shutil.copy2(audio_path, staged_path)
-            guard = _AUDIO_TOOL_GUARD if staged_name else _NO_TOOLS_GUARD
+            guard = _AUDIO_TOOL_GUARD if staged_name else (_WEB_RESEARCH_GUARD if allow_web else _NO_TOOLS_GUARD)
             try:
                 new_res = self._rpc(
                     "session/new",
@@ -494,21 +499,23 @@ class AgyAcpWorker(_BaseWorker):
                 def on_msg(msg: dict):
                     nonlocal audio_read, audio_read_failed
                     if "id" in msg and "method" in msg:
-                        if staged_name:
-                            params = msg.get("params") or {}
-                            tc = params.get("toolCall") or {}
-                            if tc.get("kind") == "read" and staged_name.lower() in json.dumps(params, ensure_ascii=False).lower():
-                                opts = params.get("options") or []
-                                opt = next(
-                                    (o.get("optionId") for o in opts if isinstance(o, dict) and o.get("kind") == "allow_once" and o.get("optionId")),
-                                    None,
-                                ) or next(
-                                    (o.get("optionId") for o in opts if isinstance(o, dict) and str(o.get("kind", "")).startswith("allow") and o.get("optionId")),
-                                    None,
-                                )
-                                if opt:
-                                    self._send({"jsonrpc": "2.0", "id": msg["id"], "result": {"outcome": {"outcome": "selected", "optionId": opt}}})
-                                    return
+                        params = msg.get("params") or {}
+                        tc = params.get("toolCall") or {}
+                        allow_audio = staged_name and tc.get("kind") == "read" and staged_name.lower() in json.dumps(params, ensure_ascii=False).lower()
+                        tc_dump = json.dumps(tc, ensure_ascii=False).lower()
+                        allow_search = allow_web and (tc.get("kind") in ("search", "fetch") or any(k in tc_dump for k in ("search_web", "web_search", "fetch_url", "read_url")))
+                        if allow_audio or allow_search:
+                            opts = params.get("options") or []
+                            opt = next(
+                                (o.get("optionId") for o in opts if isinstance(o, dict) and o.get("kind") == "allow_once" and o.get("optionId")),
+                                None,
+                            ) or next(
+                                (o.get("optionId") for o in opts if isinstance(o, dict) and str(o.get("kind", "")).startswith("allow") and o.get("optionId")),
+                                None,
+                            )
+                            if opt:
+                                self._send({"jsonrpc": "2.0", "id": msg["id"], "result": {"outcome": {"outcome": "selected", "optionId": opt}}})
+                                return
                         # 严禁任何非预期工具调用：一律取消权限请求，避免挂起
                         self._send({"jsonrpc": "2.0", "id": msg["id"], "result": {"outcome": {"outcome": "cancelled"}}})
                         return
@@ -614,12 +621,13 @@ class CodexAppServerWorker(_BaseWorker):
                 })
             return out
 
-    def call(self, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0):
+    def call(self, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0, allow_web: bool = False):
         if audio:
             raise _fatal("Codex CLI 不支持音频输入，请选择 OpenAI 兼容接口或 Antigravity CLI", status=415)
         with self.lock:
             self._ensure_started()
             assert self._cwd is not None
+            guard = _WEB_RESEARCH_GUARD if allow_web else _NO_TOOLS_GUARD
             th = self._rpc(
                 "thread/start",
                 {
@@ -628,7 +636,7 @@ class CodexAppServerWorker(_BaseWorker):
                     "ephemeral": True,
                     "approvalPolicy": "never",
                     "sandbox": "read-only",
-                    "baseInstructions": _NO_TOOLS_GUARD + ("\n\n" + system if system else ""),
+                    "baseInstructions": guard + ("\n\n" + system if system else ""),
                 },
                 timeout=30.0,
             )
@@ -737,10 +745,10 @@ def _get_worker(kind: str, configured: str = "") -> _BaseWorker:
         return w
 
 
-def call_cli(kind: str, command: str, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0):
+def call_cli(kind: str, command: str, model: str, system: str, user: str, images=None, audio=None, effort: str = "", timeout: float = 180.0, allow_web: bool = False):
     """通过常驻 CLI 进程发起一次请求，返回 (回复文本, usage dict 或 None)。"""
     w = _get_worker(kind, command)
-    return w.call(model=model, system=system, user=user, images=images, audio=audio, effort=effort, timeout=timeout)
+    return w.call(model=model, system=system, user=user, images=images, audio=audio, effort=effort, timeout=timeout, allow_web=allow_web)
 
 
 def detect_cli(kind: str, configured: str = "", check_version: bool = True) -> dict:
