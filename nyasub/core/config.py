@@ -583,6 +583,16 @@ def load(config_path=None, project_file=None, overrides: dict | None = None, upg
         tail.append(("命令行", overrides))
 
     merged = merge_layers([d for _, d in layers + tail])
+    # 归入作品时，节目说明（project.context）实时跟随作品共享，改一次全季所有集立即生效；
+    # 命令行 overrides 显式指定 context 时仍以命令行优先；作品尚未写 context 时兼容保留单集旧值。
+    ov_ctx = ((overrides or {}).get("project") or {}).get("context") if isinstance(overrides, dict) else None
+    series_name = ((merged.get("project") or {}).get("series") or "").strip()
+    if series_name and ov_ctx is None:
+        sf = series_file(series_name)
+        if sf.is_file():
+            s_ctx = ((read_toml(sf).get("project") or {}).get("context") or "").strip()
+            if s_ctx:
+                merged.setdefault("project", {})["context"] = s_ctx
     return Config.model_validate(merged), [name for name, _ in layers + tail]
 
 

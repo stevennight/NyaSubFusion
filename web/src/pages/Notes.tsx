@@ -98,17 +98,34 @@ export function NotesPage() {
   const s = useStore();
   const doc = useDoc();
   const pid = s.pid;
-  const ctx = useDraft(doc, (d) => String(d.raw.project?.context ?? d.effective.project?.context ?? ""), (raw, v) => setIn(raw, "project.context", v));
+  const seriesName = String(s.config?.effective?.project?.series ?? "");
+  const seriesRaw = useRemote<Cfg>(
+    () => (seriesName ? api.seriesDoc(seriesName).then((d) => d.raw) : Promise.resolve({})),
+    async (r) => {
+      if (!seriesName) return;
+      await api.putSeries(seriesName, r);
+      await s.reload();
+    },
+    [seriesName],
+    s.setError,
+  );
+  const ctx = useDraft(doc, (d) => String(d.effective.project?.context ?? d.raw.project?.context ?? ""), (raw, v) => setIn(raw, "project.context", v));
   const syn = useDraft(doc, (d) => String(d.raw.project?.synopsis ?? d.effective.project?.synopsis ?? ""), (raw, v) => setIn(raw, "project.synopsis", v));
   const gl = useRemote<Glossary>(() => api.glossary(pid!), async (g) => { await api.putGlossary(pid!, g.terms); await s.reload(); }, [pid], s.setError);
   const rd = useRemote<Record<string, Reading[]>>(() => api.readings(pid!), (r) => api.putReadings(pid!, r), [pid], s.setError);
-  if (!pid || ctx.v === null || syn.v === null) return <div className="empty">加载中…</div>;
-  return <NotesView context={ctx.v} setContext={(v) => ctx.update(() => v)} ctxState={ctx.state}
+  if (!pid || ctx.v === null || syn.v === null || (seriesName && !seriesRaw.v)) return <div className="empty">加载中…</div>;
+  const effectiveCtx = seriesName ? String(seriesRaw.v?.project?.context ?? ctx.v) : ctx.v;
+  const setEffectiveCtx = (v: string) => {
+    if (seriesName) seriesRaw.update((r) => setIn(r, "project.context", v));
+    else ctx.update(() => v);
+  };
+  return <NotesView context={effectiveCtx} setContext={setEffectiveCtx} ctxState={seriesName ? seriesRaw.state : ctx.state}
                     synopsis={syn.v} setSynopsis={(v) => syn.update(() => v)} synopsisState={syn.state} gl={gl} rd={rd} episode
-                    hint={CONTEXT_HINT + "改了下次运行会重新翻译（用多模态大模型识别语音时也会重新识别）。"} />;
+                    hint={(seriesName ? "属于作品时，节目说明与整部作品实时共享（改一次全季生效）；本集独有剧情请写在下方「本集简介」。" : "")
+                      + CONTEXT_HINT + "改了下次运行会重新翻译（用多模态大模型识别语音时也会重新识别）。"} />;
 }
 
-/** 作品的资料：作品默认设置里的节目说明（新建的集复制过去）、各集共用的术语表和读音词典 */
+/** 作品的资料：作品共用的节目说明（各集实时共享）、术语表和读音词典 */
 export function SeriesNotes({ name }: { name: string }) {
   const s = useStore();
   const raw = useRemote<Cfg>(() => api.seriesDoc(name).then((d) => d.raw), (r) => api.putSeries(name, r), [name], s.setError);
@@ -117,7 +134,7 @@ export function SeriesNotes({ name }: { name: string }) {
   if (!raw.v) return <div className="empty">加载中…</div>;
   return <NotesView context={String(raw.v.project?.context ?? "")} setContext={(v) => raw.update((r) => setIn(r, "project.context", v))} ctxState={raw.state}
                     synopsis="" setSynopsis={() => undefined} synopsisState="saved"
-                    gl={gl} rd={rd} episode={false} hint={"作品默认设置里的节目说明：新建这部作品的集时复制过去，已有的集各自在「资料」里改。" + CONTEXT_HINT} />;
+                    gl={gl} rd={rd} episode={false} hint={"各集实时共享的节目说明：修改后这部作品的所有集立即生效。" + CONTEXT_HINT} />;
 }
 
 function ResearchBar({ episode, seriesName, pid, defaultQuery, onApply }: {

@@ -102,3 +102,21 @@ def test_glossary_text_includes_structured_character_fields():
     assert "犬塚信乃（いぬづかしの） → 犬冢信乃" in txt
     assert "幼年被当女孩养" in txt
     assert "别名：信乃" in txt
+
+
+def test_series_context_live_shared_across_episodes(tmp_path, isolated_home):
+    """归入作品时，修改作品的 project.context 后，已有旧集重新 load() 立即拿到最新节目说明。"""
+    import tomli_w
+
+    proj_toml = tmp_path / "ep1.toml"
+    proj_toml.write_text(tomli_w.dumps({"version": 3, "project": {"series": "八犬伝", "context": "旧版单集说明"}}), encoding="utf-8")
+    sf = config_mod.series_file("八犬伝")
+    sf.parent.mkdir(parents=True, exist_ok=True)
+    sf.write_text(tomli_w.dumps({"version": 3, "project": {"context": "新版作品统一说明"}}), encoding="utf-8")
+
+    cfg, _ = config_mod.load(project_file=proj_toml)
+    assert cfg.project.context == "新版作品统一说明"
+
+    # 命令行显式覆盖仍优先
+    cfg_ov, _ = config_mod.load(project_file=proj_toml, overrides={"project": {"context": "命令行覆盖"}})
+    assert cfg_ov.project.context == "命令行覆盖"
