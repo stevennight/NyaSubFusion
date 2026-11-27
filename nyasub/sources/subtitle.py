@@ -139,6 +139,51 @@ def is_arib_ttml(data):
     return b"arib-ttml" in data or (b"<tt" in data and b"http://www.w3.org/ns/ttml" in data)
 
 
+def _extract_ttml_rubies(rubies, body_lines, body_size):
+    """将 ARIB-TTML 中被过滤的振假名小字按 (x, y) 坐标投影到下方等宽正文行，回收官方汉字读音。"""
+    if not rubies or not body_lines or not body_size:
+        return []
+    from ..lang import get as get_lang, ruby as ruby_mod
+
+    ja = get_lang("ja")
+    hints, seen = [], set()
+    for (ry, rx), rw, rtxt in rubies:
+        rtxt_clean = re.sub(r"[\s　]+", "", rtxt)
+        if not ja.is_furigana(rtxt_clean):
+            continue
+        # 找紧邻振假名下方的正文行（0 < by - ry <= 1.8 * body_size）
+        cands = [((by, bx), bw, txt) for (by, bx), bw, txt in body_lines if 0 < by - ry <= body_size * 1.8]
+        if not cands:
+            continue
+        (by, bx), bw, line = min(cands, key=lambda item: item[0][0] - ry)
+        # 按等宽字宽计算每个字符的水平范围 [cx0, cx1]
+        step = body_size
+        spans_x = []
+        cx = bx
+        for ch in line:
+            cw = step * (0.5 if ord(ch) < 128 else 1.0)
+            spans_x.append((cx, cx + cw))
+            cx += cw
+        rx1 = rx + (rw if rw and rw > 0 else len(rtxt_clean) * body_size * 0.5)
+        # 找与 [rx, rx1] 水平重叠的汉字区间
+        hit_idx = [idx for idx, (c0, c1) in enumerate(spans_x)
+                   if ruby_mod.is_kanji(line[idx]) and min(c1, rx1) - max(c0, rx) > 0]
+        if not hit_idx:
+            continue
+        i, j = hit_idx[0], hit_idx[-1] + 1
+        h = ja.furigana_hint(line, i, j, rtxt_clean)
+        if not h:
+            # sudachi 将复合词拆成多个 token 时（如「藁苞」或特殊人名/借用字），直接核对这段汉字的默认读音
+            sub = line[i:j]
+            default_rd = "".join(s[1] if len(s) > 1 else s[0] for w in ja.annotate(sub) for s in w["segs"])
+            if ruby_mod.to_hira(default_rd) != ruby_mod.to_hira(rtxt_clean):
+                h = {"src": sub, "reading": ruby_mod.to_hira(rtxt_clean)}
+        if h and (h["src"], h["reading"]) not in seen:
+            seen.add((h["src"], h["reading"]))
+            hints.append(h)
+    return hints
+
+
 def load_arib_ttml(path, ruby_ratio=0.7):
     """解析 4K/8K 广播（ARIB-TTML）的字幕数据流：一条字幕 = 一个 TTML 文档。
 
@@ -184,20 +229,29 @@ def load_arib_ttml(path, ruby_ratio=0.7):
                 if not spans:
                     spans = [(0, "".join(p.itertext()), None)]
                 paras.append((regions.get(p.get("region"), (0, 0)), widths.get(p.get("region")), spans))
-            # 振假名是小一号的字，常单独占一个段落：按整条字幕的正文字号过滤
+            # 振假名是小一号的字，常单独占一个段落：按整条字幕的正文字号过滤，同时回收为官方读音提示
             body = max((s for _, _, spans in paras for s, _, _ in spans), default=0)
-            lines = []
+            lines, rubies, body_geo = [], [], []
             for pos, w, spans in paras:
                 kept = [(t, c) for s, t, c in spans if not body or not s or s >= body * ruby_ratio]
+                dropped = [t for s, t, _ in spans if body and s and s < body * ruby_ratio]
                 text = "".join(t for t, _ in kept).strip()
                 if text:  # 说话人线索：颜色（旁白和说话的人常用不同颜色）、这一行左右两边的位置（不同的人的话放在画面不同位置）
                     left = pos[1]
                     lines.append((pos, text, (next((c for _, c in kept if c), None), left,
                                               left + w if w else None, 1.5 * (body or 100))))
+                    body_geo.append((pos, w, text))
+                elif dropped:
+                    rtxt = "".join(dropped).strip()
+                    if rtxt:
+                        rubies.append((pos, w, rtxt))
             lines.sort(key=lambda x: x[0])
             text = "\n".join(t for _, t, _ in lines)
             if text and end > begin:
                 cue = {"start": round(begin, 3), "end": round(end, 3), "text": text}
+                rh = _extract_ttml_rubies(rubies, body_geo, body)
+                if rh:
+                    cue["ruby_hints"] = rh
                 ls = [(t, k) for _, t, k in lines]
                 v = voices(ls)
                 if v:

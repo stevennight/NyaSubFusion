@@ -1104,15 +1104,18 @@ class Run:
         return out
 
     def _readings(self, glossary):
-        """优先级：读音词典 > 画面上的振假名（分词读得不一样的那些） > 术语表读音（源语言）；同一写法只保留优先级高的。"""
+        """优先级：读音词典 > 广播字幕官方振假名 > 画面上的振假名 > 术语表读音（源语言）；同一写法只保留优先级高的。"""
         out, seen = [], set()
+        subs_list = self.results.get("subs") or load_json(self._out_path("subs"), []) or []
+        sub_ruby = [{"lang": self.src, "src": h["src"], "reading": h["reading"], "proper": False, "from": "sub_ruby"}
+                    for s in subs_list for h in (s.get("ruby_hints") or []) if h.get("src") and h.get("reading")]
         screen = [{"lang": self.src, "src": r["hint"]["src"], "reading": r["hint"]["reading"], "proper": False,
                    "from": "screen"}
                   for e in self.results.get("ocr_refine") or [] for r in e.get("ruby") or [] if r.get("hint")]
         terms = [{"lang": self.src, "src": t.get("src", ""), "reading": t.get("reading", ""),
                   "proper": t.get("type") in ("地名", "人名", "团体", "场所"), "from": "glossary"}
                  for t in (glossary or {}).get("terms", []) if t.get("reading") and t.get("reading") != "—"]
-        for e in self._user_readings() + screen + terms:
+        for e in self._user_readings() + sub_ruby + screen + terms:
             k = (lang.canonical(e.get("lang") or self.src), e.get("src"))
             if e.get("src") and e.get("reading") and k not in seen:
                 seen.add(k)
@@ -1193,15 +1196,15 @@ class Run:
         mine_by = {}  # 每种语言用的读音词典 + 它的指纹（缓存的键）
 
         def _merge_cue_readings(base_mine, extra):
-            """优先级：人工读音词典(dict) > 本条语音听出读音(audio) > 画面振假名(screen) > 术语表(glossary)。"""
+            """优先级：人工读音词典(dict) > 广播官方振假名(sub_ruby) > 本条语音听出读音(audio) > 画面振假名(screen) > 术语表(glossary)。"""
             if not extra:
                 return base_mine
-            user = [r for r in base_mine if r.get("from") == "dict"]
-            rest = [r for r in base_mine if r.get("from") != "dict"]
+            high = [r for r in base_mine if r.get("from") in ("dict", "sub_ruby")]
+            rest = [r for r in base_mine if r.get("from") not in ("dict", "sub_ruby")]
             audio = [{"lang": self.src, "src": r["src"], "reading": r["reading"], "proper": False, "from": "audio"}
                      for r in extra if r.get("src") and r.get("reading")]
             out, seen = [], set()
-            for r in user + audio + rest:
+            for r in high + audio + rest:
                 if r["src"] not in seen:
                     seen.add(r["src"])
                     out.append(r)

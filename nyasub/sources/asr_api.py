@@ -309,13 +309,15 @@ def _chat_audio_agy(ep, path, fmt, seconds, user, effort="", images=None):
     raise AsrApiError(f"Antigravity CLI 语音识别多次失败：{last_err}") from last_err
 
 
-def _chat_audio(ep, path, fmt, language, seconds, context="", effort="", images=None):
+def _chat_audio(ep, path, fmt, language, seconds, context="", effort="", images=None, vocals_separated: bool = False):
     """多模态大模型（chat/completions + input_audio，或本机 Antigravity CLI）：返回 {"language", "segments": [...]}。
     context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。
     images：可选参考画面拼图列表 [{"path", "label"}]。"""
     from ..llm.client import parse_json
 
     user = f"这段音频长 {seconds:.1f} 秒（{int(seconds // 60):02d}:{seconds % 60:05.2f}）。语言：{language or '请自动判断'}。"
+    if vocals_separated:
+        user += "\n（说明：本段原声伴奏较强，已先去除背景音乐；若为歌声、OP/ED 或说唱请正常转写歌词。）"
     if images:
         user += VISUAL_NOTE
     if context.strip():
@@ -619,9 +621,11 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     def one(a, b, timed):
         """识别 [a, b] 这一段（相对 wav 开头），返回 (段列表（相对 wav 开头）, 语言)。"""
         chosen_wav = wav
+        vocals_sep = False
         if orig_w is not None:
             pick = choose_hybrid_track(orig_w, w, a, b)
             chosen_wav = orig_wav if pick == "orig" else wav
+            vocals_sep = (pick == "vocals")
             with lock:
                 state["orig_chunks" if pick == "orig" else "vocal_chunks"] += 1
         path, f = _encode(chosen_wav, a, b, Path(tmp.name) / f"{a:09.3f}", "wav" if kind == "gemini" else "flac")
@@ -645,7 +649,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                     extra = "chat"
                 try:
                     resp, hit = _cached(cache_dir, key_of(path, extra),
-                                        lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort, images=grids))
+                                        lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort,
+                                                            images=grids, vocals_separated=vocals_sep))
                 except _Truncated as e:
                     if b - a < SPLIT_MIN * 2:
                         raise AsrApiError(f"语音识别：{e}，这一块已经很短，没法再切") from e
