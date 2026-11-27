@@ -747,6 +747,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
             ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", api_timing_provider="", context="", names=[]),
                                 dict(tep, model=timing_model), language, offset, duration, junk, cache_dir)
             out = align_to_reference(out, ref)
+    # 按人声轨 50ms 音量包络收紧静音边界（切掉句首提前亮字与句尾长静音拖尾）
+    out = snap_to_vocal_envelope(out, w, offset=offset)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
     log(f"云端识别：{len(out)} 段（时间精度：" + "，".join(f"{n} {k}" for k, n in
         (("逐字", timing["word"]), ("逐句、借转写模型的时间", timing["aligned"]), ("逐句", timing["segment"]),
@@ -911,4 +913,44 @@ def align_to_reference(segs, ref):
             out.append(dict(r, timing="word"))
     out.sort(key=lambda s: s["start"])
     return [dict(s, id=f"a{k + 1}") for k, s in enumerate(out)]
+
+
+def snap_to_vocal_envelope(segs: list[dict], w: Wav, offset: float = 0.0) -> list[dict]:
+    """用人声轨 50ms 音量包络收紧静音边界（全语言通用）：
+    解决对齐外推或模型估时把字幕起点拉进长达 1~2 秒纯静音空档（如句首提前亮字）或句尾长静音拖尾的问题。
+    只在段内确实存在清晰人声、且超前/滞后静音超过 0.35 秒时收紧，绝不把整句裁空。"""
+    if not segs or len(w.db) < 4:
+        return segs
+    thr = max(-45.0, w.floor + 12.0)
+    out = []
+    for s in segs:
+        a_rel = max(0.0, s["start"] - offset)
+        b_rel = max(a_rel, s["end"] - offset)
+        if b_rel - a_rel < 0.6:
+            out.append(s)
+            continue
+        i0, j0 = w._range(a_rel, b_rel)
+        seg_db = w.db[i0:j0]
+        if len(seg_db) == 0:
+            out.append(s)
+            continue
+        seg_thr = max(thr, float(np.percentile(seg_db, 90)) - 18.0)
+        loud = np.nonzero(seg_db > seg_thr)[0]
+        if len(loud) * HOP < 0.25:
+            out.append(s)
+            continue
+        v_start = round((i0 + int(loud[0])) * HOP, 3)
+        v_end = round((i0 + int(loud[-1]) + 1) * HOP, 3)
+        na, nb = a_rel, b_rel
+        # 句首存在明显纯静音（>0.35s）才往后收到人声开口前 0.1s
+        if v_start - a_rel > 0.35:
+            na = max(a_rel, round(v_start - 0.1, 3))
+        # 句尾存在明显纯静音（>0.45s）才往前收到人声结束后 0.15s
+        if b_rel - v_end > 0.45:
+            nb = min(b_rel, round(v_end + 0.15, 3))
+        if nb > na + 0.25 and (na != a_rel or nb != b_rel):
+            out.append(dict(s, start=round(na + offset, 3), end=round(nb + offset, 3)))
+        else:
+            out.append(s)
+    return out
 

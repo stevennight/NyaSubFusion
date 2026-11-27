@@ -53,12 +53,20 @@ def _strip_music(text: str) -> str:
     return re.sub(r"^[♪♬♫♩\s]+|[♪♬♫♩\s]+$", "", (text or "").strip())
 
 
+MAX_SPAN_LINES = 4        # 单条 ASR 歌词最多合并对应歌词库中连续 4 行（防止截断丢半句）
+
+
 def _line_sim(a: str, b: str) -> float:
+    """整句覆盖相似度（用 fuzz.ratio 为主，不再用高分 partial_ratio 诱导只匹配半句）。"""
     na, nb = norm(_strip_music(a)), norm(_strip_music(b))
     if not na or not nb:
         return 0.0
-    # 英文/混合词同时看 ratio 与 token_set_ratio（兼顾听错个别词或漏半句）
-    return max(float(fuzz.ratio(na, nb)), float(fuzz.partial_ratio(na, nb)) * 0.92)
+    return float(fuzz.ratio(na, nb))
+
+
+def _join_orig(lines: list[dict], j0: int, j1: int) -> str:
+    parts = [ln.get("orig", "").strip() for ln in lines[j0:j1] if ln.get("orig", "").strip()]
+    return " ".join(parts)
 
 
 def find_song_blocks(cues: list[dict], max_gap: float = 12.0) -> list[list[int]]:
@@ -72,7 +80,6 @@ def find_song_blocks(cues: list[dict], max_gap: float = 12.0) -> list[list[int]]
                 cur = []
             cur.append(i)
         else:
-            # 中间夹杂极短非 song（如插曲中途一句短呼喊）不强行打断，否则结束当前块
             if cur and (i + 1 >= len(cues) or cues[i + 1].get("type") != "song"
                         or cues[i + 1]["start"] - cues[cur[-1]]["end"] > max_gap):
                 blocks.append(cur)
@@ -82,50 +89,98 @@ def find_song_blocks(cues: list[dict], max_gap: float = 12.0) -> list[list[int]]
     return blocks
 
 
-def align_block_to_lines(block_cues: list[dict], song_lines: list[dict]) -> tuple[dict[int, int], float]:
-    """将本集一段 song cues 按顺序模糊对齐到完整歌词 song_lines 中实际唱到的子序列。
-    返回 ({block内索引: song_lines索引}, 平均匹配相似度)。
-    支持 1 番、2 番、副歌切入、单集删减或剧中哼唱几句。"""
+def align_block_to_lines(block_cues: list[dict], song_lines: list[dict]) -> tuple[dict[int, tuple[int, int]], float]:
+    """将本集一段 song cues 按顺序做 **1 对多（1~MAX_SPAN_LINES 行）** 模糊子序列对齐到完整歌词 song_lines。
+    返回 ({block内索引: (j0, j1) 半开区间}, 平均匹配相似度)。
+    彻底避免 1 对 1 匹配把同一条语音里唱的两三行截断丢掉；同时支持 1 番、2 番、副歌切入与剧中哼唱。"""
     if not block_cues or not song_lines:
         return {}, 0.0
     n, m = len(block_cues), len(song_lines)
-    # 计算相似度矩阵
-    sim_mat = [[_line_sim(c["orig"]["text"], ln.get("orig", "")) for ln in song_lines] for c in block_cues]
 
-    # 单调子序列动态规划：允许跳过歌词库中未唱的段落（例如直接唱 2 番或副歌），也允许跳过 block 中听错太离谱的个别句
     # dp[i][j] = 前 i 条 cue 对齐到 song_lines[:j] 的最大总分
     dp = [[0.0] * (m + 1) for _ in range(n + 1)]
-    bt = [[(0, 0)] * (m + 1) for _ in range(n + 1)]
+    bt: list[list[tuple[int, int, int]]] = [[(0, 0, 0)] * (m + 1) for _ in range(n + 1)]  # (pi, pj, matched_k)
     for i in range(1, n + 1):
+        cue_txt = block_cues[i - 1]["orig"]["text"]
         for j in range(1, m + 1):
-            # 跳过 cue i-1
-            best, prev = dp[i - 1][j], (i - 1, j)
-            # 跳过 song line j-1
+            best, prev = dp[i - 1][j], (i - 1, j, 0)
             if dp[i][j - 1] > best:
-                best, prev = dp[i][j - 1], (i, j - 1)
-            # 匹配 (i-1, j-1)
-            sc = sim_mat[i - 1][j - 1]
-            if sc >= MIN_LINE_SIM and dp[i - 1][j - 1] + sc > best:
-                best, prev = dp[i - 1][j - 1] + sc, (i - 1, j - 1)
+                best, prev = dp[i][j - 1], (i, j - 1, 0)
+            # 尝试将 cue[i-1] 匹配到 song_lines[j-k : j]（k = 1..MAX_SPAN_LINES）
+            for k in range(1, min(MAX_SPAN_LINES, j) + 1):
+                joined = _join_orig(song_lines, j - k, j)
+                sc = _line_sim(cue_txt, joined)
+                if sc >= MIN_LINE_SIM and dp[i - 1][j - k] + sc > best:
+                    best = dp[i - 1][j - k] + sc
+                    prev = (i - 1, j - k, k)
             dp[i][j], bt[i][j] = best, prev
 
-    mapping: dict[int, int] = {}
+    mapping: dict[int, tuple[int, int]] = {}
     i, j = n, m
     scores = []
     while i > 0 and j > 0:
-        pi, pj = bt[i][j]
-        if pi == i - 1 and pj == j - 1:
-            mapping[i - 1] = j - 1
-            scores.append(sim_mat[i - 1][j - 1])
+        pi, pj, k = bt[i][j]
+        if k > 0:
+            mapping[i - 1] = (pj, j)
+            scores.append(_line_sim(block_cues[i - 1]["orig"]["text"], _join_orig(song_lines, pj, j)))
         i, j = pi, pj
     if not mapping:
         return {}, 0.0
     avg = sum(scores) / len(scores)
-    ratio = len(mapping) / n
     min_need = 1 if n == 1 else max(2, int(n * MIN_MATCH_RATIO + 0.5))
     if len(mapping) < min_need or avg < MIN_BLOCK_AVG_SIM or (n == 1 and avg < 70.0):
         return {}, 0.0
     return mapping, avg
+
+
+def _calibrate_block_timing_with_lrc(block: list[dict], mapping: dict[int, tuple[int, int]], song_lines: list[dict]) -> None:
+    """当歌曲带有精确 LRC 时间戳 `t` 时，用高置信锚点计算整首歌的全局时间偏移 offset，
+    校准本段每条已对齐 cue 的起止时间（修正前奏后漂移 5~6 秒等大模型估时偏差）。"""
+    anchors = []
+    for bi, (j0, j1) in sorted(mapping.items()):
+        t_lrc = song_lines[j0].get("t")
+        if t_lrc is None:
+            continue
+        c = block[bi]
+        sc = _line_sim(c["orig"]["text"], _join_orig(song_lines, j0, j1))
+        if sc >= 65.0:
+            anchors.append((bi, c["start"] - float(t_lrc)))
+    if len(anchors) < 2:
+        return
+    offs = sorted(d for _, d in anchors)
+    med = offs[len(offs) // 2]
+    # 剔除偏离中位数 > 2.5s 的离群锚点再取中位数
+    inliers = [d for d in offs if abs(d - med) <= 2.5]
+    if len(inliers) < 2:
+        return
+    offset = inliers[len(inliers) // 2]
+
+    ordered = sorted(mapping.items())
+    for idx, (bi, (j0, j1)) in enumerate(ordered):
+        t0 = song_lines[j0].get("t")
+        if t0 is None:
+            continue
+        new_start = round(max(0.0, float(t0) + offset), 3)
+        # 若与本条已对准的时间相差过大（>4.5s）且本条本身已是 aligned（如 TV Size 剪短了 Full Ver. 的前奏/间奏），不强行拉偏
+        if abs(new_start - block[bi]["start"]) > 4.5 and block[bi].get("timing") == "aligned":
+            continue
+        next_t = song_lines[j1].get("t") if j1 < len(song_lines) else None
+        if next_t is not None and float(next_t) > float(t0):
+            new_end = round(float(next_t) + offset - 0.08, 3)
+        else:
+            dur = max(1.5, block[bi]["end"] - block[bi]["start"])
+            new_end = round(new_start + dur, 3)
+        if new_end <= new_start + 0.3:
+            new_end = round(new_start + 1.5, 3)
+        # 单句时长异常拉长（>10s，通常是 Full Ver. 间奏）时收紧为原时长
+        if new_end - new_start > 10.0:
+            new_end = round(new_start + max(2.0, min(8.0, block[bi]["end"] - block[bi]["start"])), 3)
+        block[bi]["start"] = new_start
+        block[bi]["end"] = new_end
+        if idx > 0:
+            prev_c = block[ordered[idx - 1][0]]
+            if prev_c["end"] > new_start:
+                prev_c["end"] = round(max(prev_c["start"] + 0.3, new_start - 0.05), 3)
 
 
 def match_song_library(block_cues: list[dict], songs: list[dict]) -> tuple[dict | None, dict[int, int], float]:
@@ -222,7 +277,11 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
                 if online_lines:
                     found = [{"title": ident["title"], "artist": ident.get("artist", ""), "lines": online_lines, "source": "online"}]
             for cand in found:
-                cand_lines = [{"orig": ln, "tr": {}} for ln in cand["lines"]]
+                timed = cand.get("timed_lines") or []
+                if timed:
+                    cand_lines = [{"orig": r["orig"], "t": r["t"], "tr": {}} for r in timed]
+                else:
+                    cand_lines = [{"orig": ln, "tr": {}} for ln in cand["lines"]]
                 m2, _ = align_block_to_lines(block, cand_lines)
                 if m2:
                     song = {
@@ -243,16 +302,20 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
         if not song or not mapping:
             continue
 
-        for bi, li in mapping.items():
+        # 若歌曲带精确 LRC 时间戳，先用锚点全局偏移校准整首歌的时间轴
+        _calibrate_block_timing_with_lrc(block, mapping, song["lines"])
+
+        for bi, (j0, j1) in mapping.items():
             c = block[bi]
-            ln = song["lines"][li]
-            std_orig = ln["orig"]
+            std_orig = _join_orig(song["lines"], j0, j1)
             if not std_orig.startswith(("♪", "♬")):
                 std_orig = "♪ " + std_orig
             c["orig"]["text"] = std_orig
-            c["song_ref"] = {"id": song["id"], "title": song["title"], "line": li}
-            locked_tr = (ln.get("tr") or {}).get(tgt_code, "").strip()
-            if locked_tr:
+            c["song_ref"] = {"id": song["id"], "title": song["title"], "lines": [j0, j1]}
+            # 若区间内每一行都已有锁定译文，拼接后直接锁定
+            tr_parts = [(song["lines"][k].get("tr") or {}).get(tgt_code, "").strip() for k in range(j0, j1)]
+            if tr_parts and all(tr_parts):
+                locked_tr = " ".join(tr_parts)
                 if not locked_tr.startswith(("♪", "♬")):
                     locked_tr = "♪ " + locked_tr
                 c.setdefault("tr", {})[tgt_code] = {"text": locked_tr}
@@ -279,9 +342,18 @@ def save_translated_songs(cues: list[dict], series_dir: Path | None, tgt_code: s
         if not tr_text:
             continue
         song = by_id[ref["id"]]
-        li = ref.get("line")
-        if isinstance(li, int) and 0 <= li < len(song.get("lines") or []):
-            tr_map = song["lines"][li].setdefault("tr", {})
+        song_lines = song.get("lines") or []
+        span = ref.get("lines")
+        if isinstance(span, list) and len(span) == 2:
+            j0, j1 = span
+            # 1 对 1 精确沉淀到单行；1 对多时仅当单行无译文且恰好对应 1 行才逐行写，避免跨行错配
+            if j1 - j0 == 1 and 0 <= j0 < len(song_lines):
+                tr_map = song_lines[j0].setdefault("tr", {})
+                if not tr_map.get(tgt_code):
+                    tr_map[tgt_code] = _strip_music(tr_text)
+                    updated += 1
+        elif isinstance(ref.get("line"), int) and 0 <= ref["line"] < len(song_lines):
+            tr_map = song_lines[ref["line"]].setdefault("tr", {})
             if not tr_map.get(tgt_code):
                 tr_map[tgt_code] = _strip_music(tr_text)
                 updated += 1

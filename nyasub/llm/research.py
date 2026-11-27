@@ -41,9 +41,30 @@ def _post_json(url: str, payload: dict, headers: dict | None = None, timeout: fl
 
 # ---------------- 第一层：高可信结构化 API ----------------
 
+_LRC_LINE = re.compile(r"^((?:\[\d{1,2}:\d{2}(?:\.\d+)?\])+)\s*(.*)$")
+_LRC_TS = re.compile(r"\[(\d{1,2}):(\d{2}(?:\.\d+)?)\]")
+
+
+def parse_lrc(synced: str) -> list[dict]:
+    """解析带时间戳的 LRC 歌词：返回 [{"orig": str, "t": float}, ...]（按时间排序）。"""
+    rows = []
+    for raw in (synced or "").splitlines():
+        m = _LRC_LINE.match(raw.strip())
+        if not m:
+            continue
+        text = m.group(2).strip()
+        if not text:
+            continue
+        for tm in _LRC_TS.finditer(m.group(1)):
+            sec = int(tm.group(1)) * 60 + float(tm.group(2))
+            rows.append({"orig": text, "t": round(sec, 3)})
+    rows.sort(key=lambda r: r["t"])
+    return rows
+
+
 def fetch_lrclib(title: str, artist: str = "", query: str = "") -> list[dict]:
-    """从免费公开歌词库 LRCLIB 检索准确歌词原文。
-    返回 [{"title", "artist", "album", "duration", "lines": [str, ...], "source": "lrclib"}]。"""
+    """从免费公开歌词库 LRCLIB 检索准确歌词原文（优先保留 syncedLyrics 的精确逐句时间戳）。
+    返回 [{"title", "artist", "album", "duration", "lines": [str, ...], "timed_lines": [{"orig", "t"}], "source": "lrclib"}]。"""
     params = {}
     if title.strip():
         params["track_name"] = title.strip()
@@ -62,11 +83,15 @@ def fetch_lrclib(title: str, artist: str = "", query: str = "") -> list[dict]:
         return []
     out = []
     for it in items[:8]:
+        synced = (it.get("syncedLyrics") or "").strip()
+        timed = parse_lrc(synced) if synced else []
         plain = (it.get("plainLyrics") or "").strip()
-        if not plain:
-            synced = (it.get("syncedLyrics") or "").strip()
-            plain = re.sub(r"^\[\d{1,2}:\d{2}(?:\.\d+)?\]\s*", "", synced, flags=re.MULTILINE).strip()
-        lines = [ln.strip() for ln in plain.splitlines() if ln.strip()]
+        if timed:
+            lines = [r["orig"] for r in timed]
+        elif plain:
+            lines = [ln.strip() for ln in plain.splitlines() if ln.strip()]
+        else:
+            continue
         if not lines:
             continue
         out.append({
@@ -75,8 +100,11 @@ def fetch_lrclib(title: str, artist: str = "", query: str = "") -> list[dict]:
             "album": (it.get("albumName") or "").strip(),
             "duration": float(it.get("duration") or 0),
             "lines": lines,
+            "timed_lines": timed,
             "source": "lrclib",
         })
+    # 优先排带精确 LRC 时间戳的候选
+    out.sort(key=lambda x: (not bool(x["timed_lines"]), -len(x["lines"])))
     return out
 
 

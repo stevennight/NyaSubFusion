@@ -150,3 +150,66 @@ def test_series_research_api_unpacks_config(isolated_home, monkeypatch):
     r = client.post("/api/series/八犬伝/research", json={"query": "八犬伝"})
     assert r.status_code == 200
     assert r.json()["sources"] == ["bangumi"]
+
+
+def test_song_1_to_many_alignment_and_lrc_timing_calibration(tmp_path):
+    """1 对多对齐：单条语音唱了两行歌词不再截断丢半句；且带 LRC 时间戳时可校准前奏漂移的起点。"""
+    song = {
+        "id": "god-fate",
+        "title": "God FATE",
+        "artist": "飛蘭",
+        "role": "OP",
+        "lines": [
+            {"orig": "Shadow which GOD draw.", "t": 1.0, "tr": {"zh-Hans": "神所描绘的暗影"}},
+            {"orig": "You can choose.", "t": 6.5, "tr": {"zh-Hans": "你可以决定"}},
+            {"orig": "MY FATE.", "t": 7.8, "tr": {"zh-Hans": "我的命运"}},
+            {"orig": "乾いた風に 抱かれて", "t": 14.0, "tr": {"zh-Hans": "被干燥的风拥抱"}},
+            {"orig": "人を愛し 人を憎み", "t": 26.5, "tr": {"zh-Hans": "爱着他人 憎恨他人"}},
+            {"orig": "悲しさは優しさ生む", "t": 29.5, "tr": {"zh-Hans": "悲伤孕育温柔"}},
+        ],
+    }
+    songs_mod.save_songs(tmp_path, [song])
+    # 模拟 OP 第 1 句提前漂移 5.5 秒（62.0 vs 真实 68.5），后面句正常（offset ≈ 67.5）
+    cues = [
+        {"id": "q1", "start": 62.0, "end": 68.0, "type": "song",
+         "orig": {"lang": "ja", "text": "♪ Shadow which GOD draw."}, "tr": {}},
+        {"id": "q2", "start": 74.0, "end": 76.2, "type": "song",
+         "orig": {"lang": "ja", "text": "♪ You can't choose my fate."}, "tr": {}},
+        {"id": "q3", "start": 81.5, "end": 84.5, "type": "song",
+         "orig": {"lang": "ja", "text": "♪ 乾いた風に抱かれて"}, "tr": {}},
+        {"id": "q4", "start": 94.0, "end": 100.0, "type": "song",
+         "orig": {"lang": "ja", "text": "♪ 人を愛し人を憎み悲しさは優しさ生む"}, "tr": {}},
+    ]
+    n = songs_mod.align_and_fill_songs(cues, tmp_path, Config(), tgt_code="zh-Hans")
+    assert n == 4
+    # q2 同时保留了 You can choose. + MY FATE.；q4 同时保留了 人を愛し 人を憎み + 悲しさは優しさ生む
+    assert "You can choose." in cues[1]["orig"]["text"] and "MY FATE." in cues[1]["orig"]["text"]
+    assert "人を愛し 人を憎み" in cues[3]["orig"]["text"] and "悲しさは優しさ生む" in cues[3]["orig"]["text"]
+    assert "爱着他人 憎恨他人" in cues[3]["tr"]["zh-Hans"]["text"] and "悲伤孕育温柔" in cues[3]["tr"]["zh-Hans"]["text"]
+    # LRC 校准把漂移到 62.0s 的 q1 拉回 ~68.5s
+    assert 68.0 <= cues[0]["start"] <= 69.0
+
+
+def test_snap_to_vocal_envelope_trims_leading_silence(tmp_path):
+    """人声能量边界收紧：句首 2 秒纯静音被自动收紧到真实开口前 0.1 秒。"""
+    import wave
+
+    import numpy as np
+
+    from nyasub.sources.asr_api import Wav, snap_to_vocal_envelope
+
+    sr = 16000
+    x = np.zeros(sr * 6, dtype=np.float32)
+    t = np.linspace(0, 2.0, sr * 2, endpoint=False)
+    x[sr * 3: sr * 5] = 0.3 * np.sin(2 * np.pi * 440 * t)  # 3.0s - 5.0s 有清晰人声
+    p = tmp_path / "voc.wav"
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((x * 32767).astype(np.int16).tobytes())
+
+    segs = [{"id": "a1", "start": 1.0, "end": 5.8, "text": "テスト"}]
+    snapped = snap_to_vocal_envelope(segs, Wav(p))
+    assert 2.8 <= snapped[0]["start"] <= 3.05
+    assert 5.0 <= snapped[0]["end"] <= 5.25
