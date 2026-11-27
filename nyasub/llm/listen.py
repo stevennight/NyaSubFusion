@@ -12,22 +12,23 @@ from pathlib import Path
 from ..env import Cancelled, log, progress
 from ..textutil import fmt_time
 
-SPEECH = ("dialogue",)    # 只听对话；旁白是播音员念稿，没有歧义
+SPEECH = ("dialogue", "monologue", "song")  # 听对话、独白与歌曲（可辨语调与多音字读音）；客观旁白一般无歧义
 MAX_SECONDS = 45          # 一段原声最长多少秒
 MAX_ITEMS = 15            # 一段最多几条字幕
 MAX_GAP = 6.0             # 前后两条对话隔得比这久就另起一段
 PAD = 0.4                 # 前后多切一点，句尾的语调不被切掉
 KINDS = ("问句", "陈述", "感叹", "呼唤", "命令")
 
-SYSTEM = """你在帮字幕译者听原声。给你一段日语纪录片的原声，和这段时间里说的话的字幕原文（带相对这段原声的时间、来源）。
-字幕原文来自电视字幕 / 画面字，文字一般可信；你的任务不是重新转写，而是听出光看文字分不出来的东西。
+SYSTEM = """你在帮字幕译者听原声。给你一段影视节目的原声，和这段时间里说的话的字幕原文（带相对这段原声的时间、来源）。
+字幕原文来自字幕 / 画面字 / 语音识别；你的任务不是重新转写，而是听出光看文字分不出来的东西。
 文字会误导你：「〜の」「〜か」「〜って」结尾的句子很多是在讲解、自言自语，不是在问。所以一定先按时间找到这句，听它的句尾，再下判断。逐条给出：
 - end：这句最后几个音的音高：上扬 / 下降 / 平。只凭耳朵，不看文字。
 - kind：问句 / 陈述 / 感叹 / 呼唤 / 命令。end 是上扬的才可能是问句；end 下降或平的，除非句子里有疑问词（いつ、何、どう、誰、どこ、どれ…）在问对方，否则不是问句（是讲解、确认、感叹）。
 - tone：说话的语气、情绪，几个字（平静地讲解、生气地骂、心疼地责怪、开玩笑、自言自语、对着动物说……）；没有特别的语气就写空。
-- heard：只看来源是“语音识别”的条目（没有字幕、画面字对照，可能听错）：你听到的和原文明显不同时，写你听到的日语；相同、或者听不清就写空。其他来源的条目 heard 一律写空。
+- heard：只看来源是“语音识别”的条目（没有字幕、画面字对照，可能听错）：你听到的和原文明显不同时，写你听到的原文；相同、或者听不清就写空。其他来源的条目 heard 一律写空。
+- readings：可选，只在这句里出现了多音字、异读词、人名地名、歌词特殊读法或实际发音与词典常见读音不同的词时填写（例如「明日」读作「あす」、「今日」读作「こんにち」、「生命」唱作「いのち」、「私」读作「わたくし」），格式为 [{"src": "原文里的词", "reading": "实际听到的读音（日语用平假名）"}]；都是常见默认读音就写 []。
 听不到某句（没声音、被音乐或别人的话盖住）就 end、kind、tone 都写空，不要猜。
-只输出 JSON：{"notes": [{"id": "条目 id", "end": "…", "kind": "…", "tone": "…", "heard": "…"}]}"""
+只输出 JSON：{"notes": [{"id": "条目 id", "end": "…", "kind": "…", "tone": "…", "heard": "…", "readings": []}]}"""
 
 
 def _origin(c):
@@ -74,9 +75,23 @@ def clean_note(n, c):
     kind = next((k for k in KINDS if k in kind), "")
     tone = str(n.get("tone") or "").strip()[:20]
     heard = str(n.get("heard") or "").strip() if _origin(c) == "语音识别" else ""
-    if heard and heard.replace(" ", "").rstrip("。.!！?？") == c["orig"]["text"].replace(" ", "").rstrip("。.!！?？"):
+    orig = c["orig"]["text"]
+    if heard and heard.replace(" ", "").rstrip("。.!！?？") == orig.replace(" ", "").rstrip("。.!！?？"):
         heard = ""
-    return {k: v for k, v in (("kind", kind), ("tone", tone), ("heard", heard[:80])) if v}
+    readings = []
+    seen_r = set()
+    for r in n.get("readings") or []:
+        if not isinstance(r, dict):
+            continue
+        src = str(r.get("src") or "").strip()
+        rd = str(r.get("reading") or "").strip()
+        if src and rd and src in orig and src != rd and src not in seen_r:
+            seen_r.add(src)
+            readings.append({"src": src, "reading": rd})
+    out = {k: v for k, v in (("kind", kind), ("tone", tone), ("heard", heard[:80])) if v}
+    if readings:
+        out["readings"] = readings
+    return out
 
 
 def annotate(cues, cfg, cache_dir, wav, clip_dir):

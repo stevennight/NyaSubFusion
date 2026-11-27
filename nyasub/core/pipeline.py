@@ -1192,7 +1192,22 @@ class Run:
         warned = set()
         mine_by = {}  # 每种语言用的读音词典 + 它的指纹（缓存的键）
 
-        def ann(code, text):
+        def _merge_cue_readings(base_mine, extra):
+            """优先级：人工读音词典(dict) > 本条语音听出读音(audio) > 画面振假名(screen) > 术语表(glossary)。"""
+            if not extra:
+                return base_mine
+            user = [r for r in base_mine if r.get("from") == "dict"]
+            rest = [r for r in base_mine if r.get("from") != "dict"]
+            audio = [{"lang": self.src, "src": r["src"], "reading": r["reading"], "proper": False, "from": "audio"}
+                     for r in extra if r.get("src") and r.get("reading")]
+            out, seen = [], set()
+            for r in user + audio + rest:
+                if r["src"] not in seen:
+                    seen.add(r["src"])
+                    out.append(r)
+            return out
+
+        def ann(code, text, extra_readings=None):
             pack = lang.get(code)
             if not pack.annotations and not pack.translit_name:
                 return None
@@ -1200,6 +1215,9 @@ class Run:
                 mine = [r for r in readings if lang.canonical(r.get("lang") or self.src) == pack.code]
                 mine_by[pack.code] = (mine, digest(mine))
             mine, sig = mine_by[pack.code]
+            if extra_readings:
+                mine = _merge_cue_readings(mine, extra_readings)
+                sig = f"{sig}:{digest(extra_readings)}"
             # 审校时每改一处都要重做整集的注音：没改的字幕文字一样，结果也一样，记住上次的（分词学了新词就作废）
             key = (pack.code, getattr(pack, "generation", 0), sig, text)
             if key in _ANN_CACHE:
@@ -1218,7 +1236,8 @@ class Run:
 
         tokens, n_guess = {}, 0
         for c in cues:
-            t = {"orig": ann(self.src, c["orig"]["text"]), "tr": {}}
+            cue_audio_readings = (c.get("listen") or {}).get("readings") or None
+            t = {"orig": ann(self.src, c["orig"]["text"], extra_readings=cue_audio_readings), "tr": {}}
             for code, v in c.get("tr", {}).items():
                 w = ann(code, v["text"])
                 if w is not None:
