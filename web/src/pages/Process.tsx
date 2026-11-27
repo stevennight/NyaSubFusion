@@ -443,14 +443,15 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
   );
   const timingProviderName = String(val("asr.api_timing_provider") ?? "").trim();
   const timingLocal = timingProviderName === "local";
-  const timingProviderObj = timingLocal ? undefined : (timingProviderName ? allProviders.find((p) => p.name === timingProviderName) : asrProvider);
+  const timingForcedAlign = timingProviderName === "forced_align";
+  const timingProviderObj = (timingLocal || timingForcedAlign) ? undefined : (timingProviderName ? allProviders.find((p) => p.name === timingProviderName) : asrProvider);
   const timingKind = timingProviderObj?.kind ?? "openai";
   const timingKey = modelKey(timingProviderObj, legacyBase);
   const timingFetched = modelLists[timingKey];
   const onFetchTiming = () => fetchModels(
     timingProviderObj,
     legacyBase,
-    timingKind !== "openai" ? "对时需 OpenAI 兼容的转写接口（或将对时接口选为「本机 faster-whisper」）" : "",
+    timingKind !== "openai" ? "对时需 OpenAI 兼容的转写接口（或将对时接口选为「本机强制对齐」/「本机 Whisper」）" : "",
   );
   const setKind = (k: keyof typeof ASR_API_KINDS) => {
     set("asr.api_kind", k);
@@ -520,14 +521,17 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
             </div>
             <Lbl ctx={ctx} k="asr.api_timing_provider">对时接口</Lbl>
             <div className="row">
-              <select className="inp" style={{ maxWidth: 340 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>
+              <select className="inp" style={{ maxWidth: 360 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>
                 <option value="">和识别用同一个{asrProviderName ? `（${asrProviderName}）` : ""}</option>
+                <option value="forced_align">本机强制对齐（ONNX · 免费，推荐）</option>
                 <option value="local">{localTimingOption}</option>
                 {allProviders.filter((p) => !p.kind || p.kind === "openai").map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
               </select>
-              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差几秒。选「本机」可免费跑逐字时间来对齐大模型文字（macOS Apple Silicon 优先 MLX GPU）；也可单独选一个 OpenAI 兼容的转写接口（如 OpenRouter / OpenAI），不再受主识别接口限制。" />
+              <Tip text="大模型听得准（人名、方言、整句意思），但时间是估的，常差几秒。推荐选「本机强制对齐（ONNX）」：免费、轻量（约 300MB）、支持 1100+ 语种，直接拿大模型写对的文字去卡音频音素，精度 ±0.03 秒，不依赖重新听写；也可选本机 Whisper 或云端转写接口。" />
             </div>
-            {timingLocal ? (<>
+            {timingForcedAlign ? (<>
+              <span /><div className="hint">使用本机轻量 MMS-300M ONNX 声学模型直接将大模型文字卡准到人声音素（免费，首次自动下载约 300MB），并结合人声包络保留唱歌长音、截断尾噪。</div>
+            </>) : timingLocal ? (<>
               {isMac && hasMlx && (<>
                 <Lbl ctx={ctx} k="asr.local_engine">本机引擎</Lbl>
                 <div className="row">

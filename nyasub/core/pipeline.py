@@ -169,8 +169,11 @@ class Run:
                     d["api"]["visual"] = float(self.cfg.asr.api_visual_interval or 5.0)
                 if self.cfg.asr.api_kind == "gemini":
                     from ..sources.asr_api import ALIGN_V
+                    from ..sources.forced_align import FORCED_ALIGN_V
 
-                    if self.cfg.asr.api_timing_provider == "local":
+                    if self.cfg.asr.api_timing_provider == "forced_align":
+                        d["api"]["timing"] = ["forced_align", FORCED_ALIGN_V]
+                    elif self.cfg.asr.api_timing_provider == "local":
                         d["api"]["timing"] = ["local", self.cfg.asr.model, ALIGN_V]
                     elif self.cfg.asr.api_timing_model.strip():
                         if self.cfg.asr.api_timing_provider:
@@ -788,6 +791,8 @@ class Run:
                         fill_gaps=separated, junk=junk,
                         detect_wav=self.proj / self.results["audio"]["wav"] if separated else None,
                     )[0]
+                elif c.api_timing_provider == "forced_align":
+                    pass  # 本机 ONNX 强制对齐在 asr_api.transcribe 内直接运行
                 elif c.api_timing_provider.strip():
                     extra_kw["timing_ep"] = self.cfg.endpoint("asr_timing")
             segs, detected = asr_api.transcribe(str(self.proj / wav),
@@ -1038,11 +1043,13 @@ class Run:
             sdir = config_mod.series_dir(self.cfg.project.series) if self.cfg.project.series else None
             orig_wav_rel = (self.results.get("audio") or {}).get("wav")
             orig_wav_path = (self.proj / orig_wav_rel) if orig_wav_rel else None
+            vocals_wav_path = self.proj.media("vocals.wav") if self.proj.media("vocals.wav").exists() else None
             if self.cfg.llm.song_align:
                 from . import songs as songs_mod
 
                 songs_mod.align_and_fill_songs(cues, sdir, self.cfg, self.proj / "llm_cache",
-                                               orig_wav=orig_wav_path, tgt_code=tgt_code)
+                                               orig_wav=orig_wav_path, tgt_code=tgt_code,
+                                               vocals_wav=vocals_wav_path)
             locked_tr = {c["id"]: copy.deepcopy(c["tr"][tgt_code]) for c in cues
                          if c.get("song_locked") and tgt_code in (c.get("tr") or {})}
             frames = self._frames(fused["items"]) if self._use_frames(mode) else None

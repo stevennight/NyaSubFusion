@@ -54,6 +54,9 @@ def _strip_music(text: str) -> str:
 
 
 MAX_SPAN_LINES = 4        # 单条 ASR 歌词最多合并对应歌词库中连续 4 行（防止截断丢半句）
+MAX_LOCAL_SKIP = 4        # 连续两句时间间隔 < 5s 时最多允许跳过这么多行歌词（禁止跨 30 行跳到歌名或跳进 2 番）
+GAP_LINE_PENALTY = 12.0   # 匹配开始后，每跳过 1 行歌词的惩罚分（防无故跨行跳配）
+CUE_SKIP_PENALTY = 6.0    # 匹配开始后，每跳过 1 条 ASR 句子的轻微惩罚分
 
 
 def _line_sim(a: str, b: str) -> float:
@@ -67,6 +70,27 @@ def _line_sim(a: str, b: str) -> float:
 def _join_orig(lines: list[dict], j0: int, j1: int) -> str:
     parts = [ln.get("orig", "").strip() for ln in lines[j0:j1] if ln.get("orig", "").strip()]
     return " ".join(parts)
+
+
+def _split_line_for_two_cues(line_text: str, c1: str, c2: str) -> tuple[str, str, float] | None:
+    """尝试把带空格/停顿标点的一行官方歌词拆成前后两半，分别对齐到相邻两条短 ASR 句（如「花はあるじ 鳥は友」->「花は主」+「鳥は友」）。
+    返回 (part1, part2, avg_sim) 或 None。"""
+    s = _strip_music(line_text)
+    # 找出所有合理的空白/全角空格/顿号切分点
+    seps = [m.span() for m in re.finditer(r"[\s　、，,/]+", s)]
+    if not seps:
+        return None
+    best: tuple[str, str, float] | None = None
+    for a, b in seps:
+        p1, p2 = s[:a].strip(), s[b:].strip()
+        if not p1 or not p2:
+            continue
+        sc1, sc2 = _line_sim(c1, p1), _line_sim(c2, p2)
+        if sc1 >= 45.0 and sc2 >= 45.0:
+            avg = (sc1 + sc2) / 2.0
+            if avg >= MIN_LINE_SIM + 4.0 and (best is None or avg > best[2]):
+                best = (p1, p2, avg)
+    return best
 
 
 def find_song_blocks(cues: list[dict], max_gap: float = 12.0) -> list[list[int]]:
@@ -90,40 +114,93 @@ def find_song_blocks(cues: list[dict], max_gap: float = 12.0) -> list[list[int]]
 
 
 def align_block_to_lines(block_cues: list[dict], song_lines: list[dict]) -> tuple[dict[int, tuple[int, int]], float]:
-    """将本集一段 song cues 按顺序做 **1 对多（1~MAX_SPAN_LINES 行）** 模糊子序列对齐到完整歌词 song_lines。
-    返回 ({block内索引: (j0, j1) 半开区间}, 平均匹配相似度)。
-    彻底避免 1 对 1 匹配把同一条语音里唱的两三行截断丢掉；同时支持 1 番、2 番、副歌切入与剧中哼唱。"""
+    """将本集一段 song cues 做带局部连续性约束的 **N 对 M（1 对 1~4 + 2 对 1 拆分）** 序列对齐到完整歌词 song_lines。
+    - 自由入场：首条匹配可从任意歌词行开始（0 惩罚，完美支持 1 番 / 2 番 / 副歌切入）；
+    - 内部连续性约束：匹配开始后跳行扣分，且短时间间隔（<5s）内禁止跨越 > MAX_LOCAL_SKIP 行（彻底杜绝末尾词跨 30 行误吸歌名、或插曲跳到第 2 番）；
+    - 2 对 1 拆分：支持相邻两条短 ASR 句（如「花は主」「鳥は友」）合对 1 行带空格歌词（「花はあるじ 鳥は友」）。
+    返回 ({block内索引: (j0, j1) 半开区间}, 平均匹配相似度)。"""
     if not block_cues or not song_lines:
         return {}, 0.0
     n, m = len(block_cues), len(song_lines)
+    texts = [c["orig"]["text"] for c in block_cues]
 
-    # dp[i][j] = 前 i 条 cue 对齐到 song_lines[:j] 的最大总分
-    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
-    bt: list[list[tuple[int, int, int]]] = [[(0, 0, 0)] * (m + 1) for _ in range(n + 1)]  # (pi, pj, matched_k)
-    for i in range(1, n + 1):
-        cue_txt = block_cues[i - 1]["orig"]["text"]
-        for j in range(1, m + 1):
-            best, prev = dp[i - 1][j], (i - 1, j, 0)
-            if dp[i][j - 1] > best:
-                best, prev = dp[i][j - 1], (i, j - 1, 0)
-            # 尝试将 cue[i-1] 匹配到 song_lines[j-k : j]（k = 1..MAX_SPAN_LINES）
-            for k in range(1, min(MAX_SPAN_LINES, j) + 1):
-                joined = _join_orig(song_lines, j - k, j)
-                sc = _line_sim(cue_txt, joined)
-                if sc >= MIN_LINE_SIM and dp[i - 1][j - k] + sc > best:
-                    best = dp[i - 1][j - k] + sc
-                    prev = (i - 1, j - k, k)
-            dp[i][j], bt[i][j] = best, prev
+    # 预计算所有合法匹配动作：(kind, i_start, i_end, j_start, j_end, score)
+    # kind: "1toK" (i_end = i_start + 1) 或 "2to1" (i_end = i_start + 2, j_end = j_start + 1)
+    by_end: dict[int, list[tuple[str, int, int, int, int, float]]] = {}
+    for i in range(n):
+        c_txt = texts[i]
+        for j in range(m):
+            for k in range(1, min(MAX_SPAN_LINES, m - j) + 1):
+                sc = _line_sim(c_txt, _join_orig(song_lines, j, j + k))
+                if sc >= MIN_LINE_SIM:
+                    # 1 对多时轻微奖励覆盖更多行（只在确实更匹配时胜出）
+                    by_end.setdefault(i + 1, []).append(("1toK", i, i + 1, j, j + k, sc))
+        # 2 对 1 拆分：检查 cue[i] + cue[i+1] 是否合对单行 song_lines[j]
+        if i + 1 < n and block_cues[i + 1]["start"] - block_cues[i]["end"] < 4.0:
+            for j in range(m):
+                sp = _split_line_for_two_cues(song_lines[j].get("orig", ""), texts[i], texts[i + 1])
+                if sp is not None:
+                    _, _, avg_sc = sp
+                    # 两条 cue 合计得分（+6 奖励避免拆成一条配完整行、另一条跳去 2 番）
+                    by_end.setdefault(i + 2, []).append(("2to1", i, i + 2, j, j + 1, avg_sc * 2.0 + 6.0))
+
+    # 基于动作列表做局部最优序列 DP（动作数很小，O(A^2) 毫秒级且允许精确控制时间间隔与跳行上限）
+    actions: list[tuple[str, int, int, int, int, float]] = []
+    for i_end in sorted(by_end):
+        actions.extend(by_end[i_end])
+    if not actions:
+        return {}, 0.0
+
+    # 按 (i_start, j_start, i_end, j_end) 排序，保证前驱一定在前面
+    actions.sort(key=lambda a: (a[1], a[3], a[2], a[4]))
+    num_a = len(actions)
+    dp = [a[5] for a in actions]   # 自由入场：任意动作都可以作为首条匹配（0 惩罚）
+    prev_idx = [-1] * num_a
+
+    for cur in range(num_a):
+        _, ci0, ci1, cj0, cj1, c_sc = actions[cur]
+        best_val = dp[cur]
+        best_p = -1
+        for p in range(cur):
+            _, pi0, pi1, pj0, pj1, _ = actions[p]
+            if pi1 > ci0 or pj1 > cj0:
+                continue
+            skip_lines = cj0 - pj1
+            skip_cues = ci0 - pi1
+            time_gap = max(0.0, block_cues[ci0]["start"] - block_cues[pi1 - 1]["end"])
+            # 硬约束：时间紧凑（<5s）时禁止大幅跳行（如 Fate 跳 30 行到歌名、鳥は友跳 5 行到 2 番）
+            max_skip = MAX_LOCAL_SKIP if time_gap < 5.0 else max(MAX_LOCAL_SKIP + 2, int(time_gap * 1.5))
+            if skip_lines > max_skip:
+                continue
+            line_pen = GAP_LINE_PENALTY * min(skip_lines, 6) + 2.5 * max(0, skip_lines - 6)
+            cue_pen = CUE_SKIP_PENALTY * skip_cues
+            val = dp[p] + c_sc - line_pen - cue_pen
+            if val > best_val:
+                best_val = val
+                best_p = p
+        dp[cur] = best_val
+        prev_idx[cur] = best_p
+
+    best_end = max(range(num_a), key=lambda idx: dp[idx])
+    chosen = []
+    cur = best_end
+    while cur >= 0:
+        chosen.append(actions[cur])
+        cur = prev_idx[cur]
+    chosen.reverse()
 
     mapping: dict[int, tuple[int, int]] = {}
-    i, j = n, m
-    scores = []
-    while i > 0 and j > 0:
-        pi, pj, k = bt[i][j]
-        if k > 0:
-            mapping[i - 1] = (pj, j)
-            scores.append(_line_sim(block_cues[i - 1]["orig"]["text"], _join_orig(song_lines, pj, j)))
-        i, j = pi, pj
+    scores: list[float] = []
+    for kind, i0, i1, j0, j1, sc in chosen:
+        if kind == "2to1":
+            mapping[i0] = (j0, j1)
+            mapping[i0 + 1] = (j0, j1)
+            per_sc = (sc - 6.0) / 2.0
+            scores.extend([per_sc, per_sc])
+        else:
+            mapping[i0] = (j0, j1)
+            scores.append(sc)
+
     if not mapping:
         return {}, 0.0
     avg = sum(scores) / len(scores)
@@ -245,10 +322,12 @@ def identify_song_from_audio(orig_wav, a: float, b: float, block_cues: list[dict
 
 
 def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_dir=None,
-                         orig_wav=None, tgt_code: str = "zh-Hans") -> int:
+                         orig_wav=None, tgt_code: str = "zh-Hans", vocals_wav=None) -> int:
     """在翻译前对 cues 中连续的 song 区间进行歌曲库匹配与官方歌词对齐。
     - 命中作品歌曲库且已有译文 → 替换 orig 并锁定 tr（cue["song_locked"] = True，翻译阶段跳过重翻）；
-    - 未命中 → 用完整原声辨认歌名，查 LRCLIB 拿官方歌词对齐替换 orig，待翻译后入库。
+    - 未命中 → 用完整原声辨认歌名，查 LRCLIB 拿官方歌词对齐替换 orig，待翻译后入库；
+    - 支持 1 对多合并与 2 对 1 拆分（如「花はあるじ 鳥は友」拆给「花は主」「鳥は友」）；
+    - 若开启了本机强制对齐（forced_align）且有人声/原声音频，对替换后的官方歌词做二次声学卡拍。
     返回成功对齐的句子数。"""
     blocks = find_song_blocks(cues)
     if not blocks:
@@ -302,25 +381,65 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
         if not song or not mapping:
             continue
 
-        # 若歌曲带精确 LRC 时间戳，先用锚点全局偏移校准整首歌的时间轴
-        _calibrate_block_timing_with_lrc(block, mapping, song["lines"])
+        # 先记录 2 对 1 共享同一行的相邻 cue 对（如 花は主 + 鳥は友 -> 花はあるじ 鳥は友）
+        split_pairs: dict[int, tuple[str, str]] = {}
+        ordered_bis = sorted(mapping)
+        k_idx = 0
+        while k_idx + 1 < len(ordered_bis):
+            b1, b2 = ordered_bis[k_idx], ordered_bis[k_idx + 1]
+            if b2 == b1 + 1 and mapping[b1] == mapping[b2] and mapping[b1][1] - mapping[b1][0] == 1:
+                line_orig = song["lines"][mapping[b1][0]].get("orig", "")
+                sp = _split_line_for_two_cues(line_orig, block[b1]["orig"]["text"], block[b2]["orig"]["text"])
+                if sp is not None:
+                    split_pairs[b1] = (sp[0], "first")
+                    split_pairs[b2] = (sp[1], "second")
+                    k_idx += 2
+                    continue
+            k_idx += 1
 
-        for bi, (j0, j1) in mapping.items():
+        # 用公式化替换标准歌词原文与锁定译文
+        matched_cues = []
+        for bi, (j0, j1) in sorted(mapping.items()):
             c = block[bi]
-            std_orig = _join_orig(song["lines"], j0, j1)
+            if bi in split_pairs:
+                std_orig = split_pairs[bi][0]
+            else:
+                std_orig = _join_orig(song["lines"], j0, j1)
             if not std_orig.startswith(("♪", "♬")):
                 std_orig = "♪ " + std_orig
             c["orig"]["text"] = std_orig
             c["song_ref"] = {"id": song["id"], "title": song["title"], "lines": [j0, j1]}
-            # 若区间内每一行都已有锁定译文，拼接后直接锁定
-            tr_parts = [(song["lines"][k].get("tr") or {}).get(tgt_code, "").strip() for k in range(j0, j1)]
-            if tr_parts and all(tr_parts):
-                locked_tr = " ".join(tr_parts)
-                if not locked_tr.startswith(("♪", "♬")):
-                    locked_tr = "♪ " + locked_tr
-                c.setdefault("tr", {})[tgt_code] = {"text": locked_tr}
-                c["song_locked"] = True
+            if bi not in split_pairs:
+                # 若区间内每一行都已有锁定译文，拼接后直接锁定
+                tr_parts = [(song["lines"][k].get("tr") or {}).get(tgt_code, "").strip() for k in range(j0, j1)]
+                if tr_parts and all(tr_parts):
+                    locked_tr = " ".join(tr_parts)
+                    if not locked_tr.startswith(("♪", "♬")):
+                        locked_tr = "♪ " + locked_tr
+                    c.setdefault("tr", {})[tgt_code] = {"text": locked_tr}
+                    c["song_locked"] = True
+            matched_cues.append(c)
             aligned_total += 1
+
+        # 时间轴校准：优先对替换后的官方歌词做二次声学强制对齐（仅耗时 1~2s，兼容 TV-Size 剪辑与角色清唱）；
+        # 若未启用 forced_align 或无音频，再退回到 LRC 偏移校准。
+        realigned = 0
+        align_wav = vocals_wav if (vocals_wav and Path(vocals_wav).exists()) else orig_wav
+        if (align_wav and Path(align_wav).exists()
+                and getattr(getattr(cfg, "asr", None), "api_timing_provider", "") == "forced_align"):
+            try:
+                from ..sources import forced_align
+
+                src_lang = (matched_cues[0].get("orig") or {}).get("lang") or ""
+                # 整段 block（含已匹配与未匹配句）一起单调对齐，确保相邻句不交叉重叠
+                realigned = forced_align.align_subset(block, align_wav, language=src_lang,
+                                                      c=cfg.asr.model_dump())
+                if realigned:
+                    log(f"歌曲对齐：已对《{song['title']}》的 {realigned} 句歌词完成二次声学卡拍")
+            except Exception as e:
+                log(f"歌曲对齐：二次声学卡拍跳过（{e}）")
+        if not realigned:
+            _calibrate_block_timing_with_lrc(block, mapping, song["lines"])
 
     return aligned_total
 

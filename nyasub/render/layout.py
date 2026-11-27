@@ -77,6 +77,7 @@ def build(cues, profile, cfg, src_code, tokens=None):
     main = _extend_short(_resolve_overlaps([m for m in main if not (m.get("pos") or m.get("near") or m.get("vertical") is True)],
                                            merge=profile.simultaneous == "merge"),
                          profile.min_duration)
+    main = _apply_reading_buffer(main, getattr(profile, "lead_in", 0.0), getattr(profile, "lead_out", 0.0))
     return main + fixed + info
 
 
@@ -322,4 +323,54 @@ def _extend_short(items, min_dur):
         want = a["start"] + min_dur
         if a["end"] < want:  # 只延长不缩短（和下一句同时显示的不能被截短）
             a["end"] = round(max(a["end"], min(want, b["start"]) if b else want), 3)
+    return items
+
+
+def _is_asr_only(item) -> bool:
+    """是否完全来自语音识别（物理发声时间，无广播字幕/画面字自带的阅读留白）。"""
+    srcs = item.get("sources") or []
+    return bool(srcs) and all(str(s).startswith("a") for s in srcs)
+
+
+def _apply_reading_buffer(items, lead_in: float = 0.08, lead_out: float = 0.35, min_gap: float = 0.05):
+    """输出排版层的阅读缓冲（与物理语音时间解耦）：
+    - 仅对纯语音来源（sources 全为 a*）的非硬字幕条目生效（广播字幕/画面字/手工时间轴自带留白，不额外拉动）；
+    - 在前后存在空档时，句首最多提前 lead_in 秒、句尾最多延后 lead_out 秒，让眼睛更舒服；
+    - 与相邻不重叠的字幕之间始终保留至少 min_gap（50ms）空隙，绝不制造新重叠。"""
+    if not items or (lead_in <= 0 and lead_out <= 0):
+        return items
+    n = len(items)
+    orig = [(it["start"], it["end"]) for it in items]
+    for i, it in enumerate(items):
+        if it.get("onscreen") or not _is_asr_only(it):
+            continue
+        s, e = orig[i]
+        prev_end = orig[i - 1][1] if i > 0 else None
+        next_start = orig[i + 1][0] if i + 1 < n else None
+
+        if lead_in > 0:
+            if prev_end is None:
+                it["start"] = round(max(0.0, s - lead_in), 3)
+            elif s >= prev_end + min_gap:
+                avail = s - prev_end - min_gap
+                prev_pads = i > 0 and _is_asr_only(items[i - 1]) and not items[i - 1].get("onscreen")
+                if prev_pads and lead_out > 0 and avail < lead_in + lead_out:
+                    pad_in = min(lead_in, max(0.0, avail - min(lead_out, avail * 0.75)))
+                else:
+                    pad_in = min(lead_in, avail)
+                if pad_in > 0.005:
+                    it["start"] = round(max(0.0, s - pad_in), 3)
+
+        if lead_out > 0:
+            if next_start is None:
+                it["end"] = round(e + lead_out, 3)
+            elif next_start >= e + min_gap:
+                avail = next_start - e - min_gap
+                next_pads = i + 1 < n and _is_asr_only(items[i + 1]) and not items[i + 1].get("onscreen")
+                if next_pads and lead_in > 0 and avail < lead_in + lead_out:
+                    pad_out = min(lead_out, avail * 0.75)
+                else:
+                    pad_out = min(lead_out, avail)
+                if pad_out > 0.005:
+                    it["end"] = round(e + pad_out, 3)
     return items

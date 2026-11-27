@@ -732,7 +732,12 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         out.append(item)
     timing_provider = (c.get("api_timing_provider") or "").strip() if kind == "gemini" else ""
     timing_model = (c.get("api_timing_model") or "").strip() if kind == "gemini" else ""
-    if timing_provider == "local":
+    if timing_provider == "forced_align":
+        from . import forced_align
+
+        log("对时：使用本机轻量 ONNX 强制对齐（MMS-300M）将大模型文字直接卡准音频音素")
+        out = forced_align.align_segments(out, wav, language=language or state["lang"] or "", c=c, offset=offset)
+    elif timing_provider == "local":
         if local_ref:
             log(f"对时：再用本机 faster-whisper（{c.get('model') or 'default'}）跑逐字时间，对齐大模型文字")
             out = align_to_reference(out, local_ref())
@@ -741,14 +746,15 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     elif timing_model:
         tep = timing_ep or dict(ep, model=timing_model)
         if tep.get("kind", "openai") != "openai":
-            log(f"对时：接口「{tep.get('name') or tep.get('kind')}」不支持转写对时，已跳过（可将「对时接口」选为「本机 faster-whisper」或 OpenAI 兼容接口）")
+            log(f"对时：接口「{tep.get('name') or tep.get('kind')}」不支持转写对时，已跳过（可将「对时接口」选为「本机强制对齐」或 OpenAI 兼容接口）")
         else:
             log(f"对时：再用 {tep.get('name') or tep['base_url']} · {timing_model} 识别一遍，句子的起止对到它的时间上")
             ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", api_timing_provider="", context="", names=[]),
                                 dict(tep, model=timing_model), language, offset, duration, junk, cache_dir)
             out = align_to_reference(out, ref)
-    # 按人声轨 50ms 音量包络收紧静音边界（切掉句首提前亮字与句尾长静音拖尾）
-    out = snap_to_vocal_envelope(out, w, offset=offset)
+    # 若未走 forced_align（它已自带精细人声包络精修），再做 50ms 音量包络收紧静音边界
+    if timing_provider != "forced_align":
+        out = snap_to_vocal_envelope(out, w, offset=offset)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
     log(f"云端识别：{len(out)} 段（时间精度：" + "，".join(f"{n} {k}" for k, n in
         (("逐字", timing["word"]), ("逐句、借转写模型的时间", timing["aligned"]), ("逐句", timing["segment"]),

@@ -66,7 +66,7 @@ class AsrCfg(_M):
     api_chunk_seconds: float = 0             # 每块上传多长（秒）；0 = 自动：OpenRouter 3 分钟（它上游 60 秒超时），其它 10 分钟
     # 多模态大模型识别时，再用这个转写模型（同一个接口，比如 microsoft/mai-transcribe-2）识别一遍，借它的时间：
     # 大模型的字准、时间是估的（常差半秒以上），转写模型有逐字时间；句子起止对到转写模型的时间上，大模型漏掉的短感叹也补上。空 = 不用
-    api_timing_provider: str = ""            # 对时用哪个接口（空 = 和识别同一个；"local" = 本机 faster-whisper；或 providers 里的 name）
+    api_timing_provider: str = ""            # 对时用哪个接口（空 = 和识别同一个；"forced_align" = 本机 ONNX 强制对齐；"local" = 本机 Whisper；或 providers 里的 name）
     api_timing_model: str = ""
     api_effort: str = ""                     # 多模态大模型识别时的思考程度；空 = 不设（使用模型默认）
     api_visual: bool = False                 # 多模态云端语音识别附带画面网格拼图参考（辅助分辨称呼、说话人、人名条与 OP/ED）
@@ -222,6 +222,8 @@ class ProfileCfg(_M):
     avoid_hardsub: bool = True
     max_lines: int = 2
     min_duration: float = 1.0
+    lead_in: float = 0.08                    # 阅读缓冲：字幕在物理开口前提前亮起（秒），不覆盖上一句
+    lead_out: float = 0.35                   # 阅读缓冲：字幕在物理说完后多留白（秒），不覆盖下一句
     # 几乎同时开始的几条字幕（两个人同时说、旁白和画面上的台词同时出现）：
     # stack 各自成块、各自的时间，同时显示时上下错开；merge 合成一屏（每条的译文和原文仍挨在一起）
     simultaneous: Literal["stack", "merge"] = "stack"
