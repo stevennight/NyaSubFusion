@@ -990,25 +990,29 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.post("/api/series/{name}/research")
     def research_series(name: str, body: dict = Body(default={})):
-        """三层联网检索作品背景、结构化人物卡与已知 OP/ED（返回草稿，由用户确认后保存）。"""
+        """三层联网检索（或整理用户粘贴的文本）生成作品背景、结构化人物卡与已知 OP/ED 草稿。"""
         from ..llm import research
 
         raw = config_mod.read_series(name)
         kind = str(body.get("content_kind") or (raw.get("project") or {}).get("content_kind") or "auto")
         query = str(body.get("query") or name).strip()
+        pasted = str(body.get("pasted_text") or "")
         cfg = config_mod.load(None)
-        return research.research_work(query, content_kind=kind, cfg=cfg)
+        return research.research_work(query, content_kind=kind, cfg=cfg, pasted_text=pasted)
 
     @app.post("/api/projects/{pid}/research")
     def research_project(pid: str, body: dict = Body(default={})):
-        """三层联网检索单集/作品背景与专有名词草稿。"""
+        """三层联网检索（或整理用户粘贴的文本）生成单集/作品背景与专有名词草稿。"""
         from ..llm import research
 
         run = make_run(pid)
         query = str(body.get("query") or run.cfg.project.series or run.proj.stem).strip()
         ep = str(body.get("episode") or run.proj.stem).strip()
+        pasted = str(body.get("pasted_text") or "")
         return research.research_work(query, content_kind=run.cfg.project.content_kind, cfg=run.cfg,
-                                      cache_dir=run.proj / "llm_cache", episode_title=ep if run.cfg.project.series else "")
+                                      cache_dir=run.proj / "llm_cache",
+                                      episode_title=ep if run.cfg.project.series else "",
+                                      pasted_text=pasted)
 
     def _series_reading_files(name):
         return {"global": env.home() / "readings.json", "series": config_mod.series_dir(name) / "readings.json"}

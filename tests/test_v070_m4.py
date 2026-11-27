@@ -118,6 +118,10 @@ def test_research_work_uses_tiered_apis_without_network(monkeypatch):
     assert "犬冢信乃" in res["context"]
     assert res["terms"][0]["src"] == "犬塚信乃"
 
+    # 手工粘贴文本兜底：不触发联网 API
+    pasted = research.research_work("冷门作品", content_kind="anime", cfg=None, pasted_text="这是一段手工粘贴的角色简介。")
+    assert pasted["sources"] == ["pasted"] and "手工粘贴" in pasted["context"]
+
 
 def test_series_songs_api(isolated_home):
     from fastapi.testclient import TestClient

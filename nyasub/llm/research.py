@@ -181,37 +181,43 @@ RESEARCH_SYSTEM = """你是影视字幕翻译的资料整理助手。
 要求：只输出纯 JSON；专有名词不超过 60 条，优先收核心角色、地名和世界观专词。"""
 
 
-def research_work(query: str, content_kind: str = "auto", cfg=None, cache_dir=None, episode_title: str = "") -> dict:
-    """按三层策略检索作品/单集资料：
-    1) 第一层：Bangumi（动画/剧集优先）+ Wikipedia（中日双语）
-    2) 整理：若有可用 LLM，交由 LLM 提炼结构化人物卡、背景和已知 OP/ED；否则直接返回第一层原始结构化结果。
-    返回 {"context", "terms", "songs", "sources", "raw_snippets"}。"""
+def research_work(query: str, content_kind: str = "auto", cfg=None, cache_dir=None,
+                  episode_title: str = "", pasted_text: str = "") -> dict:
+    """按三层策略检索或整理作品/单集资料：
+    - 若用户提供了 pasted_text：直接以粘贴文本作为权威输入，交由 LLM 提炼结构化背景、人物卡与歌曲列表；
+    - 否则先查第一层高可信 API（Bangumi + Wikipedia 中日双语），再交由任意已配置 LLM 融合整理。
+    返回 {"context", "terms", "songs", "sources"}。"""
     sources = []
     raw_blocks = []
     direct_terms = []
     fallback_context = ""
 
-    # 第一层：高可信 API
-    if content_kind in ("auto", "anime", "drama"):
-        bgm = fetch_bangumi(query)
-        if bgm:
-            sources.append("bangumi")
-            direct_terms.extend(bgm.get("terms") or [])
-            fallback_context = bgm.get("summary") or ""
-            raw_blocks.append(f"## Bangumi：{bgm['title']}（{bgm['title_cn']}）\n{bgm['summary']}")
-            if bgm.get("terms"):
-                char_lines = "\n".join(f"- {t['src']} → {t['tr']}（{t.get('note', '')}）" for t in bgm["terms"][:30])
-                raw_blocks.append(f"## Bangumi 角色表\n{char_lines}")
+    if (pasted_text or "").strip():
+        sources.append("pasted")
+        raw_blocks.append(f"## 用户粘贴的参考资料\n{pasted_text.strip()[:12000]}")
+        fallback_context = pasted_text.strip()[:600]
+    else:
+        # 第一层：高可信 API
+        if content_kind in ("auto", "anime", "drama"):
+            bgm = fetch_bangumi(query)
+            if bgm:
+                sources.append("bangumi")
+                direct_terms.extend(bgm.get("terms") or [])
+                fallback_context = bgm.get("summary") or ""
+                raw_blocks.append(f"## Bangumi：{bgm['title']}（{bgm['title_cn']}）\n{bgm['summary']}")
+                if bgm.get("terms"):
+                    char_lines = "\n".join(f"- {t['src']} → {t['tr']}（{t.get('note', '')}）" for t in bgm["terms"][:30])
+                    raw_blocks.append(f"## Bangumi 角色表\n{char_lines}")
 
-    wiki_q = f"{query} {episode_title}".strip() if episode_title else query
-    wikis = fetch_wikipedia(wiki_q)
-    if not wikis and episode_title:
-        wikis = fetch_wikipedia(query)
-    for wk in wikis:
-        sources.append(wk["source"])
-        raw_blocks.append(f"## {wk['source']}：{wk['title']}\n{wk['text'][:2500]}")
-        if not fallback_context:
-            fallback_context = wk["text"][:600]
+        wiki_q = f"{query} {episode_title}".strip() if episode_title else query
+        wikis = fetch_wikipedia(wiki_q)
+        if not wikis and episode_title:
+            wikis = fetch_wikipedia(query)
+        for wk in wikis:
+            sources.append(wk["source"])
+            raw_blocks.append(f"## {wk['source']}：{wk['title']}\n{wk['text'][:2500]}")
+            if not fallback_context:
+                fallback_context = wk["text"][:600]
 
     result = {
         "context": fallback_context,
