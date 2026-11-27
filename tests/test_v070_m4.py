@@ -136,3 +136,17 @@ def test_series_songs_api(isolated_home):
     assert r.status_code == 200
     got = client.get("/api/series/八犬传/songs").json()
     assert len(got["songs"]) == 1 and got["songs"][0]["title"] == "God FATE"
+
+
+def test_series_research_api_unpacks_config(isolated_home, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from nyasub.server.app import create_app
+
+    monkeypatch.setattr(research, "research_work", lambda query, **kw: {
+        "context": f"背景：{query}", "terms": [{"src": "犬塚信乃", "tr": "犬冢信乃"}], "songs": [], "sources": ["bangumi"],
+    })
+    client = TestClient(create_app())
+    r = client.post("/api/series/八犬伝/research", json={"query": "八犬伝"})
+    assert r.status_code == 200
+    assert r.json()["sources"] == ["bangumi"]

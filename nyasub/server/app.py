@@ -997,7 +997,7 @@ def create_app(token: str | None = None) -> FastAPI:
         kind = str(body.get("content_kind") or (raw.get("project") or {}).get("content_kind") or "auto")
         query = str(body.get("query") or name).strip()
         pasted = str(body.get("pasted_text") or "")
-        cfg = config_mod.load(None)
+        cfg, _ = config_mod.load(None)
         return research.research_work(query, content_kind=kind, cfg=cfg, pasted_text=pasted)
 
     @app.post("/api/projects/{pid}/research")

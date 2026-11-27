@@ -80,9 +80,29 @@ def fetch_lrclib(title: str, artist: str = "", query: str = "") -> list[dict]:
     return out
 
 
-def fetch_bangumi(query: str, limit: int = 3) -> dict | None:
+def _clean_query(q: str) -> str:
+    return re.sub(r"[\-－―—–·•:：/\\]+", " ", (q or "")).strip()
+
+
+def _best_title_hit(query: str, items: list[dict], title_fn):
+    from rapidfuzz import fuzz
+
+    from ..textutil import norm
+
+    nq = norm(query)
+    if not items or not nq:
+        return items[0] if items else None
+
+    def score(it):
+        cands = [norm(t) for t in title_fn(it) if t]
+        return max((fuzz.ratio(nq, c) for c in cands), default=0.0)
+
+    return max(items, key=score)
+
+
+def fetch_bangumi(query: str, limit: int = 10) -> dict | None:
     """从 Bangumi API 检索番剧/动画的官方简介与角色表（含日文原名、中文译名、CV）。"""
-    q = (query or "").strip()
+    q = _clean_query(query)
     if not q:
         return None
     try:
@@ -95,7 +115,7 @@ def fetch_bangumi(query: str, limit: int = 3) -> dict | None:
     data = (res or {}).get("data") or []
     if not data:
         return None
-    subj = data[0]
+    subj = _best_title_hit(query, data, lambda x: (x.get("name") or "", x.get("name_cn") or ""))
     sid = subj.get("id")
     chars = []
     if sid:
@@ -106,7 +126,7 @@ def fetch_bangumi(query: str, limit: int = 3) -> dict | None:
                 name_cn = (ch.get("name_cn") or "").strip() or name
                 rel = (ch.get("relation") or "").strip()
                 actors = [a.get("name_cn") or a.get("name") for a in (ch.get("actors") or []) if a.get("name")]
-                if name:
+                if name and name not in ("モブキャラクター", "モブ", "路人"):
                     chars.append({
                         "src": name,
                         "tr": name_cn,
@@ -128,7 +148,7 @@ def fetch_bangumi(query: str, limit: int = 3) -> dict | None:
 
 def fetch_wikipedia(query: str, langs: tuple[str, ...] = ("ja", "zh")) -> list[dict]:
     """从 Wikipedia MediaWiki API 获取高可信百科条目摘要（支持日语/中文双语）。"""
-    q = (query or "").strip()
+    q = _clean_query(query)
     if not q:
         return []
     out = []
@@ -137,13 +157,14 @@ def fetch_wikipedia(query: str, langs: tuple[str, ...] = ("ja", "zh")) -> list[d
             search_url = (f"https://{lg}.wikipedia.org/w/api.php?"
                           + urllib.parse.urlencode({
                               "action": "query", "list": "search", "srsearch": q,
-                              "srlimit": 2, "format": "json", "utf8": 1,
+                              "srlimit": 5, "format": "json", "utf8": 1,
                           }))
             sr = _get_json(search_url)
             hits = ((sr or {}).get("query") or {}).get("search") or []
             if not hits:
                 continue
-            title = hits[0].get("title") or ""
+            best = _best_title_hit(query, hits, lambda x: (x.get("title") or "",))
+            title = (best or {}).get("title") or ""
             if not title:
                 continue
             ext_url = (f"https://{lg}.wikipedia.org/w/api.php?"
