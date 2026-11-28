@@ -25,7 +25,7 @@ MODEL_FILE = "onnx/model_int8.onnx"
 VOCAB_FILE = "vocab.json"
 TARGET_SR = 16000
 CHUNK_SECONDS = 30
-FORCED_ALIGN_V = 2  # v2：跨窗口全局单调下界、单句孤立离群音素剔除、安全防重叠裁剪
+FORCED_ALIGN_V = 3  # v3：软时间带 CTC Viterbi（防多句多米诺串位，同时保留大漂移纠偏能力）
 
 _SESSION_CACHE: dict[tuple[str, str], tuple] = {}
 _MUSIC_RE = re.compile(r"^[♪♬♫♩\s]+|[♪♬♫♩\s]+$")
@@ -120,13 +120,25 @@ def text_to_tokens(text: str, language: str, vocab: dict[str, int]) -> list[int]
     return ids
 
 
-def ctc_viterbi_align(log_probs: np.ndarray, tokens: list[int], blank: int = 0) -> list[tuple[int, int, float]]:
-    """标准 CTC Viterbi 强制对齐。
+def ctc_viterbi_align(
+    log_probs: np.ndarray,
+    tokens: list[int],
+    blank: int = 0,
+    token_bounds: list[tuple[int, int]] | None = None,
+    frame_dur: float = 0.02,
+    band_margin_s: float = 3.0,
+    band_slope: float = 0.4,
+    band_cap: float = 2.5,
+) -> list[tuple[int, int, float]]:
+    """标准 / 软时间带 CTC Viterbi 强制对齐。
 
     输入：
     - log_probs: shape [T, V] 的逐帧 log-softmax 声学概率；
     - tokens: 长度为 L 的字符 token id 序列；
-    - blank: CTC blank token id。
+    - blank: CTC blank token id；
+    - token_bounds（可选）: 长度为 L 的列表，每项为该字符所属句子的粗估帧区间 (lo_frame, hi_frame)；
+      在 [lo - band_margin, hi + band_margin] 软时间带内 0 惩罚（纯声学精卡），
+      超出时间带按超出秒数施加温和线性先验惩罚（仅作用于非 blank 字符态），防止多句多米诺串位。
 
     返回长度为 L 的列表，每项为 (start_frame, end_frame_exclusive, avg_log_prob)。
     若帧数不足或输入为空返回空列表。
@@ -140,13 +152,30 @@ def ctc_viterbi_align(log_probs: np.ndarray, tokens: list[int], blank: int = 0) 
     ext = [blank if i % 2 == 0 else tokens[i // 2] for i in range(S)]
     ext_arr = np.array(ext, dtype=np.int32)
 
+    # 预计算软时间带边界（仅非 blank 态 1, 3, 5... 生效）
+    use_band = token_bounds is not None and len(token_bounds) == L and band_slope > 0
+    if use_band:
+        margin_f = band_margin_s / max(1e-4, frame_dur)
+        lo_arr = np.full(S, -1e9, dtype=np.float32)
+        hi_arr = np.full(S, 1e9, dtype=np.float32)
+        for k, (lf, hf) in enumerate(token_bounds):
+            st = 2 * k + 1
+            lo_arr[st] = lf - margin_f
+            hi_arr[st] = hf + margin_f
+        scale = np.float32(band_slope * frame_dur)
+        cap = np.float32(band_cap)
+
     neg_inf = np.float32(-1e9)
     dp = np.full((T, S), neg_inf, dtype=np.float32)
     bp = np.zeros((T, S), dtype=np.int32)
 
     dp[0, 0] = log_probs[0, blank]
     if S > 1:
-        dp[0, 1] = log_probs[0, ext[1]]
+        e0 = log_probs[0, ext[1]]
+        if use_band:
+            over0 = max(0.0, float(lo_arr[1])) + max(0.0, float(-hi_arr[1]))
+            e0 = e0 - min(float(cap), float(scale) * over0)
+        dp[0, 1] = e0
 
     can_skip = np.zeros(S, dtype=bool)
     for s in range(2, S):
@@ -156,6 +185,10 @@ def ctc_viterbi_align(log_probs: np.ndarray, tokens: list[int], blank: int = 0) 
     idx_arr = np.arange(S, dtype=np.int32)
     for t in range(1, T):
         emit = log_probs[t, ext_arr]
+        if use_band:
+            tf = np.float32(t)
+            over = np.maximum(np.float32(0.0), lo_arr - tf) + np.maximum(np.float32(0.0), tf - hi_arr)
+            emit = emit - np.minimum(cap, scale * over)
         prev = dp[t - 1]
 
         best = prev.copy()
@@ -443,28 +476,35 @@ def align_segments(
         min_s = min(out[i]["start"] for i in g) - offset
         max_e = max(out[i]["end"] for i in g) - offset
         next_min_s = (min(out[i]["start"] for i in groups[gi + 1]) - offset) if gi + 1 < len(groups) else (actual_start + total_dur)
-        lo = max(actual_start, prev_win_end, min_s - 8.0)
-        hi = min(actual_start + total_dur, max(max_e + 8.0, lo + 1.0))
-        # 上界也不侵入下一窗口太多（若下一窗口起点比当前 max_e 更晚，留出合理缓冲）
-        if next_min_s > max_e + 1.0:
-            hi = min(hi, next_min_s + 2.0)
+        # 窗口搜索边界允许最多 ±16s（兼容大模型长段 10~15s 整体漂移），同时受上一窗口结束与下一窗口起点约束
+        lo = max(actual_start, prev_win_end, min_s - 16.0)
+        hi = min(actual_start + total_dur, max(max_e + 16.0, lo + 1.0))
+        if gi + 1 < len(groups) and next_min_s > max_e + 1.0:
+            hi = min(hi, next_min_s)
         f0 = max(0, int((lo - actual_start) / frame_dur))
         f1 = min(len(log_probs), int((hi - actual_start) / frame_dur))
         if f1 <= f0:
             continue
 
         flat_tokens: list[int] = []
+        token_bounds: list[tuple[int, int]] = []
         ranges: list[tuple[int, int, int]] = []
         for idx in g:
             toks = text_to_tokens(_get_text(out[idx]), language, vocab)
             a_i = len(flat_tokens)
             flat_tokens.extend(toks)
+            lf = int((out[idx]["start"] - offset - actual_start) / frame_dur) - f0
+            hf = int((out[idx]["end"] - offset - actual_start) / frame_dur) - f0
+            token_bounds.extend([(lf, hf)] * len(toks))
             ranges.append((idx, a_i, len(flat_tokens)))
 
         if not flat_tokens or f1 - f0 < len(flat_tokens):
             continue
 
-        spans = ctc_viterbi_align(log_probs[f0:f1], flat_tokens, blank=blank_id)
+        spans = ctc_viterbi_align(
+            log_probs[f0:f1], flat_tokens, blank=blank_id,
+            token_bounds=token_bounds, frame_dur=frame_dur,
+        )
         if not spans:
             continue
 
@@ -520,17 +560,24 @@ def align_subset(
         return 0
 
     flat_tokens: list[int] = []
+    token_bounds: list[tuple[int, int]] = []
     ranges: list[tuple[int, int, int]] = []
     for idx, it in enumerate(items):
         toks = text_to_tokens(_get_text(it), language, vocab)
         a_i = len(flat_tokens)
         flat_tokens.extend(toks)
+        lf = int((it["start"] - offset - actual_start) / frame_dur)
+        hf = int((it["end"] - offset - actual_start) / frame_dur)
+        token_bounds.extend([(lf, hf)] * len(toks))
         ranges.append((idx, a_i, len(flat_tokens)))
 
     if not flat_tokens or len(log_probs) < len(flat_tokens):
         return 0
 
-    spans = ctc_viterbi_align(log_probs, flat_tokens, blank=blank_id)
+    spans = ctc_viterbi_align(
+        log_probs, flat_tokens, blank=blank_id,
+        token_bounds=token_bounds, frame_dur=frame_dur,
+    )
     if not spans:
         return 0
 

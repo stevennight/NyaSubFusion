@@ -39,6 +39,18 @@ def test_ctc_viterbi_align_basic():
     assert spans[1][0] == 12 and spans[1][1] == 16
     assert spans[2][0] == 25 and spans[2][1] == 29
 
+    # 软时间带测试：当同一音素在帧 10（0.2s）和帧 450（9.0s）同样清晰出现时，
+    # 带粗估区间 (430, 470) 的软时间带能锁到真实位置 450 而不是被吸回 10
+    T2 = 500
+    lp2 = np.full((T2, V), -10.0, dtype=np.float32)
+    lp2[:, 0] = -0.05
+    lp2[10:14, 1] = -0.02
+    lp2[10:14, 0] = -8.0
+    lp2[450:454, 1] = -0.02
+    lp2[450:454, 0] = -8.0
+    sp_banded = forced_align.ctc_viterbi_align(lp2, [1], blank=0, token_bounds=[(430, 470)], frame_dur=0.02)
+    assert 448 <= sp_banded[0][0] <= 454
+
 
 def test_refine_with_vocal_envelope_sustained_and_noise():
     """人声包络精修：
