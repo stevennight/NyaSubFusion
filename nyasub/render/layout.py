@@ -77,7 +77,6 @@ def build(cues, profile, cfg, src_code, tokens=None):
     main = _extend_short(_resolve_overlaps([m for m in main if not (m.get("pos") or m.get("near") or m.get("vertical") is True)],
                                            merge=profile.simultaneous == "merge"),
                          profile.min_duration)
-    main = _apply_reading_buffer(main, getattr(profile, "lead_in", 0.0), getattr(profile, "lead_out", 0.0))
     return main + fixed + info
 
 
@@ -332,11 +331,12 @@ def _is_asr_only(item) -> bool:
     return bool(srcs) and all(str(s).startswith("a") for s in srcs)
 
 
-def _apply_reading_buffer(items, lead_in: float = 0.08, lead_out: float = 0.35, min_gap: float = 0.05):
-    """输出排版层的阅读缓冲（与物理语音时间解耦）：
+def apply_reading_buffer(items, lead_in: float = 0.08, lead_out: float = 0.35, min_gap: float = 0.05):
+    """在翻译结果落盘前（审校页展示之前）一次性施加温和阅读缓冲，确保审校页与导出字幕所见即所得（WYSIWYG）：
     - 仅对纯语音来源（sources 全为 a*）的非硬字幕条目生效（广播字幕/画面字/手工时间轴自带留白，不额外拉动）；
     - 在前后存在空档时，句首最多提前 lead_in 秒、句尾最多延后 lead_out 秒，让眼睛更舒服；
-    - 与相邻不重叠的字幕之间始终保留至少 min_gap（50ms）空隙，绝不制造新重叠。"""
+    - 与相邻不重叠的字幕之间始终保留至少 min_gap（50ms）空隙，绝不制造新重叠；
+    - 导出排版层不再二次叠加缓冲，避免覆盖或拉偏用户在审校页的手动微调。"""
     if not items or (lead_in <= 0 and lead_out <= 0):
         return items
     n = len(items)

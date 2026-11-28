@@ -25,7 +25,7 @@ MODEL_FILE = "onnx/model_int8.onnx"
 VOCAB_FILE = "vocab.json"
 TARGET_SR = 16000
 CHUNK_SECONDS = 30
-FORCED_ALIGN_V = 1  # 算法大改时递增，供 pipeline 阶段指纹感知
+FORCED_ALIGN_V = 2  # v2：跨窗口全局单调下界、单句孤立离群音素剔除、安全防重叠裁剪
 
 _SESSION_CACHE: dict[tuple[str, str], tuple] = {}
 _MUSIC_RE = re.compile(r"^[♪♬♫♩\s]+|[♪♬♫♩\s]+$")
@@ -112,6 +112,11 @@ def text_to_tokens(text: str, language: str, vocab: dict[str, int]) -> list[int]
             continue
         if ch in vocab:
             ids.append(vocab[ch])
+    # 日语单字感叹（如「ん？」「あっ」）若转写后无有效拉丁字符，兜底映射基本假名音素
+    if not ids and code == "ja":
+        if "ん" in clean or "ン" in clean:
+            if "n" in vocab:
+                ids.append(vocab["n"])
     return ids
 
 
@@ -288,7 +293,8 @@ def refine_with_vocal_envelope(segs: list[dict], w, offset: float = 0.0) -> list
         seg_db = w.db[i0:j0]
         peak_db = float(np.percentile(seg_db, 90))
         seg_thr = max(base_thr, peak_db - 18.0)
-        tail_thr = max(base_thr, peak_db - 22.0)
+        # 长音延伸阈值取 peak - 17dB（兼顾唱歌长音尾音衰减与屏蔽 -22dB 级背景混响）
+        tail_thr = max(max(-42.0, w.floor + 13.0), peak_db - 17.0)
 
         # 找出段内连续的活跃人声区间 [(f_start, f_end)]（相对 i0）
         active = seg_db > seg_thr
@@ -338,7 +344,7 @@ def refine_with_vocal_envelope(segs: list[dict], w, offset: float = 0.0) -> list
                         quiet_streak = 0
                     else:
                         quiet_streak += 1
-                        if quiet_streak >= 3:  # 连续 >= 150ms 静音则认为真正唱/说完
+                        if quiet_streak >= 2:  # 连续 >= 100ms 低于主声阈值则认为真正唱/说完
                             break
                 ext_b = round(last_loud_f * HOP, 3)
                 if ext_b > nb + 0.05:
@@ -348,12 +354,39 @@ def refine_with_vocal_envelope(segs: list[dict], w, offset: float = 0.0) -> list
             s["start"] = round(na + offset, 3)
             s["end"] = round(nb + offset, 3)
 
-    # 保证单调不重叠
+    # 保证单调不重叠：仅当后一句确实在当前句之后开始（> start + 0.15s）才裁剪，防止乱序/同时说话条目把前一句压扁成 0.08s
     for i in range(len(out) - 1):
-        if out[i]["end"] > out[i + 1]["start"]:
-            mid = round(max(out[i]["start"] + 0.08, out[i + 1]["start"] - 0.02), 3)
+        if out[i + 1]["start"] > out[i]["start"] + 0.15 and out[i]["end"] > out[i + 1]["start"]:
+            mid = round(max(out[i]["start"] + 0.15, out[i + 1]["start"] - 0.02), 3)
             out[i]["end"] = mid
     return out
+
+
+def _trim_outlier_spans(valid: list[tuple[int, int, float]], frame_dur: float, max_gap_s: float = 1.5) -> list[tuple[int, int, float]]:
+    """剔除单句内跨越超长静音的孤立句首/句尾离群音素（常为边缘少量音素吸到几秒外的底噪/前奏/水声）。
+    - 1.5~2.5s 空档：仅当边缘离群音素 <= 2 个且占比 <= 20% 时裁剪；
+    - > 2.5s 巨大空档：允许裁剪占比 <= 25% 的边缘离群音素簇（如句首 3~5 字符吸到 8 秒前环境声）。
+    这样既彻底消灭跨静音吸噪，又绝不误伤句中正常多词停顿（每段占比通常 > 30%）。"""
+    if len(valid) < 4:
+        return valid
+    lo, hi = 0, len(valid)
+    max_small = min(2, max(1, len(valid) // 5))
+    max_large = max(max_small, len(valid) // 4)
+    # 句首离群音素检查
+    for k in range(1, max_large + 1):
+        if lo + k < hi:
+            gap_s = (valid[lo + k][0] - valid[lo + k - 1][1]) * frame_dur
+            if (k <= max_small and gap_s > max_gap_s) or gap_s > 2.5:
+                lo = lo + k
+                break
+    # 句尾离群音素检查
+    for k in range(1, max_large + 1):
+        if hi - k > lo:
+            gap_s = (valid[hi - k][0] - valid[hi - k - 1][1]) * frame_dur
+            if (k <= max_small and gap_s > max_gap_s) or gap_s > 2.5:
+                hi = hi - k
+                break
+    return valid[lo:hi] if hi > lo else valid
 
 
 def _group_windows(segs: list[dict], max_gap: float = 6.0, max_span: float = 120.0, max_count: int = 35) -> list[list[int]]:
@@ -388,7 +421,7 @@ def align_segments(
     c: dict | None = None,
     offset: float = 0.0,
 ) -> list[dict]:
-    """对整集 ASR 段落做本机 ONNX CTC 强制对齐 + 人声能量包络精修。"""
+    """对整集 ASR 段落做本机 ONNX CTC 强制对齐 + 离群音素剔除 + 人声能量包络精修。"""
     if not segs:
         return segs
 
@@ -403,13 +436,18 @@ def align_segments(
     out = [dict(s) for s in segs]
     groups = _group_windows(out)
     aligned_n = 0
+    prev_win_end = actual_start  # 全局单调下界：后一窗口绝不能倒流抢占前一窗口已对齐的音频
 
-    for g in groups:
+    for gi, g in enumerate(groups):
         check_cancel()
         min_s = min(out[i]["start"] for i in g) - offset
         max_e = max(out[i]["end"] for i in g) - offset
-        lo = max(actual_start, min_s - 8.0)
-        hi = min(actual_start + total_dur, max_e + 8.0)
+        next_min_s = (min(out[i]["start"] for i in groups[gi + 1]) - offset) if gi + 1 < len(groups) else (actual_start + total_dur)
+        lo = max(actual_start, prev_win_end, min_s - 8.0)
+        hi = min(actual_start + total_dur, max(max_e + 8.0, lo + 1.0))
+        # 上界也不侵入下一窗口太多（若下一窗口起点比当前 max_e 更晚，留出合理缓冲）
+        if next_min_s > max_e + 1.0:
+            hi = min(hi, next_min_s + 2.0)
         f0 = max(0, int((lo - actual_start) / frame_dur))
         f1 = min(len(log_probs), int((hi - actual_start) / frame_dur))
         if f1 <= f0:
@@ -430,19 +468,23 @@ def align_segments(
         if not spans:
             continue
 
+        win_last_end = prev_win_end
         for idx, a_i, b_i in ranges:
             if b_i <= a_i:
                 continue
             valid = [sp for sp in spans[a_i:b_i] if sp[0] >= 0]
             if not valid:
                 continue
-            ns = actual_start + (f0 + valid[0][0]) * frame_dur + offset
-            ne = actual_start + (f0 + valid[-1][1]) * frame_dur + offset
-            if ne > ns + 0.05:
-                out[idx]["start"] = round(ns, 3)
-                out[idx]["end"] = round(ne, 3)
+            valid = _trim_outlier_spans(valid, frame_dur)
+            ns_rel = actual_start + (f0 + valid[0][0]) * frame_dur
+            ne_rel = actual_start + (f0 + valid[-1][1]) * frame_dur
+            if ne_rel > ns_rel + 0.05:
+                out[idx]["start"] = round(ns_rel + offset, 3)
+                out[idx]["end"] = round(ne_rel + offset, 3)
                 out[idx]["timing"] = "aligned"
                 aligned_n += 1
+                win_last_end = max(win_last_end, ne_rel)
+        prev_win_end = win_last_end
 
     w = Wav(wav_path)
     out = refine_with_vocal_envelope(out, w, offset=offset)
@@ -499,6 +541,7 @@ def align_subset(
         valid = [sp for sp in spans[a_i:b_i] if sp[0] >= 0]
         if not valid:
             continue
+        valid = _trim_outlier_spans(valid, frame_dur)
         ns = actual_start + valid[0][0] * frame_dur + offset
         ne = actual_start + valid[-1][1] * frame_dur + offset
         if ne > ns + 0.05:

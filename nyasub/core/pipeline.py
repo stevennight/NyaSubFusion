@@ -1074,6 +1074,10 @@ class Run:
                 from . import songs as songs_mod
 
                 songs_mod.save_translated_songs(cues, sdir, tgt_code)
+        # 在审校页展示之前一次性给纯语音来源条目施加温和阅读缓冲（所见即所得，审校手动微调后导出不再二次叠加）
+        from ..render import layout as layout_mod
+
+        layout_mod.apply_reading_buffer(cues)
         translate.add_quality_flags(cues)
         self._save_series_terms(glossary)
         todo = sum(1 for c in cues if c["review"] == "todo")

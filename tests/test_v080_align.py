@@ -185,8 +185,27 @@ def test_song_alignment_2_to_1_split_prevents_verse2_jump(tmp_path):
     assert cues[4]["orig"]["text"] == "♪ 鳥は友"
 
 
+def test_trim_outlier_spans_and_safe_overlap():
+    """CTC 离群音素剔除（去掉跨越 >1.5s 静音的 1~2 个孤立边缘音素，保留正常多词停顿）+ 乱序条目不压扁前句。"""
+    # 10 个音素，frame_dur=0.02s：前 9 个聚在 1.0s..1.8s，最后 1 个跳到 9.5s（如 では、選べ 尾音吸噪）
+    spans = [(50 + i * 4, 53 + i * 4, -0.5) for i in range(9)] + [(475, 478, -2.0)]
+    trimmed = forced_align._trim_outlier_spans(spans, frame_dur=0.02, max_gap_s=1.5)
+    assert len(trimmed) == 9 and trimmed[-1][1] == 53 + 8 * 4
+
+    # 乱序条目（后一条 start 比前一条 start 还早）绝不能把前一条压扁成 0.08s
+    w = _FakeWav([-15.0] * 200)
+    segs = [
+        {"id": "a1", "start": 2.0, "end": 4.0, "text": "信乃、それ村雨の！", "timing": "aligned"},
+        {"id": "a2", "start": 1.5, "end": 1.9, "text": "ん？", "timing": "segment"},
+    ]
+    out = forced_align.refine_with_vocal_envelope(segs, w)
+    assert out[0]["end"] >= 3.9
+
+
 def test_layout_reading_buffer_respects_gaps_and_onscreen():
-    """排版层阅读缓冲：纯语音来源空档处提前 0.08s / 留白 0.35s；紧邻句保持 >=0.05s 间隙不重叠；硬字幕/广播字幕不拉动。"""
+    """阅读缓冲（在翻译落盘前一次性施加，审校页与导出所见即所得）：
+    纯语音来源空档处提前 0.08s / 留白 0.35s；紧邻句保持 >=0.05s 间隙不重叠；硬字幕/广播字幕不拉动；
+    且 layout.build 不再二次叠加缓冲。"""
     cfg = config.Config()
     prof = next(p for p in cfg.render.profiles if p.name == "bilingual")
     cues = [
@@ -199,12 +218,15 @@ def test_layout_reading_buffer_respects_gaps_and_onscreen():
         {"id": "q4", "start": 30.0, "end": 32.0, "type": "dialogue", "sources": ["c1"],
          "orig": {"lang": "ja", "text": "广播字幕"}, "tr": {"zh-Hans": {"text": "广播字幕"}}},
     ]
-    items = layout.build(cues, prof, cfg, "ja")
+    layout.apply_reading_buffer(cues)
     # q1 开头空档充裕 -> 提前 0.08s；与 q2 间距仅 0.15s -> 保留 >=0.05s 间隙不重叠
-    assert items[0]["start"] == 9.92
-    assert items[1]["start"] - items[0]["end"] >= 0.049
+    assert cues[0]["start"] == 9.92
+    assert cues[1]["start"] - cues[0]["end"] >= 0.049
     # q2 后面空档充裕 -> 延后 0.35s
-    assert items[1]["end"] == 14.35
+    assert cues[1]["end"] == 14.35
     # q3 是 onscreen -> 不拉动；q4 是广播字幕 c1 -> 不拉动
-    assert items[2]["start"] == 20.0 and items[2]["end"] == 22.0
-    assert items[3]["start"] == 30.0 and items[3]["end"] == 32.0
+    assert cues[2]["start"] == 20.0 and cues[2]["end"] == 22.0
+    assert cues[3]["start"] == 30.0 and cues[3]["end"] == 32.0
+    # 经过 layout.build 导出不再二次拉动（审校页手动修改完全保真）
+    items = layout.build(cues, prof, cfg, "ja")
+    assert items[0]["start"] == 9.92 and items[1]["end"] == 14.35
