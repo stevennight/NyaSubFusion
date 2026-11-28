@@ -10,12 +10,14 @@
   3. 匹配度不够高（如即兴哼唱、查不到词）时保留原听写，绝不强行乱替换；
 - 翻译完成后将本集已对齐歌曲的译文沉淀回 series/songs.json，供后续集数复用。
 """
+import functools
 import re
 import tempfile
 from pathlib import Path
 
 from rapidfuzz import fuzz
 
+from .. import lang
 from ..env import log
 from ..textutil import norm
 from .store import load_json, save_json
@@ -49,8 +51,34 @@ def _song_id(title: str, artist: str = "") -> str:
     return slug or "song"
 
 
+_INLINE_RUBY_RE = re.compile(r"[（(][\u3040-\u30ffー・\s]{1,16}[）)]")
+_JA_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+
+
 def _strip_music(text: str) -> str:
     return re.sub(r"^[♪♬♫♩\s]+|[♪♬♫♩\s]+$", "", (text or "").strip())
+
+
+def _strip_inline_ruby(text: str) -> str:
+    """去掉歌词库里夹带的括号振假名（如「埴生(はにゅう)の宿も」->「埴生の宿も」），避免影响相似度匹配和破坏自有注音。"""
+    return _INLINE_RUBY_RE.sub("", text or "")
+
+
+@functools.lru_cache(maxsize=2048)
+def _ja_reading(text: str) -> str:
+    """把含日语汉字/假名的歌词转为纯平假名读音（用于解决「玉の装い」vs「玉のよそおい」、「羨まじ」vs「うらやまじ」等汉字假名写法差异）。"""
+    if not text or not _JA_RE.search(text):
+        return ""
+    try:
+        ja = lang.get("ja")
+        words = ja.annotate(text)
+        parts = []
+        for w in words:
+            for seg in w.get("segs") or []:
+                parts.append(seg[1] if len(seg) > 1 and seg[1] else seg[0])
+        return norm("".join(parts))
+    except Exception:
+        return ""
 
 
 MAX_SPAN_LINES = 4        # 单条 ASR 歌词最多合并对应歌词库中连续 4 行（防止截断丢半句）
@@ -60,22 +88,28 @@ CUE_SKIP_PENALTY = 6.0    # 匹配开始后，每跳过 1 条 ASR 句子的轻�
 
 
 def _line_sim(a: str, b: str) -> float:
-    """整句覆盖相似度（用 fuzz.ratio 为主，不再用高分 partial_ratio 诱导只匹配半句）。"""
-    na, nb = norm(_strip_music(a)), norm(_strip_music(b))
+    """整句覆盖相似度：先去音乐符号和括号注音，再取字面相似度与日语读音相似度的较高值。"""
+    ca, cb = _strip_inline_ruby(_strip_music(a)), _strip_inline_ruby(_strip_music(b))
+    na, nb = norm(ca), norm(cb)
     if not na or not nb:
         return 0.0
-    return float(fuzz.ratio(na, nb))
+    sim = float(fuzz.ratio(na, nb))
+    if sim < 92.0 and (_JA_RE.search(ca) or _JA_RE.search(cb)):
+        ra, rb = _ja_reading(ca), _ja_reading(cb)
+        if ra and rb:
+            sim = max(sim, float(fuzz.ratio(ra, rb)))
+    return sim
 
 
 def _join_orig(lines: list[dict], j0: int, j1: int) -> str:
-    parts = [ln.get("orig", "").strip() for ln in lines[j0:j1] if ln.get("orig", "").strip()]
+    parts = [_strip_inline_ruby(ln.get("orig", "")).strip() for ln in lines[j0:j1] if ln.get("orig", "").strip()]
     return " ".join(parts)
 
 
 def _split_line_for_two_cues(line_text: str, c1: str, c2: str) -> tuple[str, str, float] | None:
     """尝试把带空格/停顿标点的一行官方歌词拆成前后两半，分别对齐到相邻两条短 ASR 句（如「花はあるじ 鳥は友」->「花は主」+「鳥は友」）。
     返回 (part1, part2, avg_sim) 或 None。"""
-    s = _strip_music(line_text)
+    s = _strip_inline_ruby(_strip_music(line_text))
     # 找出所有合理的空白/全角空格/顿号切分点
     seps = [m.span() for m in re.finditer(r"[\s　、，,/]+", s)]
     if not seps:
@@ -135,8 +169,8 @@ def align_block_to_lines(block_cues: list[dict], song_lines: list[dict]) -> tupl
                 if sc >= MIN_LINE_SIM:
                     # 1 对多时轻微奖励覆盖更多行（只在确实更匹配时胜出）
                     by_end.setdefault(i + 1, []).append(("1toK", i, i + 1, j, j + k, sc))
-        # 2 对 1 拆分：检查 cue[i] + cue[i+1] 是否合对单行 song_lines[j]
-        if i + 1 < n and block_cues[i + 1]["start"] - block_cues[i]["end"] < 4.0:
+        # 2 对 1 拆分：检查 cue[i] + cue[i+1] 是否合对单行 song_lines[j]（慢歌/童谣句中换气可达 4~6 秒）
+        if i + 1 < n and block_cues[i + 1]["start"] - block_cues[i]["end"] < 6.0:
             for j in range(m):
                 sp = _split_line_for_two_cues(song_lines[j].get("orig", ""), texts[i], texts[i + 1])
                 if sp is not None:
@@ -334,6 +368,7 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
         return 0
     songs = load_songs(series_dir)
     aligned_total = 0
+    all_drop_ids: set[str] = set()
 
     for idxs in blocks:
         block = [cues[i] for i in idxs]
@@ -381,6 +416,20 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
         if not song or not mapping:
             continue
 
+        # 若块内相邻两条 cue 起点几乎重叠（上游估时打平导致顺序颠倒，如 267.35s「のどかなりや」与 267.375s「羨まじ」），
+        # 检查交换后能否显著提升官方歌词匹配率，若能则按官方歌词顺序纠偏
+        for ti in range(len(block) - 1):
+            if abs(block[ti + 1]["start"] - block[ti]["start"]) < 0.5:
+                swapped = list(block)
+                swapped[ti], swapped[ti + 1] = swapped[ti + 1], swapped[ti]
+                m_sw, avg_sw = align_block_to_lines(swapped, song["lines"])
+                if len(m_sw) > len(mapping) or (len(m_sw) == len(mapping) and avg_sw > 0 and avg_sw > 5.0):
+                    # 仅当覆盖句数严格增多才采纳交换，避免无谓改动
+                    if len(m_sw) > len(mapping):
+                        block[ti], block[ti + 1] = block[ti + 1], block[ti]
+                        cues[idxs[ti]], cues[idxs[ti + 1]] = cues[idxs[ti + 1]], cues[idxs[ti]]
+                        mapping = m_sw
+
         # 先记录 2 对 1 共享同一行的相邻 cue 对（如 花は主 + 鳥は友 -> 花はあるじ 鳥は友）
         split_pairs: dict[int, tuple[str, str]] = {}
         ordered_bis = sorted(mapping)
@@ -421,6 +470,26 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
             matched_cues.append(c)
             aligned_total += 1
 
+        # 吸收未匹配的尾部回声/拖尾重复短句（如「吠えて交わる FATE」后紧跟未在歌词库里的孤立尾音「Fate」）
+        drop_ids: set[str] = set()
+        kept_block: list[dict] = []
+        for bi, c in enumerate(block):
+            if bi not in mapping and bi > 0 and (bi - 1) in mapping:
+                prev_c = block[bi - 1]
+                cur_n = norm(_strip_music(c["orig"]["text"]))
+                prev_n = norm(_strip_music(prev_c["orig"]["text"]))
+                gap = c["start"] - prev_c["end"]
+                if cur_n and len(cur_n) <= 8 and gap <= 3.0 and (prev_n.endswith(cur_n) or cur_n in prev_n[-len(cur_n) - 2:]):
+                    prev_c["end"] = max(prev_c["end"], c["end"])
+                    if c.get("sources"):
+                        prev_c["sources"] = list(dict.fromkeys((prev_c.get("sources") or []) + c["sources"]))
+                    drop_ids.add(c.get("id"))
+                    continue
+            kept_block.append(c)
+        if drop_ids:
+            all_drop_ids.update(drop_ids)
+            block = kept_block
+
         # 时间轴校准：优先对替换后的官方歌词做二次声学强制对齐（仅耗时 1~2s，兼容 TV-Size 剪辑与角色清唱）；
         # 若未启用 forced_align 或无音频，再退回到 LRC 偏移校准。
         realigned = 0
@@ -431,9 +500,10 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
                 from ..sources import forced_align
 
                 src_lang = (matched_cues[0].get("orig") or {}).get("lang") or ""
-                # 整段 block（含已匹配与未匹配句）一起单调对齐，确保相邻句不交叉重叠
+                next_cue_start = cues[idxs[-1] + 1]["start"] - 0.05 if idxs[-1] + 1 < len(cues) else None
+                # 整段 block（含已匹配与未匹配句）一起单调对齐，确保相邻句不交叉重叠且不侵入下一句对话
                 realigned = forced_align.align_subset(block, align_wav, language=src_lang,
-                                                      c=cfg.asr.model_dump())
+                                                      c=cfg.asr.model_dump(), max_end_s=next_cue_start)
                 if realigned:
                     log(f"歌曲对齐：已对《{song['title']}》的 {realigned} 句歌词完成二次声学卡拍")
             except Exception as e:
@@ -441,6 +511,8 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
         if not realigned:
             _calibrate_block_timing_with_lrc(block, mapping, song["lines"])
 
+    if all_drop_ids:
+        cues[:] = [c for c in cues if c.get("id") not in all_drop_ids]
     return aligned_total
 
 

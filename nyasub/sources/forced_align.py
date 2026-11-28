@@ -456,9 +456,12 @@ def align_subset(
     language: str = "",
     c: dict | None = None,
     offset: float = 0.0,
+    max_end_s: float | None = None,
 ) -> int:
     """对一小段（如一首歌的官方标准歌词 cues）就地做二次声学强制对齐。
-    只切取该段前后 ±4s 的音频跑推理（约 1~2 秒），不跑整集。返回成功对齐的条数。"""
+    只切取该段前后 ±4s 的音频跑推理（约 1~2 秒），不跑整集。
+    max_end_s（可选）：音频绝对时间上限（如歌曲后面紧跟的下一句对话起点 - 0.05s），防止句尾长音延伸侵入下一段对话。
+    返回成功对齐的条数。"""
     if not items or not wav_path or not Path(wav_path).exists():
         return 0
 
@@ -466,6 +469,8 @@ def align_subset(
 
     min_s = max(0.0, min(it["start"] for it in items) - offset - 4.0)
     max_e = max(it["end"] for it in items) - offset + 4.0
+    if max_end_s is not None:
+        max_e = min(max_e, max(min_s + 0.5, max_end_s - offset))
     log_probs, frame_dur, actual_start, total_dur, vocab, blank_id = compute_emissions(
         wav_path, c=c, start_s=min_s, end_s=max_e, report_progress=False
     )
@@ -508,4 +513,6 @@ def align_subset(
         for it, ref in zip(items, refined):
             it["start"] = ref["start"]
             it["end"] = ref["end"]
+        if max_end_s is not None and items[-1]["end"] > max_end_s:
+            items[-1]["end"] = round(max(items[-1]["start"] + 0.2, max_end_s), 3)
     return aligned_n

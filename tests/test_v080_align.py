@@ -104,8 +104,44 @@ def test_song_alignment_prevents_30_line_title_jump(tmp_path):
     songs_mod.align_and_fill_songs(cues, tmp_path, config.Config(), tgt_code="zh-Hans")
     assert cues[0]["orig"]["text"] == "♪ 果てなき闇の彼方へ"
     assert cues[1]["orig"]["text"] == "♪ 吠えて交わる FATE"
-    # q2 绝不能被错配成 30 行后的《God FATE》
-    assert "God FATE" not in cues[2]["orig"]["text"]
+    # q2（尾音回声 Fate）被吸收进 q1，不再独立冒出《God FATE》或孤立 Fate
+    assert len(cues) == 2 and cues[1]["end"] == 150.5
+
+
+def test_song_alignment_phonetic_kana_and_ruby_strip(tmp_path):
+    """日语歌词汉字/假名写法差异（玉の装い vs 玉のよそおい、羨まじ vs うらやまじ）与括号注音（埴生(はにゅう)の宿も）均可准确 2 对 1 对齐。"""
+    hanyuu = {
+        "id": "hanyuu",
+        "title": "埴生の宿",
+        "artist": "",
+        "role": "insert",
+        "lines": [
+            {"orig": "埴生(はにゅう)の宿も わが宿", "tr": {}},
+            {"orig": "玉のよそおい うらやまじ", "tr": {}},
+            {"orig": "のどかなりや 春の空", "tr": {}},
+            {"orig": "花はあるじ 鳥は友", "tr": {}},
+        ],
+    }
+    songs_mod.save_songs(tmp_path, [hanyuu])
+    # 模拟上游估时打平导致 のどかなりや(267.35) 与 羨まじ(267.375) 顺序颠倒
+    cues = [
+        {"id": "q1", "start": 251.4, "end": 254.3, "type": "song", "orig": {"lang": "ja", "text": "♪ 埴生の宿も"}, "tr": {}},
+        {"id": "q2", "start": 254.4, "end": 257.9, "type": "song", "orig": {"lang": "ja", "text": "♪ 我が宿"}, "tr": {}},
+        {"id": "q3", "start": 258.2, "end": 263.9, "type": "song", "orig": {"lang": "ja", "text": "♪ 玉の装い"}, "tr": {}},
+        {"id": "q4", "start": 267.35, "end": 273.3, "type": "song", "orig": {"lang": "ja", "text": "♪ のどかなりや"}, "tr": {}},
+        {"id": "q5", "start": 267.375, "end": 272.0, "type": "song", "orig": {"lang": "ja", "text": "♪ 羨まじ"}, "tr": {}},
+        {"id": "q6", "start": 273.3, "end": 276.8, "type": "song", "orig": {"lang": "ja", "text": "♪ 春の空"}, "tr": {}},
+        {"id": "q7", "start": 277.7, "end": 281.9, "type": "song", "orig": {"lang": "ja", "text": "♪ 花は主"}, "tr": {}},
+        {"id": "q8", "start": 283.3, "end": 286.3, "type": "song", "orig": {"lang": "ja", "text": "♪ 鳥は友"}, "tr": {}},
+    ]
+    n = songs_mod.align_and_fill_songs(cues, tmp_path, config.Config(), tgt_code="zh-Hans")
+    assert n == 8
+    assert [c["orig"]["text"] for c in cues] == [
+        "♪ 埴生の宿も", "♪ わが宿",
+        "♪ 玉のよそおい", "♪ うらやまじ",
+        "♪ のどかなりや", "♪ 春の空",
+        "♪ 花はあるじ", "♪ 鳥は友",
+    ]
 
 
 def test_song_alignment_2_to_1_split_prevents_verse2_jump(tmp_path):
