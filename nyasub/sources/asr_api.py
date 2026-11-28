@@ -240,12 +240,20 @@ def _transcribe_file(ep, path, fmt, language, timed):
     raise _NoTimestamps(str(last))
 
 
-SYSTEM = """你是逐字转写员。把音频里说出来的每一句话按原语言逐字写下来：不翻译、不总结、不润色，口语、语气词、方言照原样写；
+SYSTEM = """你是逐字转写员。把音频里说出来的每一句话按原语言逐字写下来：不翻译、不总结、不润色，口语、方言照原样写；
 不写音乐、音效、笑声之类的说明；听不清的地方按听到的写，不要编。日语、中文照常写，词和词之间不加空格，句末照常加标点。
 按句子分段（一句话一段，长句在停顿处断开，每段不超过 8 秒；换人说话必须另起一段，不要把两个人的话合在同一段），每段给出开始和结束时间（相对这段音频开头，格式 MM:SS.ss）。
 如果能分辨说话人，可选填 speaker（优先填节目信息里的角色名，认不出就填简短编号如「男1」「女1」「旁白」，拿不准可省略）。
 只输出 JSON：{"language": "ISO 639-1 语言代码", "segments": [{"start": "MM:SS.ss", "end": "MM:SS.ss", "text": "...", "speaker": "可选"}]}
 没有人说话就输出 {"language": "", "segments": []}。"""
+
+SUBTITLE_CLEAN_NOTE = (
+    "\n\n字幕习惯要求：请省略无实际语义的纯喘息、纯尖叫/痛呼（如「うわあああ！」「ぷはぁー」）、"
+    "非对话应答的单声哼哼（如独自发出的「ん？」），以及句首无意义的惊呼语气词（如「あっ、うわっ！村雨！」只写「村雨！」、「おっ、今日のおやつ何？」只写「今日のおやつ何？」）；"
+    "但在对话中真正用于回应别人的应答词（如「うん」「ええ」「えっ？」）照常保留。"
+)
+
+VERBATIM_FILLER_NOTE = "\n\n逐字要求：口语、语气词、感叹词（如「あっ」「ん？」「うわっ」）均按实际听到的原样保留。"
 
 
 VISUAL_NOTE = ("\n\n附有本段音频对应的参考画面拼图（按时间顺序排列）："
@@ -309,13 +317,14 @@ def _chat_audio_agy(ep, path, fmt, seconds, user, effort="", images=None):
     raise AsrApiError(f"Antigravity CLI 语音识别多次失败：{last_err}") from last_err
 
 
-def _chat_audio(ep, path, fmt, language, seconds, context="", effort="", images=None, vocals_separated: bool = False):
+def _chat_audio(ep, path, fmt, language, seconds, context="", effort="", images=None, vocals_separated: bool = False, keep_fillers: bool = False):
     """多模态大模型（chat/completions + input_audio，或本机 Antigravity CLI）：返回 {"language", "segments": [...]}。
     context：节目说明（「资料」里填的，比如从网上贴的角色表），让模型写对人名（「犬川」不写成同一部剧里另一个人的「犬飼」）。
     images：可选参考画面拼图列表 [{"path", "label"}]。"""
     from ..llm.client import parse_json
 
     user = f"这段音频长 {seconds:.1f} 秒（{int(seconds // 60):02d}:{seconds % 60:05.2f}）。语言：{language or '请自动判断'}。"
+    user += VERBATIM_FILLER_NOTE if keep_fillers else SUBTITLE_CLEAN_NOTE
     if vocals_separated:
         user += "\n（说明：本段原声伴奏较强，已先去除背景音乐；若为歌声、OP/ED 或说唱请正常转写歌词。）"
     if images:
@@ -637,20 +646,18 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                                                    Path(tmp.name) / f"vis_{a:09.3f}", interval=vis_interval)
         try:
             if kind == "gemini":
-                if context or effort or grids:
-                    extra = ["chat"]
-                    if context:
-                        extra.append(hashlib.sha1(context.encode()).hexdigest())
-                    if effort:
-                        extra.append(f"effort:{effort}")
-                    if grids:
-                        extra.append(f"vis:{vis_interval:g}:{len(grids)}")
-                else:
-                    extra = "chat"
+                keep_fillers = bool(c.get("keep_fillers", False))
+                extra = ["chat", "fillers:1" if keep_fillers else "fillers:0"]
+                if context:
+                    extra.append(hashlib.sha1(context.encode()).hexdigest())
+                if effort:
+                    extra.append(f"effort:{effort}")
+                if grids:
+                    extra.append(f"vis:{vis_interval:g}:{len(grids)}")
                 try:
                     resp, hit = _cached(cache_dir, key_of(path, extra),
                                         lambda: _chat_audio(ep, path, f, language, b - a, context, effort=effort,
-                                                            images=grids, vocals_separated=vocals_sep))
+                                                            images=grids, vocals_separated=vocals_sep, keep_fillers=keep_fillers))
                 except _Truncated as e:
                     if b - a < SPLIT_MIN * 2:
                         raise AsrApiError(f"语音识别：{e}，这一块已经很短，没法再切") from e

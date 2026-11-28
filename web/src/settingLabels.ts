@@ -11,6 +11,7 @@ const LBL: Record<string, string> = {
   "asr.api_model": "语音识别 › 云端模型", "asr.api_effort": "语音识别 › 思考程度", "asr.api_chunk_seconds": "语音识别 › 每块时长",
   "asr.api_timing_provider": "语音识别 › 对时接口", "asr.api_timing_model": "语音识别 › 对时用",
   "asr.api_visual": "语音识别 › 附带画面参考", "asr.api_visual_interval": "语音识别 › 画面参考间隔",
+  "asr.keep_fillers": "语音识别 › 保留语气词与感叹",
   "ocr.enabled": "画面字识别 › 开关", "ocr.fps": "画面字识别 › 每秒看几帧", "ocr.regions": "画面字识别 › 识别区域",
   "ocr.refine": "画面字复核 › 开关", "ocr.refine_mode": "画面字复核 › 复核方式", "ocr.refine_frame_width": "画面字复核 › 整帧画面宽度",
   "ocr.refine_boxed": "画面字复核 › 框出要转写的字", "ocr.refine_batch": "画面字复核 › 每批几处",

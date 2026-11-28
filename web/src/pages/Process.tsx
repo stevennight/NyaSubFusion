@@ -519,6 +519,13 @@ function AsrStep({ ctx }: { ctx: StepCtx }) {
               )}
               <span className="hint">辅助分辨称呼（如姐姐/哥哥）、说话人形象、画面人名条与 OP/ED</span>
             </div>
+            <Lbl ctx={ctx} k="asr.keep_fillers">保留语气词与感叹</Lbl>
+            <div className="row wrap">
+              <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={Boolean(val("asr.keep_fillers"))} onChange={(e) => set("asr.keep_fillers", e.target.checked)} />
+                <span>逐字保留纯喘息、尖叫与句首惊呼（默认按影视字幕习惯省略）</span>
+              </label>
+            </div>
             <Lbl ctx={ctx} k="asr.api_timing_provider">对时接口</Lbl>
             <div className="row">
               <select className="inp" style={{ maxWidth: 360 }} value={timingProviderName} onChange={(e) => set("asr.api_timing_provider", e.target.value)}>

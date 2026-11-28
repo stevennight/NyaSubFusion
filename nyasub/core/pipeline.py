@@ -168,6 +168,8 @@ class Run:
                 if self.cfg.asr.api_kind == "gemini" and self.cfg.asr.api_visual:
                     d["api"]["visual"] = float(self.cfg.asr.api_visual_interval or 5.0)
                 if self.cfg.asr.api_kind == "gemini":
+                    d["api"]["keep_fillers"] = bool(self.cfg.asr.keep_fillers)
+                if self.cfg.asr.api_kind == "gemini":
                     from ..sources.asr_api import ALIGN_V
                     from ..sources.forced_align import FORCED_ALIGN_V
 

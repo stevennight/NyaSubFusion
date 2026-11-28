@@ -71,6 +71,7 @@ class AsrCfg(_M):
     api_effort: str = ""                     # 多模态大模型识别时的思考程度；空 = 不设（使用模型默认）
     api_visual: bool = False                 # 多模态云端语音识别附带画面网格拼图参考（辅助分辨称呼、说话人、人名条与 OP/ED）
     api_visual_interval: float = 5.0         # 画面参考抽帧间隔（秒）
+    keep_fillers: bool = False               # 是否逐字保留无语义语气词/尖叫/句首惊呼（默认关：按影视字幕习惯省略，强制对齐直接卡正文开口）
 
 
 class Region(_M):
