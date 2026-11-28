@@ -522,10 +522,12 @@ def align_and_fill_songs(cues: list[dict], series_dir: Path | None, cfg, cache_d
                 from ..sources import forced_align
 
                 src_lang = (matched_cues[0].get("orig") or {}).get("lang") or ""
+                prev_cue_end = cues[idxs[0] - 1]["end"] + 0.05 if idxs[0] > 0 else None
                 next_cue_start = cues[idxs[-1] + 1]["start"] - 0.05 if idxs[-1] + 1 < len(cues) else None
-                # 整段 block（含已匹配与未匹配句）一起单调对齐，确保相邻句不交叉重叠且不侵入下一句对话
+                # 整段 block（含已匹配与未匹配句）一起单调对齐，确保相邻句不交叉重叠且不侵入前后对话
                 realigned = forced_align.align_subset(block, align_wav, language=src_lang,
-                                                      c=cfg.asr.model_dump(), max_end_s=next_cue_start)
+                                                      c=cfg.asr.model_dump(), min_start_s=prev_cue_end,
+                                                      max_end_s=next_cue_start)
                 if realigned:
                     log(f"歌曲对齐：已对《{song['title']}》的 {realigned} 句歌词完成二次声学卡拍")
             except Exception as e:

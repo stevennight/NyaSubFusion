@@ -25,7 +25,7 @@ MODEL_FILE = "onnx/model_int8.onnx"
 VOCAB_FILE = "vocab.json"
 TARGET_SR = 16000
 CHUNK_SECONDS = 30
-FORCED_ALIGN_V = 3  # v3：软时间带 CTC Viterbi（防多句多米诺串位，同时保留大漂移纠偏能力）
+FORCED_ALIGN_V = 4  # v4：按上传音频块真实边界整块联合 CTC 对齐（彻底摆脱大模型估时漂移）
 
 _SESSION_CACHE: dict[tuple[str, str], tuple] = {}
 _MUSIC_RE = re.compile(r"^[♪♬♫♩\s]+|[♪♬♫♩\s]+$")
@@ -455,8 +455,12 @@ def align_segments(
     language: str = "",
     c: dict | None = None,
     offset: float = 0.0,
+    chunk_spans: list[tuple[float, float]] | None = None,
 ) -> list[dict]:
-    """对整集 ASR 段落做本机 ONNX CTC 强制对齐 + 离群音素剔除 + 人声能量包络精修。"""
+    """对整集 ASR 段落做本机 ONNX CTC 强制对齐 + 离群音素剔除 + 人声能量包络精修。
+    - 若传入 chunk_spans（每块上传给大模型的真实物理区间 [(a, b), ...]），直接按物理块做整块联合 CTC 对齐，
+      彻底不依赖大模型自身可能漂移 10~30 秒的估时；
+    - 未传 chunk_spans 时，按自然停顿分组并允许在相邻组可用空档内对齐。"""
     if not segs:
         return segs
 
@@ -469,44 +473,55 @@ def align_segments(
         return segs
 
     out = [dict(s) for s in segs]
-    groups = _group_windows(out)
     aligned_n = 0
-    prev_win_end = actual_start  # 全局单调下界：后一窗口绝不能倒流抢占前一窗口已对齐的音频
 
-    for gi, g in enumerate(groups):
+    if chunk_spans:
+        # 按上传给大模型的真实音频块 [a, b] 分组（每条 seg 带 _chunk 索引，或按中点落入对应块）
+        by_chunk: dict[int, list[int]] = {}
+        for i, s in enumerate(out):
+            ci = s.get("_chunk")
+            if ci is None or not (0 <= ci < len(chunk_spans)):
+                mid = (s["start"] + s["end"]) / 2.0 - offset
+                ci = min(range(len(chunk_spans)), key=lambda k: 0.0 if chunk_spans[k][0] <= mid <= chunk_spans[k][1]
+                         else min(abs(mid - chunk_spans[k][0]), abs(mid - chunk_spans[k][1])))
+            by_chunk.setdefault(ci, []).append(i)
+        windows = [(chunk_spans[ci][0], chunk_spans[ci][1], by_chunk[ci]) for ci in sorted(by_chunk)]
+    else:
+        groups = _group_windows(out)
+        windows = []
+        for gi, g in enumerate(groups):
+            min_s = min(out[i]["start"] for i in g) - offset
+            max_e = max(out[i]["end"] for i in g) - offset
+            lo = max(actual_start, min_s - 16.0)
+            hi = min(actual_start + total_dur, max(max_e + 16.0, lo + 1.0))
+            if gi + 1 < len(groups):
+                next_min_s = min(out[i]["start"] for i in groups[gi + 1]) - offset
+                if next_min_s > max_e + 1.0:
+                    hi = min(hi, next_min_s)
+            windows.append((lo, hi, g))
+
+    prev_win_end = actual_start
+    for lo_raw, hi_raw, g in windows:
         check_cancel()
-        min_s = min(out[i]["start"] for i in g) - offset
-        max_e = max(out[i]["end"] for i in g) - offset
-        next_min_s = (min(out[i]["start"] for i in groups[gi + 1]) - offset) if gi + 1 < len(groups) else (actual_start + total_dur)
-        # 窗口搜索边界允许最多 ±16s（兼容大模型长段 10~15s 整体漂移），同时受上一窗口结束与下一窗口起点约束
-        lo = max(actual_start, prev_win_end, min_s - 16.0)
-        hi = min(actual_start + total_dur, max(max_e + 16.0, lo + 1.0))
-        if gi + 1 < len(groups) and next_min_s > max_e + 1.0:
-            hi = min(hi, next_min_s)
+        lo = max(actual_start, prev_win_end, lo_raw)
+        hi = min(actual_start + total_dur, max(hi_raw, lo + 1.0))
         f0 = max(0, int((lo - actual_start) / frame_dur))
         f1 = min(len(log_probs), int((hi - actual_start) / frame_dur))
         if f1 <= f0:
             continue
 
         flat_tokens: list[int] = []
-        token_bounds: list[tuple[int, int]] = []
         ranges: list[tuple[int, int, int]] = []
         for idx in g:
             toks = text_to_tokens(_get_text(out[idx]), language, vocab)
             a_i = len(flat_tokens)
             flat_tokens.extend(toks)
-            lf = int((out[idx]["start"] - offset - actual_start) / frame_dur) - f0
-            hf = int((out[idx]["end"] - offset - actual_start) / frame_dur) - f0
-            token_bounds.extend([(lf, hf)] * len(toks))
             ranges.append((idx, a_i, len(flat_tokens)))
 
         if not flat_tokens or f1 - f0 < len(flat_tokens):
             continue
 
-        spans = ctc_viterbi_align(
-            log_probs[f0:f1], flat_tokens, blank=blank_id,
-            token_bounds=token_bounds, frame_dur=frame_dur,
-        )
+        spans = ctc_viterbi_align(log_probs[f0:f1], flat_tokens, blank=blank_id)
         if not spans:
             continue
 
@@ -528,6 +543,8 @@ def align_segments(
                 win_last_end = max(win_last_end, ne_rel)
         prev_win_end = win_last_end
 
+    for s in out:
+        s.pop("_chunk", None)
     w = Wav(wav_path)
     out = refine_with_vocal_envelope(out, w, offset=offset)
     log(f"强制对齐完成：{aligned_n}/{len(out)} 段已卡准物理声学时间")
@@ -540,18 +557,20 @@ def align_subset(
     language: str = "",
     c: dict | None = None,
     offset: float = 0.0,
+    min_start_s: float | None = None,
     max_end_s: float | None = None,
 ) -> int:
     """对一小段（如一首歌的官方标准歌词 cues）就地做二次声学强制对齐。
-    只切取该段前后 ±4s 的音频跑推理（约 1~2 秒），不跑整集。
-    max_end_s（可选）：音频绝对时间上限（如歌曲后面紧跟的下一句对话起点 - 0.05s），防止句尾长音延伸侵入下一段对话。
-    返回成功对齐的条数。"""
+    只切取该段前后安全区间跑推理（约 1~2 秒），不跑整集。
+    min_start_s / max_end_s（可选）：音频绝对时间上下界（前后相邻非歌曲句边界），防止侵入前后对话。"""
     if not items or not wav_path or not Path(wav_path).exists():
         return 0
 
     from .asr_api import Wav
 
     min_s = max(0.0, min(it["start"] for it in items) - offset - 4.0)
+    if min_start_s is not None:
+        min_s = max(min_s, min_start_s - offset)
     max_e = max(it["end"] for it in items) - offset + 4.0
     if max_end_s is not None:
         max_e = min(max_e, max(min_s + 0.5, max_end_s - offset))
@@ -562,24 +581,17 @@ def align_subset(
         return 0
 
     flat_tokens: list[int] = []
-    token_bounds: list[tuple[int, int]] = []
     ranges: list[tuple[int, int, int]] = []
     for idx, it in enumerate(items):
         toks = text_to_tokens(_get_text(it), language, vocab)
         a_i = len(flat_tokens)
         flat_tokens.extend(toks)
-        lf = int((it["start"] - offset - actual_start) / frame_dur)
-        hf = int((it["end"] - offset - actual_start) / frame_dur)
-        token_bounds.extend([(lf, hf)] * len(toks))
         ranges.append((idx, a_i, len(flat_tokens)))
 
     if not flat_tokens or len(log_probs) < len(flat_tokens):
         return 0
 
-    spans = ctc_viterbi_align(
-        log_probs, flat_tokens, blank=blank_id,
-        token_bounds=token_bounds, frame_dur=frame_dur,
-    )
+    spans = ctc_viterbi_align(log_probs, flat_tokens, blank=blank_id)
     if not spans:
         return 0
 

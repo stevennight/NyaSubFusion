@@ -723,7 +723,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
         _run_parallel(chunks[1:], chunk_job, done)
     finally:
         tmp.cleanup()
-    parts = [(lo, hi, results[(a, b, lo, hi)][0]) for a, b, lo, hi in chunks]
+    parts = [(lo, hi, [dict(s, _chunk=ci) for s in results[(a, b, lo, hi)][0]]) for ci, (a, b, lo, hi) in enumerate(chunks)]
+    chunk_spans = [(a, b) for a, b, _, _ in chunks]
     segs = stitch(parts)
     junk = tuple(junk)
     out = []
@@ -734,6 +735,8 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
                  words=[dict(x, s=round(x["s"] + offset, 3), e=round(x["e"] + offset, 3)) for x in s["words"]])
         item = {"id": f"a{len(out) + 1}", "start": s["start"], "end": s["end"], "text": s["text"],
                 "words": s["words"], "timing": s["timing"]}
+        if "_chunk" in s:
+            item["_chunk"] = s["_chunk"]
         if s.get("speaker"):
             item["speaker"] = s["speaker"]
         out.append(item)
@@ -742,9 +745,12 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
     if timing_provider == "forced_align":
         from . import forced_align
 
-        log("对时：使用本机轻量 ONNX 强制对齐（MMS-300M）将大模型文字直接卡准音频音素")
-        out = forced_align.align_segments(out, wav, language=language or state["lang"] or "", c=c, offset=offset)
+        log("对时：使用本机轻量 ONNX 强制对齐（MMS-300M）按上传音频块整块联合卡准音素")
+        out = forced_align.align_segments(out, wav, language=language or state["lang"] or "", c=c, offset=offset,
+                                          chunk_spans=chunk_spans)
     elif timing_provider == "local":
+        for s in out:
+            s.pop("_chunk", None)
         if local_ref:
             log(f"对时：再用本机 faster-whisper（{c.get('model') or 'default'}）跑逐字时间，对齐大模型文字")
             out = align_to_reference(out, local_ref())
@@ -759,7 +765,9 @@ def transcribe(wav, c: dict, ep: dict, language=None, offset=0.0, duration=0.0, 
             ref, _ = transcribe(wav, dict(c, api_kind="transcribe", api_model=timing_model, api_timing_model="", api_timing_provider="", context="", names=[]),
                                 dict(tep, model=timing_model), language, offset, duration, junk, cache_dir)
             out = align_to_reference(out, ref)
-    # 若未走 forced_align（它已自带精细人声包络精修），再做 50ms 音量包络收紧静音边界
+    # 清理内部块标记；若未走 forced_align（它已自带精细人声包络精修），再做 50ms 音量包络收紧静音边界
+    for s in out:
+        s.pop("_chunk", None)
     if timing_provider != "forced_align":
         out = snap_to_vocal_envelope(out, w, offset=offset)
     timing = {t: sum(1 for s in out if s["timing"] == t) for t in ("word", "aligned", "segment", "clip")}
