@@ -353,11 +353,13 @@ def refine_with_vocal_envelope(segs: list[dict], w, offset: float = 0.0) -> list
                 runs = runs[1:]
 
         if len(runs) >= 2:
-            # 2) 句尾吸噪截断：最后一段孤立噪声很短（<0.45s），且与前面主体隔了 >=0.65s 静音
+            # 2) 句尾吸噪截断：仅截断“极短（<0.25s）且响度明显弱于主声（< peak - 12dB）”的真正尾噪；
+            # 避免误伤停顿后清晰说出的短词（如「浜路…荘介…よしろ」里停顿 1.5s 后清晰说出的 0.4s「よしろ」）
             last_dur = (runs[-1][1] - runs[-1][0]) * HOP
             gap_before_last = (runs[-1][0] - runs[-2][1]) * HOP
             prev_active = sum((r[1] - r[0]) * HOP for r in runs[:-1])
-            if last_dur < 0.45 and gap_before_last >= 0.65 and prev_active >= 0.25:
+            last_peak = float(np.max(seg_db[runs[-1][0]: runs[-1][1]]))
+            if last_dur < 0.25 and last_peak < peak_db - 12.0 and gap_before_last >= 0.65 and prev_active >= 0.25:
                 nb = round((i0 + runs[-2][1]) * HOP, 3)
                 runs = runs[:-1]
 

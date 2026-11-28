@@ -62,11 +62,11 @@ def test_refine_with_vocal_envelope_sustained_and_noise():
     # 场景 1: 0.5s..3.4s 持续歌唱（帧 10..68），CTC 过早截在 2.0s
     for f in range(10, 68):
         db[f] = -15.0
-    # 场景 2: 4.0s..4.8s 主体语音（帧 80..96）+ 静音 + 5.8s..6.0s 孤立尾噪（帧 116..120）
+    # 场景 2: 4.0s..4.8s 主体语音（帧 80..96）+ 静音 + 5.8s..5.95s 极短弱底噪（0.15s, -30dB < peak-12dB）
     for f in range(80, 96):
         db[f] = -14.0
-    for f in range(116, 120):
-        db[f] = -18.0
+    for f in range(116, 119):
+        db[f] = -30.0
     # 场景 3: 6.5s..6.7s 串入前句尾音（帧 130..134）+ 静音 0.8s + 7.5s..8.5s 真正开口（帧 150..170）
     for f in range(130, 134):
         db[f] = -18.0
@@ -82,10 +82,54 @@ def test_refine_with_vocal_envelope_sustained_and_noise():
     out = forced_align.refine_with_vocal_envelope(segs, w)
     # 1) 长音延伸至 ~3.4s（不超过 a2.start - 0.05 = 3.95）
     assert 3.3 <= out[0]["end"] <= 3.5
-    # 2) 句尾吸噪被截断在 ~4.8s
+    # 2) 句尾弱噪被截断在 ~4.8s
     assert 4.7 <= out[1]["end"] <= 4.95
     # 3) 句首串尾被裁到 ~7.5s
     assert 7.4 <= out[2]["start"] <= 7.6
+
+    # 场景 4（防误砍停顿后的清晰短词，如「浜路…荘介…よしろ」）：1.5s 静音后 0.4s 清晰主声（-16dB）必须保留！
+    db2 = [-60.0] * 140
+    for f in range(10, 40):
+        db2[f] = -15.0
+    for f in range(70, 78):  # 3.5s..3.9s (0.4s 清晰短词)
+        db2[f] = -16.0
+    out2 = forced_align.refine_with_vocal_envelope(
+        [{"id": "a5", "start": 0.5, "end": 3.9, "text": "浜路…荘介…よしろ…", "timing": "aligned"}],
+        _FakeWav(db2),
+    )
+    assert out2[0]["end"] >= 3.85
+
+
+def test_song_alignment_general_k_to_m_gap_bridging(tmp_path):
+    """通用 K 对 M 夹心桥接：高置信锚点间夹着 1 对 1 日式英语听偏、或 2 对 2 快说唱，都能自动桥接回官方歌词；大段删减（10 行）不强行桥接。"""
+    song = {
+        "id": "rap-op",
+        "title": "God FATE",
+        "artist": "飛蘭",
+        "role": "OP",
+        "lines": [
+            {"orig": "因果は奇跡に変わる", "tr": {}},
+            {"orig": "《Don't stop! Don't wanna rests!》", "tr": {}},
+            {"orig": "Shadow which GOD draw.", "tr": {}},
+            {"orig": "Fast rap line one", "tr": {}},
+            {"orig": "Fast rap line two", "tr": {}},
+            {"orig": "涙の意味 無駄にはしない", "tr": {}},
+        ],
+    }
+    songs_mod.save_songs(tmp_path, [song])
+    cues = [
+        {"id": "q1", "start": 10.0, "end": 14.0, "type": "song", "orig": {"lang": "ja", "text": "♪ 因果は奇跡に変わる"}, "tr": {}},
+        {"id": "q2", "start": 14.2, "end": 16.5, "type": "song", "orig": {"lang": "ja", "text": "♪ さあ救われる"}, "tr": {}},
+        {"id": "q3", "start": 16.8, "end": 20.5, "type": "song", "orig": {"lang": "ja", "text": "♪ Shadow which GOD draw."}, "tr": {}},
+        {"id": "q4", "start": 20.8, "end": 23.0, "type": "song", "orig": {"lang": "ja", "text": "♪ ぜんぜんちがうききまちがい1"}, "tr": {}},
+        {"id": "q5", "start": 23.2, "end": 25.5, "type": "song", "orig": {"lang": "ja", "text": "♪ ぜんぜんちがうききまちがい2"}, "tr": {}},
+        {"id": "q6", "start": 26.0, "end": 30.0, "type": "song", "orig": {"lang": "ja", "text": "♪ 涙の意味 無駄にはしない"}, "tr": {}},
+    ]
+    n = songs_mod.align_and_fill_songs(cues, tmp_path, config.Config(), tgt_code="zh-Hans")
+    assert n == 6
+    assert cues[1]["orig"]["text"] == "♪ 《Don't stop! Don't wanna rests!》"
+    assert cues[3]["orig"]["text"] == "♪ Fast rap line one"
+    assert cues[4]["orig"]["text"] == "♪ Fast rap line two"
 
 
 def test_song_alignment_prevents_30_line_title_jump(tmp_path):

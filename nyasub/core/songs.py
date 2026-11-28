@@ -247,6 +247,53 @@ def align_block_to_lines(block_cues: list[dict], song_lines: list[dict]) -> tupl
 
     if not mapping:
         return {}, 0.0
+
+    # 通用 K 对 M 夹心桥接：当左右两个相邻锚点均高置信命中（>=60%），且中间夹着 K 条未匹配歌曲句（1<=K<=4）
+    # 与 M 行未用官方歌词（1<=M<=4，且时间跨度合理），按顺序/时长比例桥接补全（救回日式英语、快说唱、失真唱腔等）。
+    anchor_bis = sorted(mapping)
+    for idx_a in range(len(anchor_bis) - 1):
+        b_left, b_right = anchor_bis[idx_a], anchor_bis[idx_a + 1]
+        k_cues = b_right - b_left - 1
+        if not (1 <= k_cues <= 4):
+            continue
+        j_left_end = mapping[b_left][1]
+        j_right_start = mapping[b_right][0]
+        m_lines = j_right_start - j_left_end
+        if not (1 <= m_lines <= 4):
+            continue
+        # 两侧锚点均需高置信，避免低置信错配引发连锁误桥接
+        sc_left = _line_sim(texts[b_left], _join_orig(song_lines, *mapping[b_left]))
+        sc_right = _line_sim(texts[b_right], _join_orig(song_lines, *mapping[b_right]))
+        if sc_left < 60.0 or sc_right < 60.0:
+            continue
+        span_s = max(0.0, block_cues[b_right]["start"] - block_cues[b_left]["end"])
+        if span_s < 0.5 * m_lines or span_s > 12.0 * m_lines:
+            continue
+        mid_bis = list(range(b_left + 1, b_right))
+        if k_cues == m_lines:
+            # 精确 1 对 1 顺序对应（1对1 日式英语、2对2 / 3对3 快说唱）
+            for r, bi in enumerate(mid_bis):
+                mapping[bi] = (j_left_end + r, j_left_end + r + 1)
+        elif k_cues == 1:
+            # 1 条长句涵盖 M 行（1 对 2~4 行说唱/快唱）
+            mapping[mid_bis[0]] = (j_left_end, j_right_start)
+        elif k_cues < m_lines:
+            # K < M：按各 cue 时长比例把 M 行单调切分给 K 条 cue（每条至少分 1 行）
+            durs = [max(0.2, block_cues[bi]["end"] - block_cues[bi]["start"]) for bi in mid_bis]
+            tot_d = sum(durs)
+            cur_j = j_left_end
+            acc = 0.0
+            for r, (bi, d) in enumerate(zip(mid_bis, durs)):
+                rem_cues = k_cues - r - 1
+                acc += d
+                if rem_cues == 0:
+                    nxt_j = j_right_start
+                else:
+                    target_j = j_left_end + int(round(m_lines * acc / tot_d))
+                    nxt_j = max(cur_j + 1, min(j_right_start - rem_cues, target_j))
+                mapping[bi] = (cur_j, nxt_j)
+                cur_j = nxt_j
+
     avg = sum(scores) / len(scores)
     min_need = 1 if n == 1 else max(2, int(n * MIN_MATCH_RATIO + 0.5))
     if len(mapping) < min_need or avg < MIN_BLOCK_AVG_SIM or (n == 1 and avg < 70.0):
